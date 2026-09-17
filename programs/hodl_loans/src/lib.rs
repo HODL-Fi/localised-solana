@@ -75,4 +75,8 @@ pub mod hodl_loans {
     pub fn deposit_liquidity(ctx: Context<DepositLiquidity>, amount: u64) -> Result<()> {
         instructions::handle_deposit_liquidity(ctx, amount)
     }
+
+    pub fn withdraw_liquidity(ctx: Context<WithdrawLiquidity>, amount: u64) -> Result<()> {
+        instructions::handle_withdraw_liquidity(ctx, amount)
+    }
 }

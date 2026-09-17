@@ -76,3 +76,11 @@ pub struct LiquidityDeposited {
     pub amount: u64,
     pub shares: u128,
 }
+
+#[event]
+pub struct LiquidityWithdrawn {
+    pub market: Pubkey,
+    pub owner: Pubkey,
+    pub amount: u64,
+    pub shares: u128,
+}

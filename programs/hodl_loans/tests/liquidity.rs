@@ -88,3 +88,73 @@ fn deposit_is_blocked_while_paused_and_for_zero() {
     send(&mut env.svm, &[pause], &[&env.guardian]).unwrap();
     assert_hodl_error(env.deposit(&lender, &mint, ONE_CNGN), HodlError::MarketPaused);
 }
+
+// ---- withdraw_liquidity (Task 8) ----
+
+#[test]
+fn partial_withdraw_burns_shares_and_returns_tokens() {
+    let (mut env, mint) = Env::with_cngn_market();
+    let lender = env.new_lender(&mint, ONE_CNGN);
+    env.deposit(&lender, &mint, ONE_CNGN).unwrap();
+
+    env.withdraw(&lender, &mint, 400_000).unwrap();
+    assert_eq!(env.lender_shares(&mint, &lender.key.pubkey()), 600_000_000);
+    assert_eq!(env.market(&mint).cash, 600_000);
+    assert_eq!(env.token_balance(&lender.token), 400_000);
+}
+
+#[test]
+fn withdraw_max_takes_everything_available() {
+    let (mut env, mint) = Env::with_cngn_market();
+    let lender = env.new_lender(&mint, ONE_CNGN);
+    env.deposit(&lender, &mint, ONE_CNGN).unwrap();
+
+    env.withdraw(&lender, &mint, u64::MAX).unwrap();
+    assert_eq!(env.lender_shares(&mint, &lender.key.pubkey()), 0);
+    assert_eq!(env.market(&mint).cash, 0);
+    assert_eq!(env.token_balance(&lender.token), ONE_CNGN);
+}
+
+#[test]
+fn withdrawals_are_limited_to_cash_minus_reserve() {
+    let (mut env, mint) = Env::with_cngn_market();
+    let lender = env.new_lender(&mint, ONE_CNGN);
+    env.deposit(&lender, &mint, ONE_CNGN).unwrap();
+
+    // Simulate 700,000 lent out and a 100,000 protocol reserve.
+    let key = market_pda(&mint);
+    let mut market = env.market(&mint);
+    market.cash = 300_000;
+    market.total_borrows = 700_000;
+    market.protocol_reserve = 100_000;
+    env.write(&key, &market);
+
+    assert_hodl_error(env.withdraw(&lender, &mint, 200_001), HodlError::InsufficientCash);
+    env.withdraw(&lender, &mint, u64::MAX).unwrap();
+    assert_eq!(env.token_balance(&lender.token), 200_000);
+    assert_eq!(env.market(&mint).cash, 100_000);
+}
+
+#[test]
+fn cannot_withdraw_more_than_own_shares() {
+    let (mut env, mint) = Env::with_cngn_market();
+    let big = env.new_lender(&mint, ONE_CNGN);
+    let small = env.new_lender(&mint, 1_000);
+    env.deposit(&big, &mint, ONE_CNGN).unwrap();
+    env.deposit(&small, &mint, 1_000).unwrap();
+    assert_hodl_error(env.withdraw(&small, &mint, 2_000), HodlError::InsufficientShares);
+}
+
+#[test]
+fn withdraw_works_while_paused_but_not_when_blacklisted() {
+    let (mut env, mint) = Env::with_cngn_market();
+    let lender = env.new_lender(&mint, ONE_CNGN);
+    env.deposit(&lender, &mint, ONE_CNGN).unwrap();
+
+    let pause = set_market_paused_ix(&env.guardian.pubkey(), &mint, true);
+    send(&mut env.svm, &[pause], &[&env.guardian]).unwrap();
+    env.withdraw(&lender, &mint, 100_000).unwrap();
+
+    env.blacklist(&lender.key.pubkey());
+    assert_hodl_error(env.withdraw(&lender, &mint, 100_000), HodlError::Blacklisted);
+}

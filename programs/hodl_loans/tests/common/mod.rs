@@ -444,3 +444,29 @@ impl Env {
         lender.shares
     }
 }
+
+// ---- Lender withdrawals (Task 8) ----
+
+pub fn withdraw_liquidity_ix(owner: &Pubkey, mint: &Pubkey, owner_token: &Pubkey, amount: u64) -> Instruction {
+    let market = market_pda(mint);
+    ix(
+        hodl_loans::instruction::WithdrawLiquidity { amount },
+        hodl_loans::accounts::WithdrawLiquidity {
+            owner: *owner,
+            access: access_pda(owner),
+            market,
+            mint: *mint,
+            vault: market_vault_pda(mint),
+            owner_token: *owner_token,
+            lender: lender_pda(&market, owner),
+            token_program: TOKEN_2022,
+        },
+    )
+}
+
+impl Env {
+    pub fn withdraw(&mut self, lender: &Lender, mint: &Pubkey, amount: u64) -> TxResult {
+        let instruction = withdraw_liquidity_ix(&lender.key.pubkey(), mint, &lender.token, amount);
+        send(&mut self.svm, &[instruction], &[&self.admin, &lender.key])
+    }
+}
