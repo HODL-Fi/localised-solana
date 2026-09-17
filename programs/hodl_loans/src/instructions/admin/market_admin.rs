@@ -14,9 +14,9 @@ pub struct CreateMarket<'info> {
     #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ HodlError::Unauthorized)]
     pub config: Account<'info, Config>,
     #[account(mint::token_program = token_program)]
-    pub mint: InterfaceAccount<'info, Mint>,
+    pub mint: Box<InterfaceAccount<'info, Mint>>,
     #[account(init, payer = admin, space = 8 + Market::INIT_SPACE, seeds = [MARKET_SEED, mint.key().as_ref()], bump)]
-    pub market: Account<'info, Market>,
+    pub market: Box<Account<'info, Market>>,
     #[account(
         init,
         payer = admin,
@@ -26,7 +26,7 @@ pub struct CreateMarket<'info> {
         seeds = [MARKET_VAULT_SEED, mint.key().as_ref()],
         bump
     )]
-    pub vault: InterfaceAccount<'info, TokenAccount>,
+    pub vault: Box<InterfaceAccount<'info, TokenAccount>>,
     pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
@@ -37,7 +37,7 @@ pub struct UpdateMarketParams<'info> {
     #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ HodlError::Unauthorized)]
     pub config: Account<'info, Config>,
     #[account(mut, seeds = [MARKET_SEED, market.mint.as_ref()], bump = market.bump)]
-    pub market: Account<'info, Market>,
+    pub market: Box<Account<'info, Market>>,
 }
 
 #[derive(Accounts)]
@@ -46,7 +46,7 @@ pub struct SetMarketPaused<'info> {
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, Config>,
     #[account(mut, seeds = [MARKET_SEED, market.mint.as_ref()], bump = market.bump)]
-    pub market: Account<'info, Market>,
+    pub market: Box<Account<'info, Market>>,
 }
 
 pub fn handle_create_market(ctx: Context<CreateMarket>, params: MarketParams) -> Result<()> {
