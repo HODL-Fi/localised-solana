@@ -84,3 +84,10 @@ pub struct LiquidityWithdrawn {
     pub amount: u64,
     pub shares: u128,
 }
+
+#[event]
+pub struct ExcessSwept {
+    pub vault: Pubkey,
+    pub destination: Pubkey,
+    pub amount: u64,
+}

@@ -72,6 +72,10 @@ pub mod hodl_loans {
         instructions::handle_set_market_paused(ctx, paused)
     }
 
+    pub fn sweep_market_excess(ctx: Context<SweepMarketExcess>) -> Result<()> {
+        instructions::handle_sweep_market_excess(ctx)
+    }
+
     pub fn deposit_liquidity(ctx: Context<DepositLiquidity>, amount: u64) -> Result<()> {
         instructions::handle_deposit_liquidity(ctx, amount)
     }

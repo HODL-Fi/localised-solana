@@ -470,3 +470,20 @@ impl Env {
         send(&mut self.svm, &[instruction], &[&self.admin, &lender.key])
     }
 }
+
+// ---- Sweep (Task 9) ----
+
+pub fn sweep_market_excess_ix(admin: &Pubkey, mint: &Pubkey, destination: &Pubkey) -> Instruction {
+    ix(
+        hodl_loans::instruction::SweepMarketExcess {},
+        hodl_loans::accounts::SweepMarketExcess {
+            admin: *admin,
+            config: config_pda(),
+            market: market_pda(mint),
+            mint: *mint,
+            vault: market_vault_pda(mint),
+            destination: *destination,
+            token_program: TOKEN_2022,
+        },
+    )
+}
