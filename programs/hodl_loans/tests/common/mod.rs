@@ -869,3 +869,48 @@ impl Env {
         send(&mut self.svm, &[instruction], &[&self.admin, &setup.borrower.key])
     }
 }
+
+// ---- Collateral withdrawals (Task 8) ----
+
+/// `market_mint` is the borrowed market's mint; pass `None` when the position has no active loans.
+pub fn withdraw_collateral_ix(
+    owner: &Pubkey,
+    mint: &Pubkey,
+    token_program: &Pubkey,
+    owner_token: &Pubkey,
+    market_mint: Option<&Pubkey>,
+    amount: u64,
+    prices: Vec<AccountMeta>,
+) -> Instruction {
+    let mut instruction = ix(
+        hodl_loans::instruction::WithdrawCollateral { amount },
+        hodl_loans::accounts::WithdrawCollateral {
+            owner: *owner,
+            access: access_pda(owner),
+            position: position_pda(owner),
+            collateral: collateral_pda(mint),
+            mint: *mint,
+            vault: collateral_vault_pda(mint),
+            owner_token: *owner_token,
+            market: market_mint.map(market_pda),
+            ngn_feed: market_mint.map(|_| ngn_feed()),
+            token_program: *token_program,
+        },
+    );
+    instruction.accounts.extend(prices);
+    instruction
+}
+
+/// One `(CollateralAsset, PriceUpdateV2, mint)` triple per listed mint, in the order given.
+pub fn price_triples(mints: &[Pubkey]) -> Vec<AccountMeta> {
+    mints
+        .iter()
+        .flat_map(|mint| {
+            [
+                AccountMeta::new_readonly(collateral_pda(mint), false),
+                AccountMeta::new_readonly(pyth_account(mint), false),
+                AccountMeta::new_readonly(*mint, false),
+            ]
+        })
+        .collect()
+}

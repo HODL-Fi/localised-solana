@@ -184,3 +184,12 @@ pub struct LoanPartiallyRepaid {
     pub interest_paid: u64,
     pub remaining_principal: u64,
 }
+
+#[event]
+pub struct CollateralWithdrawn {
+    pub position: Pubkey,
+    pub owner: Pubkey,
+    pub mint: Pubkey,
+    pub amount: u64,
+    pub slot_amount: u64,
+}

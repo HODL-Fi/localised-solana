@@ -110,6 +110,10 @@ pub mod hodl_loans {
         instructions::handle_deposit_collateral(ctx, amount)
     }
 
+    pub fn withdraw_collateral<'info>(ctx: Context<'info, WithdrawCollateral<'info>>, amount: u64) -> Result<()> {
+        instructions::handle_withdraw_collateral(ctx, amount)
+    }
+
     pub fn take_loan<'info>(ctx: Context<'info, TakeLoan<'info>>, amount: u64, tenure_seconds: i64) -> Result<()> {
         instructions::handle_take_loan(ctx, amount, tenure_seconds)
     }
