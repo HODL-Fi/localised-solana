@@ -11,7 +11,7 @@ pub struct Access {
     pub wallet: Pubkey,
     pub whitelisted: bool,
     pub blacklisted: bool,
-    pub reserved: [u8; 32],
+    pub reserved: [u8; 64],
 }
 
 impl Access {

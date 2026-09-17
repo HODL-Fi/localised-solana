@@ -10,7 +10,7 @@ pub struct LenderPosition {
     pub market: Pubkey,
     pub owner: Pubkey,
     pub shares: u128,
-    pub reserved: [u8; 32],
+    pub reserved: [u8; 64],
 }
 
 impl LenderPosition {

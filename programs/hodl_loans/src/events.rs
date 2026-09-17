@@ -22,6 +22,7 @@ pub struct ConfigInitialized {
 #[event]
 pub struct AdminProposed {
     pub admin: Pubkey,
+    pub old_pending: Option<Pubkey>,
     pub proposed: Pubkey,
 }
 

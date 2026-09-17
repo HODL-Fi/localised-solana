@@ -27,8 +27,9 @@ pub struct AcceptAdmin<'info> {
 
 pub fn handle_propose_admin(ctx: Context<AdminConfig>, proposed: Pubkey) -> Result<()> {
     let config = &mut ctx.accounts.config;
+    let old_pending = config.pending_admin;
     config.pending_admin = Some(proposed);
-    emit!(AdminProposed { admin: config.admin, proposed });
+    emit!(AdminProposed { admin: config.admin, old_pending, proposed });
     Ok(())
 }
 
