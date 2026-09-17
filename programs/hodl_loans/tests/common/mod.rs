@@ -238,3 +238,49 @@ impl Env {
         StateWithExtensions::<TokenAccountState>::unpack(&account.data).unwrap().base.owner
     }
 }
+
+// ---- Config and roles (Task 4) ----
+
+impl Env {
+    pub fn init_args(&self) -> hodl_loans::InitializeArgs {
+        hodl_loans::InitializeArgs {
+            guardian: self.guardian.pubkey(),
+            whitelister: self.whitelister.pubkey(),
+            promo_signer: self.promo_signer.pubkey(),
+            treasury: self.treasury.pubkey(),
+        }
+    }
+
+    pub fn initialize_ix(&self, authority: &Pubkey) -> Instruction {
+        ix(
+            hodl_loans::instruction::Initialize { args: self.init_args() },
+            hodl_loans::accounts::Initialize {
+                authority: *authority,
+                config: config_pda(),
+                program: hodl_loans::ID,
+                program_data: get_program_data_address(&hodl_loans::ID),
+                system_program: system_program::ID,
+            },
+        )
+    }
+
+    /// `new()` followed by a successful `initialize`.
+    pub fn initialized() -> Self {
+        let mut env = Self::new();
+        env.initialize().unwrap();
+        env
+    }
+
+    pub fn initialize(&mut self) -> TxResult {
+        let instruction = self.initialize_ix(&self.admin.pubkey());
+        send(&mut self.svm, &[instruction], &[&self.admin])
+    }
+
+    pub fn config(&self) -> hodl_loans::Config {
+        self.fetch(&config_pda())
+    }
+}
+
+pub fn admin_config_accounts(admin: &Pubkey) -> hodl_loans::accounts::AdminConfig {
+    hodl_loans::accounts::AdminConfig { admin: *admin, config: config_pda() }
+}
