@@ -103,7 +103,7 @@ lendbit-solana/
 | `MIN_TENURE` | 86_400 seconds |
 | `VIRTUAL_SHARES` | 1_000 |
 | `VIRTUAL_ASSETS` | 1 |
-| `USD_SCALE` | 10^18 (fixed-point USD used in all health math) |
+| `USD_SCALE` | 10^12 (fixed-point USD used in all health math; 10^18 would let `amount × price` overflow `u128` for large balances) |
 
 ## 7. Accounts
 
@@ -127,6 +127,7 @@ Every account starts with `version: u8` and `bump: u8`, and ends with reserved p
 | `total_bad_debt` | u128 | Running total of written-off value |
 | `total_shares` | u128 | Lender shares outstanding |
 | `last_accrual_ts` | i64 | Last interest accrual |
+| `accrual_remainder` | u128 | Division remainder carried from one accrual to the next (§9) |
 | `interest_rate_bps`, `penalty_rate_bps`, `reserve_factor_bps` | u16 | Terms for **new** loans |
 | `max_utilization_bps` | u16 | Default 9_000 |
 | `min_loan_amount` | u64 | Smallest loan |
@@ -142,7 +143,7 @@ Every account starts with `version: u8` and `bump: u8`, and ends with reserved p
 
 | Field | Meaning |
 |---|---|
-| `mint`, `token_program`, `vault`, `decimals` | Collateral mint, program, custody vault owned by this PDA, decimals |
+| `mint`, `token_program`, `vault`, `decimals` | Collateral mint, program, custody vault (seeds `["collateral_vault", mint]`, owned by this PDA), decimals |
 | `kind` | `Standard` or `XStock` (enables Token-2022 extension checks and the scaled-UI multiplier) |
 | `pyth_feed_id: [u8; 32]` | Pyth feed |
 | `max_price_age_seconds`, `max_conf_bps` | Pyth read limits |
@@ -155,13 +156,16 @@ Every account starts with `version: u8` and `bump: u8`, and ends with reserved p
 | Field | Meaning |
 |---|---|
 | `owner`, `rent_payer` | Borrower; who paid the account rent |
+| `market` | The market all of this position's loans come from; `Pubkey::default()` until the first loan. Loans from another market fail with `MarketMismatch` |
 | `collateral: [CollateralSlot; 8]` | `{ mint: Pubkey, amount: u64 }`; `amount == 0` means the slot is free |
 | `loans: [LoanSlot; 10]` | See below |
 | `next_loan_id: u64` | Loan IDs count up per position and are never reused |
 | `promo_balance: u64` | cNGN-denominated promo |
 | `promo_last_activity_at: i64` | Start of the promo inactivity window |
 
-`LoanSlot`: `active: bool`, `id: u64`, `principal: u64`, `original_principal: u64`, `repaid: u64`, `originated_at: i64`, `interest_anchor: i64`, `tenure_seconds: i64`, `rate_bps: u16`, `penalty_rate_bps: u16`, `reserve_factor_bps: u16`.
+`LoanSlot`: `id: u64`, `principal: u64`, `original_principal: u64`, `repaid: u64`, `originated_at: i64`, `interest_anchor: i64`, `tenure_seconds: i64`, `rate_bps: u16`, `penalty_rate_bps: u16`, `reserve_factor_bps: u16`, `active: u8` (`0` = free; a closed slot is zeroed).
+
+`Position` is a zero-copy account with no `Option` fields, so bots can read it at fixed offsets.
 
 ### `LenderPosition` — seeds `["lender", market, owner]`
 
@@ -188,13 +192,15 @@ Every account starts with `version: u8` and `bump: u8`, and ends with reserved p
 ### Price reads
 
 **Pyth (collateral):**
-- Read the `PriceUpdateV2` account with `get_price_no_older_than(max_price_age_seconds, pyth_feed_id)`, and require full verification.
+- The account must be owned by the Pyth receiver program (`rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ`).
+- Read the `PriceUpdateV2` account with `get_price_no_older_than(max_price_age_seconds, pyth_feed_id)`, and require full verification. A too-old price fails with `StalePrice`, another feed with `PriceAccountMismatch`, anything else (such as partial verification or a non-positive price) with `InvalidPrice`.
 - Reject when `conf × BPS > price × max_conf_bps`.
 - Convert price and confidence to `USD_SCALE` using the feed exponent.
 
 **Switchboard (cNGN):**
-- Read the `ngn_feed` pull feed with `ngn_max_stale_slots` and `ngn_min_samples`, and require a positive value.
-- Reject when the feed's spread exceeds `ngn_max_spread_bps` of its value.
+- The account address must equal `market.ngn_feed`, and its data must carry the `PullFeedAccountData` discriminator.
+- Read the aggregated `result`. Fail with `StalePrice` when `result.slot` is 0, older than `ngn_max_stale_slots`, or has fewer than `ngn_min_samples` samples. Require a positive value.
+- The spread is `result.std_dev`. Reject when it exceeds `ngn_max_spread_bps` of the value.
 - Treat 1 cNGN as 1 NGN.
 
 ### xStock multiplier
@@ -243,6 +249,9 @@ Market rules, enforced by `create_market` and `update_market_params`:
 - `reserve_factor_bps ≤ BPS`
 - `max_utilization_bps ≤ BPS`
 - `MIN_TENURE ≤ max_tenure_seconds`
+- `interest_rate_bps ≤ BPS` and `penalty_rate_bps ≤ BPS`
+- `ngn_feed` is not the default key; `ngn_max_stale_slots > 0`; `ngn_min_samples ≥ 1`; `ngn_max_spread_bps ≤ BPS`
+- `promo_inactivity_seconds ≥ 0`
 
 `set_promo_cap` rejects a value that breaks the second collateral rule for any listed asset. Every `CollateralAsset` account is passed as a remaining account, and the count must equal `config.collateral_count`, so none can be skipped. `list_collateral` increments `collateral_count` and `delist_collateral` decrements it.
 
@@ -265,9 +274,11 @@ Market rules, enforced by `create_market` and `update_market_params`:
 ### Accrual — run first by every instruction that touches the market
 
 ```text
-elapsed          = now − last_accrual_ts
-accrued_interest += lp_rate_product × elapsed / (BPS × BPS × YEAR)     (round down)
-last_accrual_ts  = now
+elapsed           = now − last_accrual_ts
+numerator         = lp_rate_product × elapsed + accrual_remainder
+accrued_interest += numerator / (BPS × BPS × YEAR)     (round down)
+accrual_remainder = numerator mod (BPS × BPS × YEAR)
+last_accrual_ts   = now
 ```
 
 ### Total assets
@@ -319,19 +330,19 @@ due      = interest + penalty
 
 ### `take_loan(amount, tenure_seconds)`
 
-1. Require the signer's `Access` (whitelisted, not blacklisted), the market not paused, and `amount ≥ min_loan_amount`.
+1. Require the signer's `Access` (whitelisted, not blacklisted), the market not paused, `amount ≥ min_loan_amount`, and `position.market` unset or equal to this market (`MarketMismatch`).
 2. Require `MIN_TENURE ≤ tenure_seconds ≤ max_tenure_seconds`, and a free loan slot.
 3. Accrue. If the position has no active loans and `now ≥ promo_last_activity_at + promo_inactivity_seconds`, expire the promo (see §12).
 4. Check the utilization cap.
 5. Require `debt + amount's value ≤ borrow_limit`.
 6. Write the slot: `id = next_loan_id++`, principal and original principal = `amount`, `originated_at = interest_anchor = now`, and the rate, penalty rate and reserve factor copied from the market.
-7. `total_borrows += amount`; `lp_rate_product += amount × rate × (BPS − reserve_factor)`; `cash −= amount`; `promo_last_activity_at = now`.
+7. `total_borrows += amount`; `lp_rate_product += amount × rate × (BPS − reserve_factor)`; `cash −= amount`; `promo_last_activity_at = now`; `position.market = market`.
 8. Transfer `amount` cNGN from the market vault to a cNGN token account owned by the borrower. Emit `LoanOpened`.
 
 ### `repay_loan(position, loan_id, amount)`
 
 1. Require the payer's `Access`. The payer doesn't need to own the position.
-2. Accrue. Find the active slot with `id == loan_id`.
+2. Accrue. Require `position.market` to be this market (`MarketMismatch`). Find the active slot with `id == loan_id`.
 3. `amount = min(amount, balance)`. Require `amount ≥ due` (`RepaymentBelowInterest`).
 4. `principal_repaid = amount − due`. Release `R(principal, loan)` from `accrued_interest`.
 5. `reserve = due × reserve_factor_bps / BPS` (round down); `protocol_reserve += reserve`.
@@ -463,10 +474,11 @@ At maximum borrowing, debt ≤ own value × (LTV + promo_cap) ≤ own value × t
 | `set_market_paused` | Guardian (`true` only) or admin | |
 | `list_collateral`, `update_collateral_params` | Admin | Rules in §8; `list_collateral` checks extensions (§14) |
 | `set_collateral_paused` | Guardian (`true` only) or admin | |
-| `delist_collateral` | Admin | Requires `total_deposited == 0` |
+| `delist_collateral` | Admin | Requires `total_deposited == 0` and an empty vault; closes the vault and the asset account |
+| `sweep_collateral_excess` | Admin | Moves `vault balance − total_deposited` to the treasury (§9) |
 | `whitelist` | Whitelister or admin | Creates `Access` if missing; fails if blacklisted |
 | `blacklist`, `unblacklist` | Admin | `blacklist` also clears `whitelisted`; `unblacklist` does not re-whitelist |
-| `harvest_reserve(amount)` | Admin | `amount ≤ protocol_reserve`; `cash` and `protocol_reserve` both decrease |
+| `harvest_reserve(amount)` | Admin | `amount ≤ protocol_reserve` (else `InsufficientCash`); `cash` and `protocol_reserve` both decrease |
 | `sweep_excess` | Admin | §9 |
 | `write_off_loan` | Admin | §11 |
 | `fund_promo_vault`, `withdraw_promo_vault`, `create_campaign`, `close_campaign`, `revoke_promo` | Admin | §12 |
@@ -479,7 +491,7 @@ At maximum borrowing, debt ≤ own value × (LTV + promo_cap) ≤ own value × t
 | `open_position` | Whitelisted user; any fee payer | Records `rent_payer` |
 | `close_position` | Whitelisted owner | Requires no collateral and no active loans; releases promo; refunds rent to `rent_payer` |
 | `deposit_collateral(amount)` | Whitelisted owner | Mint comes from the accounts. Asset not paused, under deposit cap, free or matching slot; no prices needed |
-| `withdraw_collateral(amount)` | Whitelisted owner | Mint comes from the accounts. Accrue; if loans are active, require `debt ≤ borrow_limit` afterwards |
+| `withdraw_collateral(amount)` | Whitelisted owner | Mint comes from the accounts. More than the slot holds fails with `InsufficientCollateral`. If loans are active, the `market` (must equal `position.market`) and `ngn_feed` accounts are required, price triples cover the slots still used after the withdrawal, and `debt ≤ borrow_limit` must hold afterwards. No accrual: it doesn't change a position's debt |
 | `take_loan`, `repay_loan` | Whitelisted | §10 |
 | `redeem_promo` | Whitelisted | §12 |
 
@@ -513,7 +525,7 @@ At maximum borrowing, debt ≤ own value × (LTV + promo_cap) ≤ own value × t
 
 ## 16. Errors
 
-`NotWhitelisted`, `Blacklisted`, `Unauthorized`, `MarketPaused`, `CollateralPaused`, `StalePrice`, `PriceConfidenceTooWide`, `PriceAccountMismatch`, `InvalidPrice`, `UnsupportedMintExtension`, `InvalidParameters`, `Unhealthy`, `NotLiquidatable`, `UtilizationCapExceeded`, `InsufficientCash`, `NoFreeLoanSlot`, `NoFreeCollateralSlot`, `LoanNotFound`, `DepositCapExceeded`, `AmountTooSmall`, `TenureOutOfRange`, `RepaymentBelowInterest`, `ZeroPrincipalRepaid`, `ZeroShares`, `InsufficientShares`, `CollateralStillInUse`, `PositionNotEmpty`, `WriteOffNotAllowed`, `InvalidVoucherSignature`, `VoucherExpired`, `CampaignInactive`, `CampaignBudgetExceeded`, `PromoCapExceeded`, `PromoNotExpired`, `PromoVaultInsufficient`, `MathOverflow`.
+`NotWhitelisted`, `Blacklisted`, `Unauthorized`, `MarketPaused`, `CollateralPaused`, `StalePrice`, `PriceConfidenceTooWide`, `PriceAccountMismatch`, `InvalidPrice`, `UnsupportedMintExtension`, `InvalidParameters`, `Unhealthy`, `NotLiquidatable`, `UtilizationCapExceeded`, `InsufficientCash`, `NoFreeLoanSlot`, `NoFreeCollateralSlot`, `LoanNotFound`, `DepositCapExceeded`, `AmountTooSmall`, `TenureOutOfRange`, `RepaymentBelowInterest`, `ZeroPrincipalRepaid`, `ZeroShares`, `InsufficientShares`, `CollateralStillInUse`, `PositionNotEmpty`, `WriteOffNotAllowed`, `InvalidVoucherSignature`, `VoucherExpired`, `CampaignInactive`, `CampaignBudgetExceeded`, `PromoCapExceeded`, `PromoNotExpired`, `PromoVaultInsufficient`, `MathOverflow`, `MarketMismatch`, `InsufficientCollateral`.
 
 ## 17. Events
 
