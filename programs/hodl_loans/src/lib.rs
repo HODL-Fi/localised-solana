@@ -8,6 +8,7 @@ pub mod math;
 pub mod oracle;
 pub mod state;
 pub mod token;
+pub mod valuation;
 
 pub use constants::*;
 pub use errors::*;
@@ -107,6 +108,10 @@ pub mod hodl_loans {
 
     pub fn deposit_collateral(ctx: Context<DepositCollateral>, amount: u64) -> Result<()> {
         instructions::handle_deposit_collateral(ctx, amount)
+    }
+
+    pub fn take_loan<'info>(ctx: Context<'info, TakeLoan<'info>>, amount: u64, tenure_seconds: i64) -> Result<()> {
+        instructions::handle_take_loan(ctx, amount, tenure_seconds)
     }
 
     pub fn deposit_liquidity(ctx: Context<DepositLiquidity>, amount: u64) -> Result<()> {

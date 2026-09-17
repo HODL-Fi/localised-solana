@@ -3,7 +3,7 @@
 use anchor_lang::{
     prelude::{Clock, ProgramData, Pubkey},
     solana_program::{
-        bpf_loader_upgradeable::get_program_data_address, instruction::Instruction, system_instruction,
+        bpf_loader_upgradeable::get_program_data_address, instruction::{AccountMeta, Instruction}, system_instruction,
         system_program,
     },
     AccountDeserialize, AccountSerialize, InstructionData, ToAccountMetas,
@@ -678,5 +678,167 @@ impl Env {
         let instruction = deposit_collateral_ix(&borrower.pubkey(), mint, &program, &token, amount);
         send(&mut self.svm, &[instruction], &[&self.admin, &borrower.key]).expect("deposit collateral");
         token
+    }
+}
+
+// ---- Prices and loans (Task 6) ----
+
+/// $0.000625 per NGN (NGN/USD 1,600) at Switchboard's 18 decimals.
+pub const NGN_USD: i128 = 625_000_000_000_000;
+/// A 0.1% spread on `NGN_USD`.
+pub const NGN_SPREAD: i128 = 625_000_000_000;
+/// $1.00 at Pyth exponent -8.
+pub const ONE_DOLLAR: i64 = 100_000_000;
+
+/// Where tests store a mint's Pyth `PriceUpdateV2` account.
+pub fn pyth_account(mint: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[b"pyth", mint.as_ref()], &pyth_solana_receiver_sdk::ID).0
+}
+
+pub fn ngn_feed() -> Pubkey {
+    default_market_params().ngn_feed
+}
+
+/// Raw Switchboard `PullFeedAccountData` with only the aggregated result set.
+pub fn pull_feed_data(value: i128, std_dev: i128, slot: u64, num_samples: u8) -> Vec<u8> {
+    use switchboard_on_demand::{Discriminator, PullFeedAccountData};
+    let mut feed: PullFeedAccountData = bytemuck::Zeroable::zeroed();
+    feed.result.value = value;
+    feed.result.std_dev = std_dev;
+    feed.result.slot = slot;
+    feed.result.num_samples = num_samples;
+    let mut data = PullFeedAccountData::DISCRIMINATOR.to_vec();
+    data.extend_from_slice(bytemuck::bytes_of(&feed));
+    data
+}
+
+pub fn price_update_data(
+    mint: &Pubkey,
+    price: i64,
+    conf: u64,
+    publish_time: i64,
+    level: pyth_solana_receiver_sdk::price_update::VerificationLevel,
+) -> Vec<u8> {
+    use pyth_solana_receiver_sdk::price_update::{PriceFeedMessage, PriceUpdateV2};
+    let update = PriceUpdateV2 {
+        write_authority: Pubkey::new_unique(),
+        verification_level: level,
+        price_message: PriceFeedMessage {
+            feed_id: feed_id(mint),
+            price,
+            conf,
+            exponent: -8,
+            publish_time,
+            prev_publish_time: publish_time - 1,
+            ema_price: price,
+            ema_conf: conf,
+        },
+        posted_slot: 1,
+    };
+    let mut data = Vec::new();
+    update.try_serialize(&mut data).unwrap();
+    data
+}
+
+pub fn take_loan_ix(owner: &Pubkey, mint: &Pubkey, owner_token: &Pubkey, amount: u64, tenure_seconds: i64, prices: Vec<AccountMeta>) -> Instruction {
+    let mut instruction = ix(
+        hodl_loans::instruction::TakeLoan { amount, tenure_seconds },
+        hodl_loans::accounts::TakeLoan {
+            owner: *owner,
+            access: access_pda(owner),
+            position: position_pda(owner),
+            market: market_pda(mint),
+            mint: *mint,
+            vault: market_vault_pda(mint),
+            owner_token: *owner_token,
+            ngn_feed: ngn_feed(),
+            token_program: TOKEN_2022,
+        },
+    );
+    instruction.accounts.extend(prices);
+    instruction
+}
+
+impl Env {
+    pub fn set_account_data(&mut self, key: &Pubkey, owner: &Pubkey, data: Vec<u8>) {
+        let account = solana_account::Account {
+            lamports: self.svm.minimum_balance_for_rent_exemption(data.len()),
+            data,
+            owner: *owner,
+            executable: false,
+            rent_epoch: 0,
+        };
+        self.svm.set_account(*key, account).unwrap();
+    }
+
+    /// Writes a fully verified Pyth price (exponent -8) for `mint`, published now.
+    pub fn set_pyth_price(&mut self, mint: &Pubkey, price: i64, conf: u64) {
+        let now = self.now();
+        let data = price_update_data(mint, price, conf, now, pyth_solana_receiver_sdk::price_update::VerificationLevel::Full);
+        self.set_account_data(&pyth_account(mint), &pyth_solana_receiver_sdk::ID, data);
+    }
+
+    /// Writes the Switchboard NGN/USD result at the current slot with 5 samples.
+    pub fn set_ngn_price(&mut self, value: i128, std_dev: i128) {
+        let slot = self.svm.get_sysvar::<Clock>().slot;
+        self.set_account_data(&ngn_feed(), &switchboard_on_demand::ON_DEMAND_MAINNET_PID, pull_feed_data(value, std_dev, slot, 5));
+    }
+
+    /// One `(CollateralAsset, PriceUpdateV2, mint)` triple per used collateral slot, in slot order.
+    pub fn price_accounts(&self, owner: &Pubkey) -> Vec<AccountMeta> {
+        let position = self.position(owner);
+        position
+            .collateral
+            .iter()
+            .filter(|slot| slot.amount > 0)
+            .flat_map(|slot| {
+                [
+                    AccountMeta::new_readonly(collateral_pda(&slot.mint), false),
+                    AccountMeta::new_readonly(pyth_account(&slot.mint), false),
+                    AccountMeta::new_readonly(slot.mint, false),
+                ]
+            })
+            .collect()
+    }
+
+    pub fn take_loan(&mut self, borrower: &Borrower, setup: &LoanSetup, amount: u64, tenure_seconds: i64) -> TxResult {
+        let prices = self.price_accounts(&borrower.pubkey());
+        let instruction = take_loan_ix(&borrower.pubkey(), &setup.cngn, &setup.borrower_cngn, amount, tenure_seconds, prices);
+        send(&mut self.svm, &[instruction], &[&self.admin, &borrower.key])
+    }
+}
+
+/// A market ready to lend: see `Env::loan_ready`.
+pub struct LoanSetup {
+    pub cngn: Pubkey,
+    pub usdc: Pubkey,
+    pub lender: Lender,
+    pub borrower: Borrower,
+    /// The borrower's cNGN token account (loans are paid here).
+    pub borrower_cngn: Pubkey,
+}
+
+/// Lender liquidity in `Env::loan_ready`: 10,000,000 cNGN.
+pub const POOL_CNGN: u64 = 10_000_000 * ONE_CNGN;
+
+impl Env {
+    /// cNGN market holding `POOL_CNGN` of lender liquidity; NGN at `NGN_USD` with a 0.1% spread;
+    /// USDC (6 decimals, classic SPL Token) listed at exactly $1; and a borrower with 1,000 USDC
+    /// deposited, so the borrow limit is $700.
+    pub fn loan_ready() -> (Self, LoanSetup) {
+        let (mut env, cngn) = Self::with_cngn_market();
+        // The program reads a Switchboard result from slot 0 as never updated.
+        env.svm.warp_to_slot(1_000);
+        let lender = env.new_lender(&cngn, POOL_CNGN);
+        env.deposit(&lender, &cngn, POOL_CNGN).unwrap();
+        env.set_ngn_price(NGN_USD, NGN_SPREAD);
+
+        let usdc = env.list_spl_collateral(6);
+        env.set_pyth_price(&usdc, ONE_DOLLAR, 0);
+
+        let borrower = env.new_borrower();
+        env.deposit_collateral(&borrower, &usdc, 1_000 * ONE_USDC);
+        let borrower_cngn = env.create_token_account(&cngn, &borrower.pubkey());
+        (env, LoanSetup { cngn, usdc, lender, borrower, borrower_cngn })
     }
 }

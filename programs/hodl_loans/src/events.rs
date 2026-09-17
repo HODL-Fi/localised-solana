@@ -144,3 +144,17 @@ pub struct CollateralDeposited {
     pub amount: u64,
     pub slot_amount: u64,
 }
+
+#[event]
+pub struct LoanOpened {
+    pub market: Pubkey,
+    pub position: Pubkey,
+    pub owner: Pubkey,
+    pub loan_id: u64,
+    pub principal: u64,
+    pub tenure_seconds: i64,
+    pub rate_bps: u16,
+    pub penalty_rate_bps: u16,
+    pub reserve_factor_bps: u16,
+    pub originated_at: i64,
+}
