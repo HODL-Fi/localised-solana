@@ -63,6 +63,9 @@ The spec is split into six plans. Each one produces a working, tested program. L
 - The spec's `sweep_excess` becomes one instruction per vault type. This plan adds `sweep_market_excess`; Plans 2 and 5 add collateral and promo sweeps.
 - `deposit_liquidity` takes a separate `payer` signer, so the gas-relay sponsor can pay lender-account rent for wallets holding no SOL.
 - The upgrade authority becomes the first admin. `accept_admin` does not move the upgrade authority; that is a separate Squads action.
+- A wallet that was never whitelisted has no `Access` account, so user instructions fail with Anchor's `AccountNotInitialized` (3012) rather than `HodlError::NotWhitelisted`. Clients should treat both codes as "not whitelisted".
+- The module layout differs from spec §5: `instructions/liquidity/` (not `lender/`), `math/checked.rs` (not `fixed_point.rs`), and no `Anchor.toml` yet (Plan 6 adds the deploy tooling).
+- Rulings made during execution: `AccessUpdated`, `MarketPauseSet` and `AdminProposed` carry old values (spec §17); `Market` and `InterfaceAccount` fields are boxed in admin instructions too; `LenderPosition` and `Access` reserve 64 bytes.
 
 ## File Structure
 
