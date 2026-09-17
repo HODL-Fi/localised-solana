@@ -931,3 +931,16 @@ pub fn harvest_reserve_ix(admin: &Pubkey, mint: &Pubkey, destination: &Pubkey, a
         },
     )
 }
+
+// ---- Compute budget measurement (test-only) ----
+
+/// Like `send`, but returns the compute units the transaction consumed instead of `()`. Only
+/// the compute-budget stress test needs the CU number; every other test uses `send`.
+pub fn send_cu(svm: &mut LiteSVM, ixs: &[Instruction], signers: &[&Keypair]) -> Result<u64, String> {
+    svm.expire_blockhash();
+    let msg = Message::new_with_blockhash(ixs, Some(&signers[0].pubkey()), &svm.latest_blockhash());
+    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), signers).unwrap();
+    svm.send_transaction(tx)
+        .map(|m| m.compute_units_consumed)
+        .map_err(|e| format!("{:?} cu={} logs: {:#?}", e.err, e.meta.compute_units_consumed, e.meta.logs))
+}

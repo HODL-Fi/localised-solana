@@ -7,11 +7,13 @@ use crate::state::Market;
 
 /// Read the market's Switchboard On-Demand NGN/USD pull feed.
 ///
-/// The account address must equal `market.ngn_feed` (set by the admin), so only the feed's
-/// owner program can have written it; the data must carry the `PullFeedAccountData`
-/// discriminator and full length. Only the 128-byte aggregated `result` is copied out (by
-/// offset, unaligned), keeping the 3.2 KB feed off the stack. `value` is the price and
-/// `std_dev` the spread.
+/// The account address is pinned to `market.ngn_feed`, which the admin sets, and the data must
+/// carry the `PullFeedAccountData` discriminator and full length. There is no check that the
+/// account is owned by the Switchboard On-Demand program: this trusts the admin's choice of
+/// feed and, transitively, whichever authority controls that feed's writes. Adding an owner
+/// check against the Switchboard On-Demand program ID is deferred to Plan 6 hardening. Only the
+/// 128-byte aggregated `result` is copied out (by offset, unaligned), keeping the 3.2 KB feed
+/// off the stack. `value` is the price and `std_dev` the spread.
 pub fn read_ngn_price(account: &AccountInfo, market: &Market, clock: &Clock) -> Result<UsdPrice> {
     require_keys_eq!(account.key(), market.ngn_feed, HodlError::PriceAccountMismatch);
     let data = account.try_borrow_data()?;
