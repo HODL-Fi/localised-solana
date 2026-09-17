@@ -71,4 +71,8 @@ pub mod hodl_loans {
     pub fn set_market_paused(ctx: Context<SetMarketPaused>, paused: bool) -> Result<()> {
         instructions::handle_set_market_paused(ctx, paused)
     }
+
+    pub fn deposit_liquidity(ctx: Context<DepositLiquidity>, amount: u64) -> Result<()> {
+        instructions::handle_deposit_liquidity(ctx, amount)
+    }
 }

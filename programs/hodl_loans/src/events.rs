@@ -68,3 +68,11 @@ pub struct MarketPauseSet {
     pub paused: bool,
     pub by: Pubkey,
 }
+
+#[event]
+pub struct LiquidityDeposited {
+    pub market: Pubkey,
+    pub owner: Pubkey,
+    pub amount: u64,
+    pub shares: u128,
+}

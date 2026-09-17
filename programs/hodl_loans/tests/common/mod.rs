@@ -397,3 +397,50 @@ impl Env {
         self.fetch(&market_pda(mint))
     }
 }
+
+// ---- Lender deposits (Task 7) ----
+
+pub fn deposit_liquidity_ix(payer: &Pubkey, owner: &Pubkey, mint: &Pubkey, owner_token: &Pubkey, amount: u64) -> Instruction {
+    let market = market_pda(mint);
+    ix(
+        hodl_loans::instruction::DepositLiquidity { amount },
+        hodl_loans::accounts::DepositLiquidity {
+            payer: *payer,
+            owner: *owner,
+            access: access_pda(owner),
+            market,
+            mint: *mint,
+            vault: market_vault_pda(mint),
+            owner_token: *owner_token,
+            lender: lender_pda(&market, owner),
+            token_program: TOKEN_2022,
+            system_program: system_program::ID,
+        },
+    )
+}
+
+pub struct Lender {
+    pub key: Keypair,
+    pub token: Pubkey,
+}
+
+impl Env {
+    /// A whitelisted wallet holding `balance` cNGN and no SOL (the admin pays its fees and rent).
+    pub fn new_lender(&mut self, mint: &Pubkey, balance: u64) -> Lender {
+        let key = Keypair::new();
+        self.whitelist(&key.pubkey());
+        let token = self.create_token_account(mint, &key.pubkey());
+        self.mint_to(mint, &token, balance);
+        Lender { key, token }
+    }
+
+    pub fn deposit(&mut self, lender: &Lender, mint: &Pubkey, amount: u64) -> TxResult {
+        let instruction = deposit_liquidity_ix(&self.admin.pubkey(), &lender.key.pubkey(), mint, &lender.token, amount);
+        send(&mut self.svm, &[instruction], &[&self.admin, &lender.key])
+    }
+
+    pub fn lender_shares(&self, mint: &Pubkey, owner: &Pubkey) -> u128 {
+        let lender: hodl_loans::LenderPosition = self.fetch(&lender_pda(&market_pda(mint), owner));
+        lender.shares
+    }
+}
