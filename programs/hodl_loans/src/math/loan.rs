@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 
 use crate::constants::{BPS, YEAR};
 use crate::errors::HodlError;
-use crate::math::checked::{add, mul_div_ceil, mul_div_floor};
+use crate::math::checked::{add, mul_div_ceil, mul_div_floor, sub};
 
 /// The terms of one fixed-term loan, as stored in its slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,7 +72,7 @@ pub fn loan_balance(terms: &LoanTerms, now: i64) -> Result<LoanBalance> {
 
 /// A loan's contribution to `Market::lp_rate_product`.
 pub fn lp_contribution(principal: u64, rate_bps: u16, reserve_factor_bps: u16) -> Result<u128> {
-    mul3(principal as u128, rate_bps as u128, BPS - reserve_factor_bps as u128)
+    mul3(principal as u128, rate_bps as u128, sub(BPS, reserve_factor_bps as u128)?)
 }
 
 /// Lender interest the market has accrued for `principal` of a loan since `interest_anchor`
@@ -169,5 +169,10 @@ mod tests {
         assert_eq!(accrued_lp_interest(1, 1, 0, 0, 1).unwrap(), 0);
         assert_eq!(reserve_share(30_000_000_000, 1_000).unwrap(), 3_000_000_000);
         assert_eq!(reserve_share(9, 1_000).unwrap(), 0);
+    }
+
+    #[test]
+    fn lp_contribution_rejects_reserve_factor_exceeding_bps() {
+        assert!(lp_contribution(1, 1, 10_001).is_err());
     }
 }
