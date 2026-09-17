@@ -83,7 +83,8 @@ pub fn handle_create_market(ctx: Context<CreateMarket>, params: MarketParams) ->
         promo_inactivity_seconds: 0,
         max_promo_per_position: 0,
         paused: false,
-        reserved: [0; 256],
+        accrual_remainder: 0,
+        reserved: [0; 240],
     };
     market.apply_params(&params);
     ctx.accounts.market.set_inner(market);

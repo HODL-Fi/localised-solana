@@ -3,7 +3,7 @@ use anchor_lang::prelude::*;
 use crate::constants::{MAX_BPS, MIN_TENURE};
 use crate::errors::HodlError;
 use crate::math::checked::{add, sub};
-use crate::math::interest::lp_interest;
+use crate::math::interest::accrue_lp_interest;
 
 #[account]
 #[derive(InitSpace)]
@@ -41,7 +41,10 @@ pub struct Market {
     pub promo_inactivity_seconds: i64,
     pub max_promo_per_position: u64,
     pub paused: bool,
-    pub reserved: [u8; 256],
+    /// Division remainder carried between accruals (numerator units of `lp_rate_product × seconds`).
+    /// Taken from the reserved padding, so the account size is unchanged.
+    pub accrual_remainder: u128,
+    pub reserved: [u8; 240],
 }
 
 /// Admin-settable market parameters, used by `create_market` and `update_market_params`.
@@ -64,9 +67,16 @@ pub struct MarketParams {
 
 impl MarketParams {
     pub fn validate(&self) -> Result<()> {
+        require!(self.interest_rate_bps <= MAX_BPS, HodlError::InvalidParameters);
+        require!(self.penalty_rate_bps <= MAX_BPS, HodlError::InvalidParameters);
         require!(self.reserve_factor_bps <= MAX_BPS, HodlError::InvalidParameters);
         require!(self.max_utilization_bps <= MAX_BPS, HodlError::InvalidParameters);
         require!(self.max_tenure_seconds >= MIN_TENURE, HodlError::InvalidParameters);
+        require!(self.ngn_feed != Pubkey::default(), HodlError::InvalidParameters);
+        require!(self.ngn_max_stale_slots > 0, HodlError::InvalidParameters);
+        require!(self.ngn_min_samples >= 1, HodlError::InvalidParameters);
+        require!(self.ngn_max_spread_bps <= MAX_BPS, HodlError::InvalidParameters);
+        require!(self.promo_inactivity_seconds >= 0, HodlError::InvalidParameters);
         Ok(())
     }
 }
@@ -113,8 +123,9 @@ impl Market {
             return Ok(());
         }
         let elapsed = (now - self.last_accrual_ts) as u64;
-        let interest = lp_interest(self.lp_rate_product, elapsed)?;
+        let (interest, remainder) = accrue_lp_interest(self.lp_rate_product, elapsed, self.accrual_remainder)?;
         self.accrued_interest = add(self.accrued_interest, interest)?;
+        self.accrual_remainder = remainder;
         self.last_accrual_ts = now;
         Ok(())
     }

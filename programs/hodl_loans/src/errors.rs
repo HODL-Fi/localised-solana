@@ -75,4 +75,8 @@ pub enum HodlError {
     PromoVaultInsufficient,
     #[msg("Math overflow")]
     MathOverflow,
+    #[msg("Position's loans belong to a different market")]
+    MarketMismatch,
+    #[msg("Not enough collateral in the position")]
+    InsufficientCollateral,
 }

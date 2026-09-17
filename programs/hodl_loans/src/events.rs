@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-use crate::state::MarketParams;
+use crate::state::{CollateralParams, MarketParams};
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Role {
@@ -91,4 +91,114 @@ pub struct ExcessSwept {
     pub vault: Pubkey,
     pub destination: Pubkey,
     pub amount: u64,
+}
+
+#[event]
+pub struct CollateralListed {
+    pub collateral: Pubkey,
+    pub mint: Pubkey,
+    pub vault: Pubkey,
+    pub params: CollateralParams,
+}
+
+#[event]
+pub struct CollateralParamsUpdated {
+    pub collateral: Pubkey,
+    pub old: CollateralParams,
+    pub new: CollateralParams,
+}
+
+#[event]
+pub struct CollateralPauseSet {
+    pub collateral: Pubkey,
+    pub old_paused: bool,
+    pub paused: bool,
+    pub by: Pubkey,
+}
+
+#[event]
+pub struct CollateralDelisted {
+    pub collateral: Pubkey,
+    pub mint: Pubkey,
+}
+
+#[event]
+pub struct PositionOpened {
+    pub position: Pubkey,
+    pub owner: Pubkey,
+    pub rent_payer: Pubkey,
+}
+
+#[event]
+pub struct PositionClosed {
+    pub position: Pubkey,
+    pub owner: Pubkey,
+    pub rent_payer: Pubkey,
+}
+
+#[event]
+pub struct CollateralDeposited {
+    pub position: Pubkey,
+    pub owner: Pubkey,
+    pub mint: Pubkey,
+    pub amount: u64,
+    pub slot_amount: u64,
+}
+
+#[event]
+pub struct LoanOpened {
+    pub market: Pubkey,
+    pub position: Pubkey,
+    pub owner: Pubkey,
+    pub loan_id: u64,
+    pub principal: u64,
+    pub tenure_seconds: i64,
+    pub rate_bps: u16,
+    pub penalty_rate_bps: u16,
+    pub reserve_factor_bps: u16,
+    pub originated_at: i64,
+}
+
+#[event]
+pub struct LoanRepaid {
+    pub market: Pubkey,
+    pub position: Pubkey,
+    pub owner: Pubkey,
+    pub payer: Pubkey,
+    pub loan_id: u64,
+    pub amount: u64,
+    pub principal_repaid: u64,
+    pub interest_paid: u64,
+    pub remaining_principal: u64,
+}
+
+#[event]
+pub struct LoanPartiallyRepaid {
+    pub market: Pubkey,
+    pub position: Pubkey,
+    pub owner: Pubkey,
+    pub payer: Pubkey,
+    pub loan_id: u64,
+    pub amount: u64,
+    pub principal_repaid: u64,
+    pub interest_paid: u64,
+    pub remaining_principal: u64,
+}
+
+#[event]
+pub struct CollateralWithdrawn {
+    pub position: Pubkey,
+    pub owner: Pubkey,
+    pub mint: Pubkey,
+    pub amount: u64,
+    pub slot_amount: u64,
+}
+
+#[event]
+pub struct ReserveHarvested {
+    pub market: Pubkey,
+    pub destination: Pubkey,
+    pub amount: u64,
+    pub old_reserve: u64,
+    pub new_reserve: u64,
 }

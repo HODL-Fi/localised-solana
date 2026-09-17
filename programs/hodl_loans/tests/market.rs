@@ -107,3 +107,38 @@ fn guardian_pauses_only_admin_unpauses() {
     let stranger_pause = set_market_paused_ix(&stranger.pubkey(), &mint, true);
     assert_hodl_error(send(&mut env.svm, &[stranger_pause], &[&stranger]), HodlError::Unauthorized);
 }
+
+#[test]
+fn rate_bounds_and_price_feed_limits_are_validated() {
+    let mut env = Env::initialized();
+    let mint = env.create_mint(MintKind::CngnLike, 6);
+    let admin = env.admin.pubkey();
+    let base = default_market_params();
+
+    let invalid = [
+        hodl_loans::MarketParams { interest_rate_bps: 10_001, ..base },
+        hodl_loans::MarketParams { penalty_rate_bps: 10_001, ..base },
+        hodl_loans::MarketParams { ngn_feed: anchor_lang::prelude::Pubkey::default(), ..base },
+        hodl_loans::MarketParams { ngn_max_stale_slots: 0, ..base },
+        hodl_loans::MarketParams { ngn_min_samples: 0, ..base },
+        hodl_loans::MarketParams { ngn_max_spread_bps: 10_001, ..base },
+        hodl_loans::MarketParams { promo_inactivity_seconds: -1, ..base },
+    ];
+    for params in invalid {
+        let instruction = create_market_ix(&admin, &mint, &TOKEN_2022, params);
+        assert_hodl_error(send(&mut env.svm, &[instruction], &[&env.admin]), HodlError::InvalidParameters);
+    }
+
+    let boundaries = hodl_loans::MarketParams {
+        interest_rate_bps: 10_000,
+        penalty_rate_bps: 10_000,
+        ngn_max_stale_slots: 1,
+        ngn_min_samples: 1,
+        ngn_max_spread_bps: 10_000,
+        promo_inactivity_seconds: 0,
+        ..base
+    };
+    let instruction = create_market_ix(&admin, &mint, &TOKEN_2022, boundaries);
+    send(&mut env.svm, &[instruction], &[&env.admin]).unwrap();
+    assert_eq!(env.market(&mint).params(), boundaries);
+}

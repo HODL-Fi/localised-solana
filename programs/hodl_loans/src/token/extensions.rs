@@ -15,6 +15,10 @@ pub const MARKET_MINT_EXTENSIONS: &[ExtensionType] = &[
     ExtensionType::PermanentDelegate,
 ];
 
+/// Extensions a `Standard` collateral mint may carry (spec §14): metadata only.
+pub const STANDARD_COLLATERAL_EXTENSIONS: &[ExtensionType] =
+    &[ExtensionType::MetadataPointer, ExtensionType::TokenMetadata];
+
 /// Extension types on a mint. Classic SPL Token mints have none.
 pub fn mint_extension_types(mint: &AccountInfo) -> Result<Vec<ExtensionType>> {
     if *mint.owner != anchor_spl::token_2022::ID {

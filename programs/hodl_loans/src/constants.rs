@@ -17,6 +17,11 @@ pub const MAX_LOAN_SLOTS: usize = 10;
 pub const ACCOUNT_VERSION: u8 = 1;
 
 pub const DEFAULT_PROMO_CAP_BPS: u16 = 2_000;
+/// Fixed-point scale for USD values in price and health math (10^12 per dollar).
+/// 10^12 rather than 10^18 keeps `amount × price` inside u128 for any realistic balance.
+pub const USD_SCALE: u128 = 1_000_000_000_000;
+/// Decimal exponent of `USD_SCALE`.
+pub const USD_DECIMALS: i32 = 12;
 
 #[constant]
 pub const CONFIG_SEED: &[u8] = b"config";
@@ -28,6 +33,12 @@ pub const MARKET_SEED: &[u8] = b"market";
 pub const MARKET_VAULT_SEED: &[u8] = b"market_vault";
 #[constant]
 pub const LENDER_SEED: &[u8] = b"lender";
+#[constant]
+pub const COLLATERAL_SEED: &[u8] = b"collateral";
+#[constant]
+pub const COLLATERAL_VAULT_SEED: &[u8] = b"collateral_vault";
+#[constant]
+pub const POSITION_SEED: &[u8] = b"position";
 
 #[cfg(test)]
 mod tests {
@@ -35,12 +46,22 @@ mod tests {
 
     #[test]
     fn seeds_are_distinct_and_bps_matches() {
-        let seeds = [CONFIG_SEED, ACCESS_SEED, MARKET_SEED, MARKET_VAULT_SEED, LENDER_SEED];
+        let seeds = [
+            CONFIG_SEED,
+            ACCESS_SEED,
+            MARKET_SEED,
+            MARKET_VAULT_SEED,
+            LENDER_SEED,
+            COLLATERAL_SEED,
+            COLLATERAL_VAULT_SEED,
+            POSITION_SEED,
+        ];
         for (i, a) in seeds.iter().enumerate() {
             for b in &seeds[i + 1..] {
                 assert_ne!(a, b);
             }
         }
         assert_eq!(BPS, MAX_BPS as u128);
+        assert_eq!(USD_SCALE, 10u128.pow(USD_DECIMALS as u32));
     }
 }

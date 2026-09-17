@@ -159,7 +159,7 @@ Every account starts with `version: u8` and `bump: u8`, and ends with reserved p
 | `market` | The market all of this position's loans come from; `Pubkey::default()` until the first loan. Loans from another market fail with `MarketMismatch` |
 | `collateral: [CollateralSlot; 8]` | `{ mint: Pubkey, amount: u64 }`; `amount == 0` means the slot is free |
 | `loans: [LoanSlot; 10]` | See below |
-| `next_loan_id: u64` | Loan IDs count up per position and are never reused |
+| `next_loan_id: u64` | Loan IDs count up and are unique for the lifetime of this position account; closing and reopening a position (the PDA is `["position", owner]`) restarts them at `0`, so a backend keyed only on `(position, loan_id)` must disambiguate across that reset, e.g. by `originated_at` |
 | `promo_balance: u64` | cNGN-denominated promo |
 | `promo_last_activity_at: i64` | Start of the promo inactivity window |
 
