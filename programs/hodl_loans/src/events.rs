@@ -1,5 +1,7 @@
 use anchor_lang::prelude::*;
 
+use crate::state::MarketParams;
+
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Role {
     Guardian,
@@ -43,4 +45,26 @@ pub struct AccessUpdated {
     pub old_blacklisted: bool,
     pub whitelisted: bool,
     pub blacklisted: bool,
+}
+
+#[event]
+pub struct MarketCreated {
+    pub market: Pubkey,
+    pub mint: Pubkey,
+    pub vault: Pubkey,
+}
+
+#[event]
+pub struct MarketParamsUpdated {
+    pub market: Pubkey,
+    pub old: MarketParams,
+    pub new: MarketParams,
+}
+
+#[event]
+pub struct MarketPauseSet {
+    pub market: Pubkey,
+    pub old_paused: bool,
+    pub paused: bool,
+    pub by: Pubkey,
 }

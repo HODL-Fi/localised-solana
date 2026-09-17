@@ -333,3 +333,67 @@ impl Env {
         self.fetch(&access_pda(wallet))
     }
 }
+
+// ---- Market (Task 6) ----
+
+pub fn default_market_params() -> hodl_loans::MarketParams {
+    hodl_loans::MarketParams {
+        interest_rate_bps: 1_500,
+        penalty_rate_bps: 500,
+        reserve_factor_bps: 1_000,
+        max_utilization_bps: 9_000,
+        min_loan_amount: 1_000 * ONE_CNGN,
+        max_tenure_seconds: 365 * 86_400,
+        bad_debt_dust_usd: 1_000_000_000_000_000_000,
+        ngn_feed: Pubkey::new_from_array([7; 32]),
+        ngn_max_stale_slots: 150,
+        ngn_min_samples: 3,
+        ngn_max_spread_bps: 200,
+        promo_inactivity_seconds: 90 * 86_400,
+        max_promo_per_position: 50_000 * ONE_CNGN,
+    }
+}
+
+pub fn create_market_ix(admin: &Pubkey, mint: &Pubkey, token_program: &Pubkey, params: hodl_loans::MarketParams) -> Instruction {
+    ix(
+        hodl_loans::instruction::CreateMarket { params },
+        hodl_loans::accounts::CreateMarket {
+            admin: *admin,
+            config: config_pda(),
+            mint: *mint,
+            market: market_pda(mint),
+            vault: market_vault_pda(mint),
+            token_program: *token_program,
+            system_program: system_program::ID,
+        },
+    )
+}
+
+pub fn update_market_params_ix(admin: &Pubkey, mint: &Pubkey, params: hodl_loans::MarketParams) -> Instruction {
+    ix(
+        hodl_loans::instruction::UpdateMarketParams { params },
+        hodl_loans::accounts::UpdateMarketParams { admin: *admin, config: config_pda(), market: market_pda(mint) },
+    )
+}
+
+pub fn set_market_paused_ix(signer: &Pubkey, mint: &Pubkey, paused: bool) -> Instruction {
+    ix(
+        hodl_loans::instruction::SetMarketPaused { paused },
+        hodl_loans::accounts::SetMarketPaused { signer: *signer, config: config_pda(), market: market_pda(mint) },
+    )
+}
+
+impl Env {
+    /// Initialized config plus a cNGN-like market (6 decimals). Returns the mint.
+    pub fn with_cngn_market() -> (Self, Pubkey) {
+        let mut env = Self::initialized();
+        let mint = env.create_mint(MintKind::CngnLike, 6);
+        let instruction = create_market_ix(&env.admin.pubkey(), &mint, &TOKEN_2022, default_market_params());
+        send(&mut env.svm, &[instruction], &[&env.admin]).expect("create market");
+        (env, mint)
+    }
+
+    pub fn market(&self, mint: &Pubkey) -> hodl_loans::Market {
+        self.fetch(&market_pda(mint))
+    }
+}

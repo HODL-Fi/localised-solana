@@ -6,6 +6,7 @@ pub mod events;
 pub mod instructions;
 pub mod math;
 pub mod state;
+pub mod token;
 
 pub use constants::*;
 pub use errors::*;
@@ -57,5 +58,17 @@ pub mod hodl_loans {
 
     pub fn unblacklist(ctx: Context<Unblacklist>, wallet: Pubkey) -> Result<()> {
         instructions::handle_unblacklist(ctx, wallet)
+    }
+
+    pub fn create_market(ctx: Context<CreateMarket>, params: MarketParams) -> Result<()> {
+        instructions::handle_create_market(ctx, params)
+    }
+
+    pub fn update_market_params(ctx: Context<UpdateMarketParams>, params: MarketParams) -> Result<()> {
+        instructions::handle_update_market_params(ctx, params)
+    }
+
+    pub fn set_market_paused(ctx: Context<SetMarketPaused>, paused: bool) -> Result<()> {
+        instructions::handle_set_market_paused(ctx, paused)
     }
 }
