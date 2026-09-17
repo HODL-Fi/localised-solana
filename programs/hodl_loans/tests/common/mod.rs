@@ -588,3 +588,95 @@ impl Env {
         self.fetch(&collateral_pda(mint))
     }
 }
+
+// ---- Positions and collateral deposits (Task 5) ----
+
+pub fn position_pda(owner: &Pubkey) -> Pubkey {
+    pda(&[hodl_loans::constants::POSITION_SEED, owner.as_ref()])
+}
+
+pub fn open_position_ix(payer: &Pubkey, owner: &Pubkey) -> Instruction {
+    ix(
+        hodl_loans::instruction::OpenPosition {},
+        hodl_loans::accounts::OpenPosition {
+            payer: *payer,
+            owner: *owner,
+            access: access_pda(owner),
+            position: position_pda(owner),
+            system_program: system_program::ID,
+        },
+    )
+}
+
+pub fn close_position_ix(owner: &Pubkey, rent_payer: &Pubkey) -> Instruction {
+    ix(
+        hodl_loans::instruction::ClosePosition {},
+        hodl_loans::accounts::ClosePosition {
+            owner: *owner,
+            access: access_pda(owner),
+            position: position_pda(owner),
+            rent_payer: *rent_payer,
+        },
+    )
+}
+
+pub fn deposit_collateral_ix(owner: &Pubkey, mint: &Pubkey, token_program: &Pubkey, owner_token: &Pubkey, amount: u64) -> Instruction {
+    ix(
+        hodl_loans::instruction::DepositCollateral { amount },
+        hodl_loans::accounts::DepositCollateral {
+            owner: *owner,
+            access: access_pda(owner),
+            position: position_pda(owner),
+            collateral: collateral_pda(mint),
+            mint: *mint,
+            vault: collateral_vault_pda(mint),
+            owner_token: *owner_token,
+            token_program: *token_program,
+        },
+    )
+}
+
+/// A whitelisted wallet with no SOL; the admin pays its fees and rent.
+pub struct Borrower {
+    pub key: Keypair,
+}
+
+impl Borrower {
+    pub fn pubkey(&self) -> Pubkey {
+        self.key.pubkey()
+    }
+}
+
+impl Env {
+    /// Sends one instruction with the admin paying fees and `signer` co-signing.
+    pub fn sponsored(&mut self, instruction: Instruction, signer: &Keypair) -> TxResult {
+        send(&mut self.svm, &[instruction], &[&self.admin, signer])
+    }
+
+    /// A whitelisted wallet with an open position.
+    pub fn new_borrower(&mut self) -> Borrower {
+        let key = Keypair::new();
+        self.whitelist(&key.pubkey());
+        let instruction = open_position_ix(&self.admin.pubkey(), &key.pubkey());
+        send(&mut self.svm, &[instruction], &[&self.admin, &key]).expect("open position");
+        Borrower { key }
+    }
+
+    /// Reads a zero-copy `Position` (unaligned, since test buffers are not 8-byte aligned).
+    pub fn position(&self, owner: &Pubkey) -> hodl_loans::Position {
+        let account = self.svm.get_account(&position_pda(owner)).expect("position exists");
+        let size = std::mem::size_of::<hodl_loans::Position>();
+        bytemuck::pod_read_unaligned(&account.data[8..8 + size])
+    }
+
+    /// Mints `amount` of `mint` into a new token account owned by the borrower, then deposits it.
+    /// Returns the token account.
+    pub fn deposit_collateral(&mut self, borrower: &Borrower, mint: &Pubkey, amount: u64) -> Pubkey {
+        let token = self.create_token_account(mint, &borrower.pubkey());
+        self.mint_to(mint, &token, amount);
+        let program = self.mint_program(mint);
+        let instruction = deposit_collateral_ix(&borrower.pubkey(), mint, &program, &token, amount);
+        send(&mut self.svm, &[instruction], &[&self.admin, &borrower.key]).expect("deposit collateral");
+        token
+    }
+}

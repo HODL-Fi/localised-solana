@@ -97,6 +97,18 @@ pub mod hodl_loans {
         instructions::handle_sweep_collateral_excess(ctx)
     }
 
+    pub fn open_position(ctx: Context<OpenPosition>) -> Result<()> {
+        instructions::handle_open_position(ctx)
+    }
+
+    pub fn close_position(ctx: Context<ClosePosition>) -> Result<()> {
+        instructions::handle_close_position(ctx)
+    }
+
+    pub fn deposit_collateral(ctx: Context<DepositCollateral>, amount: u64) -> Result<()> {
+        instructions::handle_deposit_collateral(ctx, amount)
+    }
+
     pub fn deposit_liquidity(ctx: Context<DepositLiquidity>, amount: u64) -> Result<()> {
         instructions::handle_deposit_liquidity(ctx, amount)
     }

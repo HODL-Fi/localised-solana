@@ -121,3 +121,26 @@ pub struct CollateralDelisted {
     pub collateral: Pubkey,
     pub mint: Pubkey,
 }
+
+#[event]
+pub struct PositionOpened {
+    pub position: Pubkey,
+    pub owner: Pubkey,
+    pub rent_payer: Pubkey,
+}
+
+#[event]
+pub struct PositionClosed {
+    pub position: Pubkey,
+    pub owner: Pubkey,
+    pub rent_payer: Pubkey,
+}
+
+#[event]
+pub struct CollateralDeposited {
+    pub position: Pubkey,
+    pub owner: Pubkey,
+    pub mint: Pubkey,
+    pub amount: u64,
+    pub slot_amount: u64,
+}
