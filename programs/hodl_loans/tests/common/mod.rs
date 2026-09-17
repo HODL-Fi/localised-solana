@@ -1,0 +1,240 @@
+#![allow(dead_code, unused_imports)]
+
+use anchor_lang::{
+    prelude::{Clock, ProgramData, Pubkey},
+    solana_program::{
+        bpf_loader_upgradeable::get_program_data_address, instruction::Instruction, system_instruction,
+        system_program,
+    },
+    AccountDeserialize, AccountSerialize, InstructionData, ToAccountMetas,
+};
+use hodl_loans::{
+    constants::{ACCESS_SEED, CONFIG_SEED, LENDER_SEED, MARKET_SEED, MARKET_VAULT_SEED},
+    HodlError,
+};
+use litesvm::LiteSVM;
+use solana_keypair::Keypair;
+use solana_message::{Message, VersionedMessage};
+use solana_signer::Signer;
+use solana_transaction::versioned::VersionedTransaction;
+use spl_token_2022_interface::{
+    extension::{metadata_pointer, transfer_fee, BaseStateWithExtensions, ExtensionType, StateWithExtensions},
+    state::{Account as TokenAccountState, Mint as MintState},
+};
+
+pub const TOKEN_2022: Pubkey = spl_token_2022_interface::ID;
+pub const SPL_TOKEN: Pubkey = spl_token_interface::ID;
+pub const ONE_CNGN: u64 = 1_000_000;
+pub const YEAR_SECONDS: i64 = 31_536_000;
+
+pub type TxResult = Result<(), String>;
+
+/// Sends `ixs`; the first signer pays fees. Returns the error and logs as text on failure.
+pub fn send(svm: &mut LiteSVM, ixs: &[Instruction], signers: &[&Keypair]) -> TxResult {
+    svm.expire_blockhash();
+    let msg = Message::new_with_blockhash(ixs, Some(&signers[0].pubkey()), &svm.latest_blockhash());
+    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), signers).unwrap();
+    svm.send_transaction(tx)
+        .map(|_| ())
+        .map_err(|e| format!("{:?} logs: {:#?}", e.err, e.meta.logs))
+}
+
+pub fn assert_custom_error(result: TxResult, code: u32) {
+    let err = result.expect_err("transaction should have failed");
+    assert!(err.contains(&format!("Custom({code})")), "expected Custom({code}), got {err}");
+}
+
+pub fn assert_hodl_error(result: TxResult, expected: HodlError) {
+    assert_custom_error(result, u32::from(expected));
+}
+
+pub fn assert_anchor_error(result: TxResult, expected: anchor_lang::error::ErrorCode) {
+    assert_custom_error(result, u32::from(expected));
+}
+
+pub fn pda(seeds: &[&[u8]]) -> Pubkey {
+    Pubkey::find_program_address(seeds, &hodl_loans::ID).0
+}
+pub fn config_pda() -> Pubkey {
+    pda(&[CONFIG_SEED])
+}
+pub fn access_pda(wallet: &Pubkey) -> Pubkey {
+    pda(&[ACCESS_SEED, wallet.as_ref()])
+}
+pub fn market_pda(mint: &Pubkey) -> Pubkey {
+    pda(&[MARKET_SEED, mint.as_ref()])
+}
+pub fn market_vault_pda(mint: &Pubkey) -> Pubkey {
+    pda(&[MARKET_VAULT_SEED, mint.as_ref()])
+}
+pub fn lender_pda(market: &Pubkey, owner: &Pubkey) -> Pubkey {
+    pda(&[LENDER_SEED, market.as_ref(), owner.as_ref()])
+}
+
+pub fn ix<D: InstructionData, A: ToAccountMetas>(data: D, accounts: A) -> Instruction {
+    Instruction::new_with_bytes(hodl_loans::ID, &data.data(), accounts.to_account_metas(None))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MintKind {
+    /// Classic SPL Token mint (USDC, USDT, wrapped SOL).
+    SplToken,
+    /// Token-2022 mint with the Solana cNGN extensions: permanent delegate + metadata pointer.
+    CngnLike,
+    /// Token-2022 mint with a transfer fee (must be rejected).
+    TransferFee,
+}
+
+pub struct Env {
+    pub svm: LiteSVM,
+    pub admin: Keypair,
+    pub guardian: Keypair,
+    pub whitelister: Keypair,
+    pub promo_signer: Keypair,
+    pub treasury: Keypair,
+}
+
+impl Env {
+    /// Program loaded with `admin` as its upgrade authority. `Config` is not initialized.
+    pub fn new() -> Self {
+        let mut svm = LiteSVM::new();
+        let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/deploy/hodl_loans.so"));
+        svm.add_program(hodl_loans::ID, bytes).unwrap();
+        let env = Self {
+            svm,
+            admin: Keypair::new(),
+            guardian: Keypair::new(),
+            whitelister: Keypair::new(),
+            promo_signer: Keypair::new(),
+            treasury: Keypair::new(),
+        };
+        let mut env = env;
+        for key in [env.admin.pubkey(), env.guardian.pubkey(), env.whitelister.pubkey(), env.treasury.pubkey()] {
+            env.svm.airdrop(&key, 100_000_000_000).unwrap();
+        }
+        let authority = env.admin.pubkey();
+        env.set_upgrade_authority(&authority);
+        env
+    }
+
+    /// Rewrites the ProgramData header (4-byte tag, 8-byte slot, 1-byte option, 32-byte key).
+    pub fn set_upgrade_authority(&mut self, authority: &Pubkey) {
+        let key = get_program_data_address(&hodl_loans::ID);
+        let mut account = self.svm.get_account(&key).expect("program data account");
+        account.data[12] = 1;
+        account.data[13..45].copy_from_slice(authority.as_ref());
+        self.svm.set_account(key, account).unwrap();
+    }
+
+    pub fn upgrade_authority(&self) -> Option<Pubkey> {
+        let account = self.svm.get_account(&get_program_data_address(&hodl_loans::ID)).unwrap();
+        ProgramData::try_deserialize(&mut account.data.as_slice()).unwrap().upgrade_authority_address
+    }
+
+    pub fn funded_keypair(&mut self) -> Keypair {
+        let key = Keypair::new();
+        self.svm.airdrop(&key.pubkey(), 10_000_000_000).unwrap();
+        key
+    }
+
+    pub fn now(&self) -> i64 {
+        self.svm.get_sysvar::<Clock>().unix_timestamp
+    }
+
+    pub fn warp_seconds(&mut self, seconds: i64) {
+        let mut clock: Clock = self.svm.get_sysvar();
+        clock.unix_timestamp += seconds;
+        self.svm.set_sysvar(&clock);
+    }
+
+    pub fn fetch<T: AccountDeserialize>(&self, key: &Pubkey) -> T {
+        let account = self.svm.get_account(key).expect("account exists");
+        T::try_deserialize(&mut account.data.as_slice()).expect("account deserializes")
+    }
+
+    /// Overwrites an Anchor account's data in place (tests use this to simulate loans).
+    pub fn write<T: AccountSerialize>(&mut self, key: &Pubkey, value: &T) {
+        let mut account = self.svm.get_account(key).expect("account exists");
+        let mut bytes = Vec::new();
+        value.try_serialize(&mut bytes).unwrap();
+        account.data[..bytes.len()].copy_from_slice(&bytes);
+        self.svm.set_account(*key, account).unwrap();
+    }
+
+    pub fn create_mint(&mut self, kind: MintKind, decimals: u8) -> Pubkey {
+        let mint = Keypair::new();
+        let authority = self.admin.pubkey();
+        let (program, extensions) = match kind {
+            MintKind::SplToken => (SPL_TOKEN, vec![]),
+            MintKind::CngnLike => (TOKEN_2022, vec![ExtensionType::PermanentDelegate, ExtensionType::MetadataPointer]),
+            MintKind::TransferFee => (TOKEN_2022, vec![ExtensionType::TransferFeeConfig]),
+        };
+        let space = ExtensionType::try_calculate_account_len::<MintState>(&extensions).unwrap();
+        let lamports = self.svm.minimum_balance_for_rent_exemption(space);
+        let mut ixs = vec![system_instruction::create_account(&authority, &mint.pubkey(), lamports, space as u64, &program)];
+        match kind {
+            MintKind::SplToken => {
+                ixs.push(spl_token_interface::instruction::initialize_mint2(&SPL_TOKEN, &mint.pubkey(), &authority, None, decimals).unwrap());
+            }
+            MintKind::CngnLike => {
+                ixs.push(spl_token_2022_interface::instruction::initialize_permanent_delegate(&TOKEN_2022, &mint.pubkey(), &authority).unwrap());
+                ixs.push(metadata_pointer::instruction::initialize(&TOKEN_2022, &mint.pubkey(), Some(authority), Some(mint.pubkey())).unwrap());
+                ixs.push(spl_token_2022_interface::instruction::initialize_mint2(&TOKEN_2022, &mint.pubkey(), &authority, None, decimals).unwrap());
+            }
+            MintKind::TransferFee => {
+                ixs.push(transfer_fee::instruction::initialize_transfer_fee_config(&TOKEN_2022, &mint.pubkey(), Some(&authority), Some(&authority), 10, 1_000).unwrap());
+                ixs.push(spl_token_2022_interface::instruction::initialize_mint2(&TOKEN_2022, &mint.pubkey(), &authority, None, decimals).unwrap());
+            }
+        }
+        send(&mut self.svm, &ixs, &[&self.admin, &mint]).expect("create mint");
+        mint.pubkey()
+    }
+
+    pub fn mint_program(&self, mint: &Pubkey) -> Pubkey {
+        self.svm.get_account(mint).unwrap().owner
+    }
+
+    pub fn mint_decimals(&self, mint: &Pubkey) -> u8 {
+        let account = self.svm.get_account(mint).unwrap();
+        StateWithExtensions::<MintState>::unpack(&account.data).unwrap().base.decimals
+    }
+
+    pub fn mint_extensions(&self, mint: &Pubkey) -> Vec<ExtensionType> {
+        let account = self.svm.get_account(mint).unwrap();
+        StateWithExtensions::<MintState>::unpack(&account.data).unwrap().get_extension_types().unwrap()
+    }
+
+    /// A token account for `mint` owned by `owner` (any pubkey, including a PDA).
+    pub fn create_token_account(&mut self, mint: &Pubkey, owner: &Pubkey) -> Pubkey {
+        let account = Keypair::new();
+        let program = self.mint_program(mint);
+        let space = ExtensionType::try_calculate_account_len::<TokenAccountState>(&[]).unwrap();
+        let lamports = self.svm.minimum_balance_for_rent_exemption(space);
+        let ixs = vec![
+            system_instruction::create_account(&self.admin.pubkey(), &account.pubkey(), lamports, space as u64, &program),
+            spl_token_2022_interface::instruction::initialize_account3(&program, &account.pubkey(), mint, owner).unwrap(),
+        ];
+        send(&mut self.svm, &ixs, &[&self.admin, &account]).expect("create token account");
+        account.pubkey()
+    }
+
+    pub fn mint_to(&mut self, mint: &Pubkey, destination: &Pubkey, amount: u64) {
+        let program = self.mint_program(mint);
+        let decimals = self.mint_decimals(mint);
+        let ix = spl_token_2022_interface::instruction::mint_to_checked(
+            &program, mint, destination, &self.admin.pubkey(), &[], amount, decimals,
+        )
+        .unwrap();
+        send(&mut self.svm, &[ix], &[&self.admin]).expect("mint to");
+    }
+
+    pub fn token_balance(&self, account: &Pubkey) -> u64 {
+        let account = self.svm.get_account(account).unwrap();
+        StateWithExtensions::<TokenAccountState>::unpack(&account.data).unwrap().base.amount
+    }
+
+    pub fn token_owner(&self, account: &Pubkey) -> Pubkey {
+        let account = self.svm.get_account(account).unwrap();
+        StateWithExtensions::<TokenAccountState>::unpack(&account.data).unwrap().base.owner
+    }
+}
