@@ -842,3 +842,30 @@ impl Env {
         (env, LoanSetup { cngn, usdc, lender, borrower, borrower_cngn })
     }
 }
+
+// ---- Repayment (Task 7) ----
+
+pub fn repay_loan_ix(payer: &Pubkey, position_owner: &Pubkey, mint: &Pubkey, payer_token: &Pubkey, loan_id: u64, amount: u64) -> Instruction {
+    ix(
+        hodl_loans::instruction::RepayLoan { loan_id, amount },
+        hodl_loans::accounts::RepayLoan {
+            payer: *payer,
+            access: access_pda(payer),
+            position: position_pda(position_owner),
+            market: market_pda(mint),
+            mint: *mint,
+            vault: market_vault_pda(mint),
+            payer_token: *payer_token,
+            token_program: TOKEN_2022,
+        },
+    )
+}
+
+impl Env {
+    /// The borrower repays from its own cNGN account.
+    pub fn repay(&mut self, setup: &LoanSetup, loan_id: u64, amount: u64) -> TxResult {
+        let owner = setup.borrower.pubkey();
+        let instruction = repay_loan_ix(&owner, &owner, &setup.cngn, &setup.borrower_cngn, loan_id, amount);
+        send(&mut self.svm, &[instruction], &[&self.admin, &setup.borrower.key])
+    }
+}

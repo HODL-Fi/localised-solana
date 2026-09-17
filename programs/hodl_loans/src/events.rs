@@ -158,3 +158,29 @@ pub struct LoanOpened {
     pub reserve_factor_bps: u16,
     pub originated_at: i64,
 }
+
+#[event]
+pub struct LoanRepaid {
+    pub market: Pubkey,
+    pub position: Pubkey,
+    pub owner: Pubkey,
+    pub payer: Pubkey,
+    pub loan_id: u64,
+    pub amount: u64,
+    pub principal_repaid: u64,
+    pub interest_paid: u64,
+    pub remaining_principal: u64,
+}
+
+#[event]
+pub struct LoanPartiallyRepaid {
+    pub market: Pubkey,
+    pub position: Pubkey,
+    pub owner: Pubkey,
+    pub payer: Pubkey,
+    pub loan_id: u64,
+    pub amount: u64,
+    pub principal_repaid: u64,
+    pub interest_paid: u64,
+    pub remaining_principal: u64,
+}
