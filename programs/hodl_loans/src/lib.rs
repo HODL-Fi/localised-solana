@@ -46,4 +46,16 @@ pub mod hodl_loans {
     pub fn set_treasury(ctx: Context<AdminConfig>, treasury: Pubkey) -> Result<()> {
         instructions::handle_set_role(ctx, Role::Treasury, treasury)
     }
+
+    pub fn whitelist(ctx: Context<Whitelist>, wallet: Pubkey) -> Result<()> {
+        instructions::handle_whitelist(ctx, wallet)
+    }
+
+    pub fn blacklist(ctx: Context<Blacklist>, wallet: Pubkey) -> Result<()> {
+        instructions::handle_blacklist(ctx, wallet)
+    }
+
+    pub fn unblacklist(ctx: Context<Unblacklist>, wallet: Pubkey) -> Result<()> {
+        instructions::handle_unblacklist(ctx, wallet)
+    }
 }

@@ -35,3 +35,10 @@ pub struct RoleUpdated {
     pub old: Pubkey,
     pub new: Pubkey,
 }
+
+#[event]
+pub struct AccessUpdated {
+    pub wallet: Pubkey,
+    pub whitelisted: bool,
+    pub blacklisted: bool,
+}

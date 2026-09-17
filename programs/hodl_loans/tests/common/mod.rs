@@ -284,3 +284,52 @@ impl Env {
 pub fn admin_config_accounts(admin: &Pubkey) -> hodl_loans::accounts::AdminConfig {
     hodl_loans::accounts::AdminConfig { admin: *admin, config: config_pda() }
 }
+
+// ---- Access (Task 5) ----
+
+pub fn whitelist_ix(signer: &Pubkey, wallet: &Pubkey) -> Instruction {
+    ix(
+        hodl_loans::instruction::Whitelist { wallet: *wallet },
+        hodl_loans::accounts::Whitelist {
+            signer: *signer,
+            config: config_pda(),
+            access: access_pda(wallet),
+            system_program: system_program::ID,
+        },
+    )
+}
+
+pub fn blacklist_ix(admin: &Pubkey, wallet: &Pubkey) -> Instruction {
+    ix(
+        hodl_loans::instruction::Blacklist { wallet: *wallet },
+        hodl_loans::accounts::Blacklist {
+            admin: *admin,
+            config: config_pda(),
+            access: access_pda(wallet),
+            system_program: system_program::ID,
+        },
+    )
+}
+
+pub fn unblacklist_ix(admin: &Pubkey, wallet: &Pubkey) -> Instruction {
+    ix(
+        hodl_loans::instruction::Unblacklist { wallet: *wallet },
+        hodl_loans::accounts::Unblacklist { admin: *admin, config: config_pda(), access: access_pda(wallet) },
+    )
+}
+
+impl Env {
+    pub fn whitelist(&mut self, wallet: &Pubkey) {
+        let instruction = whitelist_ix(&self.whitelister.pubkey(), wallet);
+        send(&mut self.svm, &[instruction], &[&self.whitelister]).expect("whitelist");
+    }
+
+    pub fn blacklist(&mut self, wallet: &Pubkey) {
+        let instruction = blacklist_ix(&self.admin.pubkey(), wallet);
+        send(&mut self.svm, &[instruction], &[&self.admin]).expect("blacklist");
+    }
+
+    pub fn access(&self, wallet: &Pubkey) -> hodl_loans::Access {
+        self.fetch(&access_pda(wallet))
+    }
+}
