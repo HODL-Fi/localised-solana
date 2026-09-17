@@ -104,6 +104,7 @@ lendbit-solana/
 | `VIRTUAL_SHARES` | 1_000 |
 | `VIRTUAL_ASSETS` | 1 |
 | `USD_SCALE` | 10^12 (fixed-point USD used in all health math; 10^18 would let `amount × price` overflow `u128` for large balances) |
+| `MAX_PRICE_AGE_SECONDS` | 60 (the largest `max_price_age_seconds` an admin may set) |
 
 ## 7. Accounts
 
@@ -146,7 +147,8 @@ Every account starts with `version: u8` and `bump: u8`, and ends with reserved p
 | `mint`, `token_program`, `vault`, `decimals` | Collateral mint, program, custody vault (seeds `["collateral_vault", mint]`, owned by this PDA), decimals |
 | `kind` | `Standard` or `XStock` (enables Token-2022 extension checks and the scaled-UI multiplier) |
 | `pyth_feed_id: [u8; 32]` | Pyth feed |
-| `max_price_age_seconds`, `max_conf_bps` | Pyth read limits |
+| `price_account` | The one Pyth price account accepted for this asset (a sponsored push feed). `Pubkey::default()` leaves it unpinned, accepting any verified update for the feed inside the age window |
+| `max_price_age_seconds`, `max_conf_bps` | Pyth read limits; the age may not exceed `MAX_PRICE_AGE_SECONDS` |
 | `ltv_bps`, `liquidation_threshold_bps`, `liquidation_bonus_bps` | Risk parameters |
 | `deposit_cap`, `total_deposited` | Raw token amounts |
 | `paused` | Blocks new deposits of this asset |
@@ -192,7 +194,8 @@ Every account starts with `version: u8` and `bump: u8`, and ends with reserved p
 ### Price reads
 
 **Pyth (collateral):**
-- The account must be owned by the Pyth receiver program (`rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ`).
+- The account must be owned by the Pyth receiver program (`rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ`), and, when the asset pins one, be exactly `collateral.price_account`.
+- Pull updates are ephemeral accounts anyone may post, so without a pinned account the caller chooses which verified update inside `max_price_age_seconds` to present — the most favourable price in that window. Pinning removes the choice; `MAX_PRICE_AGE_SECONDS` bounds it for assets with no sponsored feed to pin.
 - Read the `PriceUpdateV2` account with `get_price_no_older_than(max_price_age_seconds, pyth_feed_id)`, and require full verification. A too-old price fails with `StalePrice`, another feed with `PriceAccountMismatch`, anything else (such as partial verification or a non-positive price) with `InvalidPrice`.
 - Reject when `conf × BPS > price × max_conf_bps`.
 - Convert price and confidence to `USD_SCALE` using the feed exponent.
@@ -211,12 +214,11 @@ A `Standard` asset has multiplier 1.
 
 ### Price accounts
 
-For health checks, the instruction's remaining accounts are, for each non-empty collateral slot **in slot order**: `(CollateralAsset, PriceUpdateV2, mint)`.
+For health checks, the instruction's remaining accounts are, for each non-empty collateral slot **in slot order**: `(CollateralAsset, PriceUpdateV2)`. The mint account is not passed: the asset carries the decimals, and its own `mint` field identifies it. (Plan 4 passes the mint again for `XStock` assets, whose multiplier lives on the mint.)
 
 The program loops over the position's slots, not over the accounts supplied. For each slot it requires:
-- the `CollateralAsset` key to match `["collateral", slot.mint]`;
-- the price account to carry that asset's feed ID;
-- the mint account to match `slot.mint`.
+- the `CollateralAsset` to be program-owned and its `mint` to equal `slot.mint`;
+- the price account to carry that asset's feed ID, and to be the asset's `price_account` when it pins one.
 
 A missing, extra or mismatched account fails with `PriceAccountMismatch`.
 
@@ -395,6 +397,10 @@ There is no close factor. If the chosen collateral can't move (for example, an i
    - Release `R` from `accrued_interest`.
 5. `covered = min(protocol_reserve, loss)`; `protocol_reserve −= covered`. Lenders absorb `loss − covered` through the share price.
 6. `total_bad_debt += loss`. Clear the slot and emit `LoanWrittenOff { loss, covered_by_reserve: covered }`.
+
+The collateral stays in the position: a write-off clears the debt, it does not seize the dust.
+
+**Accepted risk.** The admin signs through a timelocked multisig (§18), so a lender watching the queue can withdraw before the loss lands, leaving it to those who stay. A write-off requires the collateral to be worth less than `bad_debt_dust_usd`, which bounds that loss, and the reserve absorbs it first. The alternative — letting the guardian freeze lender withdrawals around a write-off — buys less than the trust it costs.
 
 ## 12. Promo Balance
 
