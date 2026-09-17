@@ -487,3 +487,104 @@ pub fn sweep_market_excess_ix(admin: &Pubkey, mint: &Pubkey, destination: &Pubke
         },
     )
 }
+
+// ---- Collateral listing (Task 4) ----
+
+pub const ONE_USDC: u64 = 1_000_000;
+
+pub fn collateral_pda(mint: &Pubkey) -> Pubkey {
+    pda(&[hodl_loans::constants::COLLATERAL_SEED, mint.as_ref()])
+}
+pub fn collateral_vault_pda(mint: &Pubkey) -> Pubkey {
+    pda(&[hodl_loans::constants::COLLATERAL_VAULT_SEED, mint.as_ref()])
+}
+
+/// Tests use a mint's own bytes as its Pyth feed ID.
+pub fn feed_id(mint: &Pubkey) -> [u8; 32] {
+    mint.to_bytes()
+}
+
+/// Spec §8 launch values for a stablecoin: LTV 70%, threshold 90%, bonus 5%.
+pub fn default_collateral_params(mint: &Pubkey) -> hodl_loans::CollateralParams {
+    hodl_loans::CollateralParams {
+        pyth_feed_id: feed_id(mint),
+        max_price_age_seconds: 60,
+        max_conf_bps: 200,
+        ltv_bps: 7_000,
+        liquidation_threshold_bps: 9_000,
+        liquidation_bonus_bps: 500,
+        deposit_cap: u64::MAX,
+    }
+}
+
+pub fn list_collateral_ix(admin: &Pubkey, mint: &Pubkey, token_program: &Pubkey, params: hodl_loans::CollateralParams) -> Instruction {
+    ix(
+        hodl_loans::instruction::ListCollateral { params },
+        hodl_loans::accounts::ListCollateral {
+            admin: *admin,
+            config: config_pda(),
+            mint: *mint,
+            collateral: collateral_pda(mint),
+            vault: collateral_vault_pda(mint),
+            token_program: *token_program,
+            system_program: system_program::ID,
+        },
+    )
+}
+
+pub fn update_collateral_params_ix(admin: &Pubkey, mint: &Pubkey, params: hodl_loans::CollateralParams) -> Instruction {
+    ix(
+        hodl_loans::instruction::UpdateCollateralParams { params },
+        hodl_loans::accounts::UpdateCollateralParams { admin: *admin, config: config_pda(), collateral: collateral_pda(mint) },
+    )
+}
+
+pub fn set_collateral_paused_ix(signer: &Pubkey, mint: &Pubkey, paused: bool) -> Instruction {
+    ix(
+        hodl_loans::instruction::SetCollateralPaused { paused },
+        hodl_loans::accounts::SetCollateralPaused { signer: *signer, config: config_pda(), collateral: collateral_pda(mint) },
+    )
+}
+
+pub fn delist_collateral_ix(admin: &Pubkey, mint: &Pubkey, token_program: &Pubkey) -> Instruction {
+    ix(
+        hodl_loans::instruction::DelistCollateral {},
+        hodl_loans::accounts::DelistCollateral {
+            admin: *admin,
+            config: config_pda(),
+            collateral: collateral_pda(mint),
+            mint: *mint,
+            vault: collateral_vault_pda(mint),
+            token_program: *token_program,
+        },
+    )
+}
+
+pub fn sweep_collateral_excess_ix(admin: &Pubkey, mint: &Pubkey, token_program: &Pubkey, destination: &Pubkey) -> Instruction {
+    ix(
+        hodl_loans::instruction::SweepCollateralExcess {},
+        hodl_loans::accounts::SweepCollateralExcess {
+            admin: *admin,
+            config: config_pda(),
+            collateral: collateral_pda(mint),
+            mint: *mint,
+            vault: collateral_vault_pda(mint),
+            destination: *destination,
+            token_program: *token_program,
+        },
+    )
+}
+
+impl Env {
+    /// Creates a classic SPL Token mint and lists it with default parameters. Returns the mint.
+    pub fn list_spl_collateral(&mut self, decimals: u8) -> Pubkey {
+        let mint = self.create_mint(MintKind::SplToken, decimals);
+        let instruction = list_collateral_ix(&self.admin.pubkey(), &mint, &SPL_TOKEN, default_collateral_params(&mint));
+        send(&mut self.svm, &[instruction], &[&self.admin]).expect("list collateral");
+        mint
+    }
+
+    pub fn collateral(&self, mint: &Pubkey) -> hodl_loans::CollateralAsset {
+        self.fetch(&collateral_pda(mint))
+    }
+}

@@ -77,6 +77,26 @@ pub mod hodl_loans {
         instructions::handle_sweep_market_excess(ctx)
     }
 
+    pub fn list_collateral(ctx: Context<ListCollateral>, params: CollateralParams) -> Result<()> {
+        instructions::handle_list_collateral(ctx, params)
+    }
+
+    pub fn update_collateral_params(ctx: Context<UpdateCollateralParams>, params: CollateralParams) -> Result<()> {
+        instructions::handle_update_collateral_params(ctx, params)
+    }
+
+    pub fn set_collateral_paused(ctx: Context<SetCollateralPaused>, paused: bool) -> Result<()> {
+        instructions::handle_set_collateral_paused(ctx, paused)
+    }
+
+    pub fn delist_collateral(ctx: Context<DelistCollateral>) -> Result<()> {
+        instructions::handle_delist_collateral(ctx)
+    }
+
+    pub fn sweep_collateral_excess(ctx: Context<SweepCollateralExcess>) -> Result<()> {
+        instructions::handle_sweep_collateral_excess(ctx)
+    }
+
     pub fn deposit_liquidity(ctx: Context<DepositLiquidity>, amount: u64) -> Result<()> {
         instructions::handle_deposit_liquidity(ctx, amount)
     }

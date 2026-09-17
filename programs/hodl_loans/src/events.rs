@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-use crate::state::MarketParams;
+use crate::state::{CollateralParams, MarketParams};
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Role {
@@ -91,4 +91,33 @@ pub struct ExcessSwept {
     pub vault: Pubkey,
     pub destination: Pubkey,
     pub amount: u64,
+}
+
+#[event]
+pub struct CollateralListed {
+    pub collateral: Pubkey,
+    pub mint: Pubkey,
+    pub vault: Pubkey,
+    pub params: CollateralParams,
+}
+
+#[event]
+pub struct CollateralParamsUpdated {
+    pub collateral: Pubkey,
+    pub old: CollateralParams,
+    pub new: CollateralParams,
+}
+
+#[event]
+pub struct CollateralPauseSet {
+    pub collateral: Pubkey,
+    pub old_paused: bool,
+    pub paused: bool,
+    pub by: Pubkey,
+}
+
+#[event]
+pub struct CollateralDelisted {
+    pub collateral: Pubkey,
+    pub mint: Pubkey,
 }
