@@ -46,25 +46,46 @@ pub struct Unblacklist<'info> {
 pub fn handle_whitelist(ctx: Context<Whitelist>, wallet: Pubkey) -> Result<()> {
     let access = &mut ctx.accounts.access;
     access.init_if_new(wallet, ctx.bumps.access);
+    let (old_whitelisted, old_blacklisted) = (access.whitelisted, access.blacklisted);
     require!(!access.blacklisted, HodlError::Blacklisted);
     access.whitelisted = true;
-    emit!(AccessUpdated { wallet, whitelisted: true, blacklisted: false });
+    emit!(AccessUpdated {
+        wallet,
+        old_whitelisted,
+        old_blacklisted,
+        whitelisted: access.whitelisted,
+        blacklisted: access.blacklisted
+    });
     Ok(())
 }
 
 pub fn handle_blacklist(ctx: Context<Blacklist>, wallet: Pubkey) -> Result<()> {
     let access = &mut ctx.accounts.access;
     access.init_if_new(wallet, ctx.bumps.access);
+    let (old_whitelisted, old_blacklisted) = (access.whitelisted, access.blacklisted);
     access.whitelisted = false;
     access.blacklisted = true;
-    emit!(AccessUpdated { wallet, whitelisted: false, blacklisted: true });
+    emit!(AccessUpdated {
+        wallet,
+        old_whitelisted,
+        old_blacklisted,
+        whitelisted: access.whitelisted,
+        blacklisted: access.blacklisted
+    });
     Ok(())
 }
 
 /// Clears the blacklist flag. Does not re-whitelist.
 pub fn handle_unblacklist(ctx: Context<Unblacklist>, wallet: Pubkey) -> Result<()> {
     let access = &mut ctx.accounts.access;
+    let (old_whitelisted, old_blacklisted) = (access.whitelisted, access.blacklisted);
     access.blacklisted = false;
-    emit!(AccessUpdated { wallet, whitelisted: access.whitelisted, blacklisted: false });
+    emit!(AccessUpdated {
+        wallet,
+        old_whitelisted,
+        old_blacklisted,
+        whitelisted: access.whitelisted,
+        blacklisted: access.blacklisted
+    });
     Ok(())
 }
