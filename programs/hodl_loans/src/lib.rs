@@ -98,6 +98,10 @@ pub mod hodl_loans {
         instructions::handle_sweep_collateral_excess(ctx)
     }
 
+    pub fn harvest_reserve(ctx: Context<HarvestReserve>, amount: u64) -> Result<()> {
+        instructions::handle_harvest_reserve(ctx, amount)
+    }
+
     pub fn open_position(ctx: Context<OpenPosition>) -> Result<()> {
         instructions::handle_open_position(ctx)
     }

@@ -914,3 +914,20 @@ pub fn price_triples(mints: &[Pubkey]) -> Vec<AccountMeta> {
         })
         .collect()
 }
+
+// ---- Reserve harvest (Task 9) ----
+
+pub fn harvest_reserve_ix(admin: &Pubkey, mint: &Pubkey, destination: &Pubkey, amount: u64) -> Instruction {
+    ix(
+        hodl_loans::instruction::HarvestReserve { amount },
+        hodl_loans::accounts::HarvestReserve {
+            admin: *admin,
+            config: config_pda(),
+            market: market_pda(mint),
+            mint: *mint,
+            vault: market_vault_pda(mint),
+            destination: *destination,
+            token_program: TOKEN_2022,
+        },
+    )
+}

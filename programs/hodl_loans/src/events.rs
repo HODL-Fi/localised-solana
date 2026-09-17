@@ -193,3 +193,12 @@ pub struct CollateralWithdrawn {
     pub amount: u64,
     pub slot_amount: u64,
 }
+
+#[event]
+pub struct ReserveHarvested {
+    pub market: Pubkey,
+    pub destination: Pubkey,
+    pub amount: u64,
+    pub old_reserve: u64,
+    pub new_reserve: u64,
+}
