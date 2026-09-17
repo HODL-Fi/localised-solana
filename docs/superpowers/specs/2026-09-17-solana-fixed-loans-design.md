@@ -597,6 +597,7 @@ Run the `solana-vulnerability-scanner` skill, then an external audit.
 These facts determine exact code paths and must be confirmed first:
 
 1. **cNGN mint on Solana** (`3jiqwBQVRC5zRwHyqvnkQurebJ5RNxg3F5fXMwaxgkv8`, from `localised-backend/docs/circle/cngn_addesses.md`): token program, decimals, extensions. If it carries a permanent delegate or pausable extension, record them as issuer risks and add them to the market's accepted list.
+   **Resolved 2026-09-17 (mainnet RPC):** Token-2022, 6 decimals, extensions `permanentDelegate`, `metadataPointer`, `tokenMetadata`, freeze authority set. The market mint allowlist is those three extensions. Accepted issuer risks: the permanent delegate can move funds out of the market vault, and the freeze authority can freeze it.
 2. **Pyth xStock feeds** (e.g. `Crypto.AAPLX/USD`): whether the price is per display token (after the scaled-UI multiplier) or per raw unit. §8 assumes per display token. Also whether sponsored on-chain feed accounts exist for them.
 3. **Mainnet xStock extensions:** the actual extension list matches §14.
 4. **Switchboard On-Demand NGN/USD feed:** the source list, the result field that gives spread or standard deviation, the update cost, and who cranks it.
