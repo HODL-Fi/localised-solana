@@ -6,6 +6,8 @@ use anchor_lang::prelude::Pubkey;
 use solana_signer::Signer;
 use spl_token_2022_interface::state::AccountState;
 
+const DAY: i64 = 86_400;
+
 #[test]
 fn a_live_shaped_xstock_lists_as_xstock_only() {
     let mut env = Env::initialized();
@@ -90,6 +92,59 @@ fn a_hook_switched_on_after_listing_stops_transfers_cleanly() {
     env.set_transfer_hook(&stock, None);
     let withdraw = withdraw_collateral_ix(&owner, &stock, &TOKEN_2022, &token, None, ONE_XSTOCK, vec![]);
     env.sponsored(withdraw, &borrower.key).unwrap();
+}
+
+#[test]
+fn a_hook_switched_on_after_listing_blocks_the_admin_sweep() {
+    let mut env = Env::initialized();
+    let stock = env.list_xstock_collateral(200);
+    let admin = env.admin.pubkey();
+    let treasury = env.treasury.pubkey();
+    let destination = env.create_token_account(&stock, &treasury);
+
+    // A donation sits in the vault with nothing recorded as deposited, the same shape as
+    // `collateral.rs::collateral_sweep_moves_only_donations`.
+    env.mint_to(&stock, &collateral_vault_pda(&stock), 7 * ONE_XSTOCK);
+
+    env.set_transfer_hook(&stock, Some(Pubkey::new_unique()));
+    let sweep = sweep_collateral_excess_ix(&admin, &stock, &TOKEN_2022, &destination);
+    assert_hodl_error(
+        send(&mut env.svm, std::slice::from_ref(&sweep), &[&env.admin]),
+        HodlError::UnsupportedMintExtension,
+    );
+
+    // Clearing the hook lets the donation through.
+    env.set_transfer_hook(&stock, None);
+    send(&mut env.svm, &[sweep], &[&env.admin]).unwrap();
+    assert_eq!(env.token_balance(&destination), 7 * ONE_XSTOCK);
+}
+
+#[test]
+fn a_hook_switched_on_after_listing_blocks_the_liquidation_seizure() {
+    let (mut env, setup) = Env::loan_ready();
+    let stock = env.list_xstock_collateral(200);
+    let borrower = env.new_borrower();
+    let owner = borrower.pubkey();
+    env.deposit_collateral(&borrower, &stock, 10 * ONE_XSTOCK);
+    let borrower_cngn = env.create_token_account(&setup.cngn, &owner);
+    let setup = LoanSetup { borrower, borrower_cngn, ..setup };
+
+    // 10 xStock at $200 backs 1,000,000 cNGN ($625.625 at the NGN ask), under the 50% LTV limit.
+    env.take_loan(&setup.borrower, &setup, 1_000_000 * ONE_CNGN, 365 * DAY).unwrap();
+    // Crash to $80: $800 of collateral × the 75% threshold is $600, under the $625.625 debt.
+    env.set_pyth_price(&stock, 80 * ONE_DOLLAR, 0);
+
+    let liquidator = env.new_liquidator(&setup.cngn, 1_000_000 * ONE_CNGN);
+    let seized_to = env.create_token_account(&stock, &liquidator.pubkey());
+
+    env.set_transfer_hook(&stock, Some(Pubkey::new_unique()));
+    let hooked = env.liquidate(&liquidator, &setup, &stock, &seized_to, 0, 100_000 * ONE_CNGN);
+    assert_hodl_error(hooked, HodlError::UnsupportedMintExtension);
+
+    // Clearing the hook lets the seizure through.
+    env.set_transfer_hook(&stock, None);
+    env.liquidate(&liquidator, &setup, &stock, &seized_to, 0, 100_000 * ONE_CNGN).unwrap();
+    assert!(env.token_balance(&seized_to) > 0);
 }
 
 #[test]
