@@ -196,6 +196,7 @@ Every account starts with `version: u8` and `bump: u8`, and ends with reserved p
 **Pyth (collateral):**
 - The account must be owned by the Pyth receiver program (`rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ`), and, when the asset pins one, be exactly `collateral.price_account`.
 - Pull updates are ephemeral accounts anyone may post, so without a pinned account the caller chooses which verified update inside `max_price_age_seconds` to present — the most favourable price in that window. Pinning removes the choice; `MAX_PRICE_AGE_SECONDS` bounds it for assets with no sponsored feed to pin.
+- **Liveness risk of a pinned feed.** A pinned `PriceUpdateV2` is a sponsored push account with a fixed write authority — a liquidator cannot refresh it directly. If the sponsor's crank stalls beyond `max_price_age_seconds`, every position holding that asset becomes un-liquidatable, and because `write_off_loan` prices the position the same way, the bad-debt escape hatch closes at the same time. The remedy is operational: `update_collateral_params` unpins the asset, through the admin multisig's timelock (§18).
 - Read the `PriceUpdateV2` account with `get_price_no_older_than(max_price_age_seconds, pyth_feed_id)`, and require full verification. A too-old price fails with `StalePrice`, another feed with `PriceAccountMismatch`, anything else (such as partial verification or a non-positive price) with `InvalidPrice`.
 - Reject when `conf × BPS > price × max_conf_bps`.
 - Convert price and confidence to `USD_SCALE` using the feed exponent.
@@ -387,6 +388,8 @@ Repayment needs no prices, so it works during an oracle outage.
 
 There is no close factor. If the chosen collateral can't move (for example, an issuer-paused xStock), the transaction fails and the liquidator chooses another collateral.
 
+**Accepted risk: permissionless penalty step.** The market accrues lender interest only at `rate × (BPS − reserve_factor)` (§9); an overdue loan's penalty is not part of that continuous accrual, so it reaches lenders as a single step — released through `R(principal_repaid, loan)` — only when the loan is repaid or liquidated. Repayment is gated to the borrower or a whitelisted payer, but `liquidate` has no access check, and `deposit_liquidity`, `liquidate`, `withdraw_liquidity` all fit in one transaction: a lender can deposit immediately before the step and share in penalty income it did not wait for. This dilutes honest lenders' share of penalty income; it does not threaten solvency, since the penalty is debt already owed rather than newly minted value. Accruing the penalty into `lp_rate_product` as it builds up, or amortising its release, is deferred to Plan 6.
+
 ### `write_off_loan(position, loan_id)` — admin
 
 1. Accrue. Load prices.
@@ -497,7 +500,7 @@ At maximum borrowing, debt ≤ own value × (LTV + promo_cap) ≤ own value × t
 | `open_position` | Whitelisted user; any fee payer | Records `rent_payer` |
 | `close_position` | Whitelisted owner | Requires no collateral and no active loans; releases promo; refunds rent to `rent_payer` |
 | `deposit_collateral(amount)` | Whitelisted owner | Mint comes from the accounts. Asset not paused, under deposit cap, free or matching slot; no prices needed |
-| `withdraw_collateral(amount)` | Whitelisted owner | Mint comes from the accounts. More than the slot holds fails with `InsufficientCollateral`. If loans are active, the `market` (must equal `position.market`) and `ngn_feed` accounts are required, price triples cover the slots still used after the withdrawal, and `debt ≤ borrow_limit` must hold afterwards. No accrual: it doesn't change a position's debt |
+| `withdraw_collateral(amount)` | Whitelisted owner | Mint comes from the accounts. More than the slot holds fails with `InsufficientCollateral`. If loans are active, the `market` (must equal `position.market`) and `ngn_feed` accounts are required, price pairs cover the slots still used after the withdrawal, and `debt ≤ borrow_limit` must hold afterwards. No accrual: it doesn't change a position's debt |
 | `take_loan`, `repay_loan` | Whitelisted | §10 |
 | `redeem_promo` | Whitelisted | §12 |
 
@@ -525,7 +528,7 @@ At maximum borrowing, debt ≤ own value × (LTV + promo_cap) ≤ own value × t
 
 ## 15. Transactions
 
-- A health check with 8 collateral slots passes 24 price-related accounts plus fixed accounts. Clients and liquidators must use versioned transactions with address lookup tables.
+- A health check with 8 collateral slots passes 16 price-related accounts plus fixed accounts. Clients and liquidators must use versioned transactions with address lookup tables.
 - Pyth price updates and Switchboard feed updates must be posted in the same transaction or recently enough to meet the age limits. This is the caller's job.
 - The program calls no other program except the token programs. Pyth and Switchboard data is read from accounts, so there is no re-entrancy path.
 
@@ -548,6 +551,7 @@ Loan events carry position, owner, loan ID, amounts and the resulting principal,
 - The program is upgradeable. The upgrade authority is the Squads admin multisig with a Squads time lock.
 - Accounts grow only into their reserved padding; a `version` bump marks layout changes.
 - `Cargo.toml` release profile sets `overflow-checks = true`. All math uses checked operations.
+- If a pinned collateral feed's sponsor crank stalls (§8), `update_collateral_params` unpins it, through the timelock above, so liquidators can go back to presenting any fresh verified update. Leaving every asset unpinned from the start is not a practical fallback at scale: a liquidator would have to post one update per collateral slot, which exhausts the compute budget well before the 8-slot maximum (§15).
 
 ## 19. Testing
 

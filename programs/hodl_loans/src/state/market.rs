@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-use crate::constants::{MAX_BPS, MIN_TENURE};
+use crate::constants::{MAX_BAD_DEBT_DUST_USD, MAX_BPS, MIN_TENURE};
 use crate::errors::HodlError;
 use crate::math::checked::{add, sub};
 use crate::math::interest::accrue_lp_interest;
@@ -77,6 +77,7 @@ impl MarketParams {
         require!(self.ngn_min_samples >= 1, HodlError::InvalidParameters);
         require!(self.ngn_max_spread_bps <= MAX_BPS, HodlError::InvalidParameters);
         require!(self.promo_inactivity_seconds >= 0, HodlError::InvalidParameters);
+        require!(self.bad_debt_dust_usd <= MAX_BAD_DEBT_DUST_USD, HodlError::InvalidParameters);
         Ok(())
     }
 }

@@ -192,6 +192,56 @@ fn a_fully_repaid_loan_clears_its_slot() {
 }
 
 #[test]
+fn two_consecutive_partial_liquidations_converge_to_healthy() {
+    let (mut env, setup) = Env::loan_ready();
+    // 1,200,000 cNGN is $750.75 of debt (1,200,000 × 625,625,000 of USD_SCALE, the NGN ask).
+    // At the 70% LTV limit that needs collateral worth more than $1,072.50, so price USDC at
+    // $1.20 ($1,200 of collateral, an $840 limit) to clear take_loan's health check.
+    env.set_pyth_price(&setup.usdc, 120_000_000, 0);
+    let loan = 1_200_000 * ONE_CNGN;
+    env.take_loan(&setup.borrower, &setup, loan, 365 * DAY).unwrap();
+
+    // Crash to $0.80: 1,000 USDC is now $800 of collateral, a $720 liquidation line (90%
+    // threshold) under the $750.75 debt — a $30.75 gap, and the position is liquidatable.
+    env.set_pyth_price(&setup.usdc, 80_000_000, 0);
+    let liquidator = env.new_liquidator(&setup.cngn, loan);
+    let collateral_account = env.create_token_account(&setup.usdc, &liquidator.pubkey());
+
+    // Each whole cNGN repaid removes 625,625,000 (the NGN ask) from debt, and removes
+    // 625,000,000 × 1.05 × 90% = 590,625,000 (the seized dollar value, marked up by the 5%
+    // bonus, times the 90% threshold) from the liquidation line — a net closing rate of
+    // 35,000,000 of USD_SCALE ($0.035) per cNGN. 400,000 cNGN closes $14 of the $30.75 gap,
+    // leaving $16.75 open.
+    let repaid1 = 400_000 * ONE_CNGN;
+    env.liquidate(&liquidator, &setup, &setup.usdc, &collateral_account, 0, repaid1).unwrap();
+    // 400,000 cNGN is $250 at the plain NGN price; with the 5% bonus, $262.5; at $0.80/USDC
+    // that seizes 328.125 USDC.
+    let seized1 = 328_125_000;
+    assert_eq!(env.token_balance(&collateral_account), seized1);
+    let after_first = env.position(&setup.borrower.pubkey());
+    assert_eq!(after_first.loans[0].principal, loan - repaid1);
+    assert_eq!(after_first.collateral[0].amount, 1_000 * ONE_USDC - seized1);
+
+    // Debt is now 800,000 × 625,625,000 = $500.50; the line is (1,000 − 328.125) USDC × $0.80
+    // × 90% = $483.75 — a $16.75 gap still open, so the position is still liquidatable and a
+    // second liquidation is accepted.
+    let repaid2 = 500_000 * ONE_CNGN;
+    env.liquidate(&liquidator, &setup, &setup.usdc, &collateral_account, 0, repaid2).unwrap();
+    // 500,000 cNGN is $312.5 at the plain NGN price; with the bonus, $328.125; at $0.80/USDC
+    // that seizes 410.15625 USDC.
+    let seized2 = 410_156_250;
+    assert_eq!(env.token_balance(&collateral_account), seized1 + seized2);
+    let after_second = env.position(&setup.borrower.pubkey());
+    assert_eq!(after_second.loans[0].principal, loan - repaid1 - repaid2);
+
+    // Health has crossed over: debt is now 300,000 × 625,625,000 = $187.6875; the line is
+    // (671.875 − 410.15625) USDC × $0.80 × 90% = $188.4375 — debt is under the line, so a
+    // third liquidation attempt is rejected as not liquidatable, however small the request.
+    let third = env.liquidate(&liquidator, &setup, &setup.usdc, &collateral_account, 0, ONE_CNGN);
+    assert_hodl_error(third, HodlError::NotLiquidatable);
+}
+
+#[test]
 fn liquidation_rejections() {
     let (mut env, setup) = underwater();
     let usdt = env.list_spl_collateral(6);

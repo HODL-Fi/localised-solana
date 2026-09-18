@@ -86,6 +86,9 @@ fn multi_loan_accounting_holds() {
     assert!(market.accrued_interest <= 60, "residual accrued_interest {} is more than rounding dust", market.accrued_interest);
 }
 
+/// The whole default path: a healthy loan, a price crash, a partial liquidation, then a
+/// write-off of what is left. The market's accounting invariants hold after every step, and
+/// the lender never gets back more than it put in.
 #[test]
 fn a_default_runs_from_liquidation_to_write_off() {
     let (mut env, setup) = Env::loan_ready();
@@ -115,10 +118,21 @@ fn a_default_runs_from_liquidation_to_write_off() {
     assert!(market.total_bad_debt > 0);
     assert!(!env.position(&owner).has_active_loans());
 
-    // The lender's exit is short by the bad debt, never above its deposit.
+    // The lender's exit is short by exactly the bad debt: it is the pool's only depositor, so
+    // a full withdrawal returns total_assets, which is POOL_CNGN minus what the write-off
+    // recorded (the liquidation already recovered 300,000 of the original 700,000 cNGN loan,
+    // so only the unrecovered 400,000 cNGN became bad debt). The virtual-share offset that
+    // protects the first deposit (1,000 shares / 1 asset) rounds `redeemable_amount` down from
+    // total_assets by less than 1 base unit here — total_shares (10,000,000,000,000,000) is far
+    // larger than 1,000 × total_assets — so the floor lands on total_assets exactly, with no
+    // dust on top of the recorded loss.
     env.withdraw(&setup.lender, &setup.cngn, u64::MAX).unwrap();
     let returned = env.token_balance(&setup.lender.token);
-    assert!(returned < POOL_CNGN, "lender got back {returned} of {POOL_CNGN} despite bad debt");
+    let shortfall = POOL_CNGN - returned;
+    assert_eq!(
+        shortfall, market.total_bad_debt as u64,
+        "lender shortfall {shortfall} does not match the recorded bad debt {}", market.total_bad_debt
+    );
 
     // With no loans left, the borrower can still withdraw the dust that was never seized.
     let dust = env.position(&owner).collateral[0].amount;

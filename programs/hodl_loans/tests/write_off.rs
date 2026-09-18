@@ -77,6 +77,39 @@ fn the_reserve_absorbs_the_loss_before_lenders() {
 }
 
 #[test]
+fn reserve_only_partially_covers_the_loss() {
+    let (mut env, setup) = Env::loan_ready();
+    // One 1,000,000 cNGN loan repaid after 73 days leaves 3,000 cNGN in the reserve
+    // (1,000,000 × 15% × 73/365 = 30,000 interest, 10% reserve factor = 3,000).
+    env.take_loan(&setup.borrower, &setup, 1_000_000 * ONE_CNGN, 365 * DAY).unwrap();
+    env.warp_seconds(73 * DAY);
+    env.mint_to(&setup.cngn, &setup.borrower_cngn, 30_000 * ONE_CNGN);
+    env.repay(&setup, 0, u64::MAX).unwrap();
+    let reserve = 3_000 * ONE_CNGN;
+    assert_eq!(env.market(&setup.cngn).protocol_reserve, reserve);
+
+    // A second loan, larger than the reserve: 10,000 cNGN of principal, written off with no
+    // time elapsed so the loss is exactly the principal (no interest to release). The reserve
+    // (3,000 cNGN) covers only part of the 10,000 cNGN loss, so `covered = min(reserve, loss)`
+    // actually picks the reserve and the remaining 7,000 cNGN falls on the lenders.
+    env.set_pyth_price(&setup.usdc, ONE_DOLLAR, 0);
+    env.set_ngn_price(NGN_USD, NGN_SPREAD);
+    let principal = 10_000 * ONE_CNGN;
+    env.take_loan(&setup.borrower, &setup, principal, 365 * DAY).unwrap();
+    let assets_before = env.market(&setup.cngn).total_assets().unwrap();
+
+    env.set_pyth_price(&setup.usdc, USDC_DUST, 0);
+    env.write_off(&setup, 1).unwrap();
+
+    let loss = principal as u128;
+    let covered = reserve as u128;
+    let market = env.market(&setup.cngn);
+    assert_eq!(market.protocol_reserve, 0);
+    assert_eq!(market.total_bad_debt, loss);
+    assert_eq!(market.total_assets().unwrap(), assets_before - (loss - covered));
+}
+
+#[test]
 fn write_off_needs_an_unhealthy_position_with_dust_collateral() {
     let (mut env, setup) = Env::loan_ready();
     env.take_loan(&setup.borrower, &setup, LOAN, 365 * DAY).unwrap();
@@ -92,6 +125,9 @@ fn write_off_needs_an_unhealthy_position_with_dust_collateral() {
     env.set_pyth_price(&setup.usdc, USDC_DUST, 0);
     assert_hodl_error(env.write_off(&setup, 7), HodlError::LoanNotFound);
     env.write_off(&setup, 0).unwrap();
+
+    // The loan slot is cleared, so a second write-off of the same loan id finds nothing there.
+    assert_hodl_error(env.write_off(&setup, 0), HodlError::LoanNotFound);
 }
 
 #[test]

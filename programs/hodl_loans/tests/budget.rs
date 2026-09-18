@@ -55,7 +55,7 @@ fn full_position_stays_under_the_default_compute_budget() {
     assert!(cu < 75_000, "withdraw_collateral at 8 collateral slots / 10 loans used {cu} CU");
 
     // liquidate prices all 8 collateral slots and all 10 loans, then moves two token types.
-    // Crash every collateral price to $0.001 so the position is liquidatable.
+    // Measured 78,638 CU. Crash every collateral price to $0.001 so the position is liquidatable.
     for m in &mints {
         env.set_pyth_price(m, 100_000, 0);
     }

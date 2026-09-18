@@ -123,6 +123,7 @@ fn rate_bounds_and_price_feed_limits_are_validated() {
         hodl_loans::MarketParams { ngn_min_samples: 0, ..base },
         hodl_loans::MarketParams { ngn_max_spread_bps: 10_001, ..base },
         hodl_loans::MarketParams { promo_inactivity_seconds: -1, ..base },
+        hodl_loans::MarketParams { bad_debt_dust_usd: hodl_loans::MAX_BAD_DEBT_DUST_USD + 1, ..base },
     ];
     for params in invalid {
         let instruction = create_market_ix(&admin, &mint, &TOKEN_2022, params);
@@ -136,6 +137,7 @@ fn rate_bounds_and_price_feed_limits_are_validated() {
         ngn_min_samples: 1,
         ngn_max_spread_bps: 10_000,
         promo_inactivity_seconds: 0,
+        bad_debt_dust_usd: hodl_loans::MAX_BAD_DEBT_DUST_USD,
         ..base
     };
     let instruction = create_market_ix(&admin, &mint, &TOKEN_2022, boundaries);
