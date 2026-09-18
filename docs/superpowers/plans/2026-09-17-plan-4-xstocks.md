@@ -57,7 +57,7 @@ New in this plan:
 - **No sponsored Pyth push account was found for the xStock feeds**, so an xStock is listed with `price_account` pinned to whatever account HODL itself maintains, and the 60-second age cap does the rest.
 - **Float conversion truncates in the protocol's favour.** `1.0009 × 10^12` is `1_000_899_999_999` in binary floating point, one unit low — it undervalues collateral by 10^-12 of a token, never the borrower's debt.
 - **Compute at full load, measured in LiteSVM:** a position holding 8 xStock slots with 9 existing loans spends 79,912 CU on `take_loan`, against the 200,000 default. Compute is not the binding limit — the 24 price-related accounts push the legacy transaction past the 1,232-byte packet limit, so such a position needs a v0 transaction with an address lookup table. `tests/budget.rs` pins both.
-- **Verification.** The full Plan 4 code was compiled and tested before this plan was written: 155 tests pass (43 unit, 112 LiteSVM), `cargo clippy -D warnings` is clean, every task's end state was rebuilt from Plan 3's head and passes its own suite and clippy, and each task's failing-test step was run to capture its expected errors.
+- **Verification.** The full Plan 4 code was compiled and tested before this plan was written: 157 tests pass (41 unit, 116 LiteSVM), `cargo clippy -D warnings` is clean, every task's end state was rebuilt from Plan 3's head and passes its own suite and clippy, and each task's failing-test step was run to capture its expected errors.
 
 ## Plan-level refinements to the spec
 
@@ -631,6 +631,8 @@ use anchor_lang::prelude::Pubkey;
 use solana_signer::Signer;
 use spl_token_2022_interface::state::AccountState;
 
+const DAY: i64 = 86_400;
+
 #[test]
 fn a_live_shaped_xstock_lists_as_xstock_only() {
     let mut env = Env::initialized();
@@ -715,6 +717,59 @@ fn a_hook_switched_on_after_listing_stops_transfers_cleanly() {
     env.set_transfer_hook(&stock, None);
     let withdraw = withdraw_collateral_ix(&owner, &stock, &TOKEN_2022, &token, None, ONE_XSTOCK, vec![]);
     env.sponsored(withdraw, &borrower.key).unwrap();
+}
+
+#[test]
+fn a_hook_switched_on_after_listing_blocks_the_admin_sweep() {
+    let mut env = Env::initialized();
+    let stock = env.list_xstock_collateral(200);
+    let admin = env.admin.pubkey();
+    let treasury = env.treasury.pubkey();
+    let destination = env.create_token_account(&stock, &treasury);
+
+    // A donation sits in the vault with nothing recorded as deposited, the same shape as
+    // `collateral.rs::collateral_sweep_moves_only_donations`.
+    env.mint_to(&stock, &collateral_vault_pda(&stock), 7 * ONE_XSTOCK);
+
+    env.set_transfer_hook(&stock, Some(Pubkey::new_unique()));
+    let sweep = sweep_collateral_excess_ix(&admin, &stock, &TOKEN_2022, &destination);
+    assert_hodl_error(
+        send(&mut env.svm, std::slice::from_ref(&sweep), &[&env.admin]),
+        HodlError::UnsupportedMintExtension,
+    );
+
+    // Clearing the hook lets the donation through.
+    env.set_transfer_hook(&stock, None);
+    send(&mut env.svm, &[sweep], &[&env.admin]).unwrap();
+    assert_eq!(env.token_balance(&destination), 7 * ONE_XSTOCK);
+}
+
+#[test]
+fn a_hook_switched_on_after_listing_blocks_the_liquidation_seizure() {
+    let (mut env, setup) = Env::loan_ready();
+    let stock = env.list_xstock_collateral(200);
+    let borrower = env.new_borrower();
+    let owner = borrower.pubkey();
+    env.deposit_collateral(&borrower, &stock, 10 * ONE_XSTOCK);
+    let borrower_cngn = env.create_token_account(&setup.cngn, &owner);
+    let setup = LoanSetup { borrower, borrower_cngn, ..setup };
+
+    // 10 xStock at $200 backs 1,000,000 cNGN ($625.625 at the NGN ask), under the 50% LTV limit.
+    env.take_loan(&setup.borrower, &setup, 1_000_000 * ONE_CNGN, 365 * DAY).unwrap();
+    // Crash to $80: $800 of collateral × the 75% threshold is $600, under the $625.625 debt.
+    env.set_pyth_price(&stock, 80 * ONE_DOLLAR, 0);
+
+    let liquidator = env.new_liquidator(&setup.cngn, 1_000_000 * ONE_CNGN);
+    let seized_to = env.create_token_account(&stock, &liquidator.pubkey());
+
+    env.set_transfer_hook(&stock, Some(Pubkey::new_unique()));
+    let hooked = env.liquidate(&liquidator, &setup, &stock, &seized_to, 0, 100_000 * ONE_CNGN);
+    assert_hodl_error(hooked, HodlError::UnsupportedMintExtension);
+
+    // Clearing the hook lets the seizure through.
+    env.set_transfer_hook(&stock, None);
+    env.liquidate(&liquidator, &setup, &stock, &seized_to, 0, 100_000 * ONE_CNGN).unwrap();
+    assert!(env.token_balance(&seized_to) > 0);
 }
 
 #[test]
@@ -937,7 +992,7 @@ In `programs/hodl_loans/src/instructions/liquidation/liquidate.rs`, the same imp
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 148 tests in all (`xstocks` is new with 5, `withdraw` is now 6).
+Expected: every binary reports `ok`, 150 tests in all (`xstocks` is new with 7, `withdraw` is now 6).
 
 - [ ] **Step 5: Commit**
 
@@ -1087,7 +1142,7 @@ fn scale_multiplier(raw: f64) -> Result<u128> {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 150 tests in all (the unit suite is now 43).
+Expected: every binary reports `ok`, 152 tests in all (the unit suite is now 40).
 
 - [ ] **Step 5: Commit**
 
@@ -1165,10 +1220,9 @@ impl Env {
 }
 ```
 
-Append two tests to `programs/hodl_loans/tests/xstocks.rs`, with the constants they need at the top of the file, under the imports:
+Append two tests to `programs/hodl_loans/tests/xstocks.rs`, with the two borrow ceilings they need added under the existing `const DAY`:
 
 ```rust
-const DAY: i64 = 86_400;
 /// 10 shares of a $200 stock at 50% LTV back $1,000, which is 1,598,401 cNGN at the ask.
 const CEILING: u64 = 1_598_401 * ONE_CNGN;
 /// The same position once a 1.5 multiplier makes the balance 15 shares.
@@ -1257,7 +1311,7 @@ fn an_all_xstock_position_stays_under_the_default_compute_budget() {
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `./scripts/test.sh --test xstocks`
-Expected: `the_multiplier_scales_borrowing_power` and `a_scheduled_multiplier_takes_effect_on_its_timestamp` both fail with `expected Custom(6011), got InstructionError(0, Custom(6007))` — `PriceAccountMismatch` from `valuation.rs`, because the harness now supplies three accounts for an xStock slot and the program still reads pairs.
+Expected: three tests fail — `the_multiplier_scales_borrowing_power` and `a_scheduled_multiplier_takes_effect_on_its_timestamp` with `expected Custom(6011), got InstructionError(0, Custom(6007))`, and Task 1's `a_hook_switched_on_after_listing_blocks_the_liquidation_seizure` with the same `Custom(6007)` in place of the error it expects. All three are `PriceAccountMismatch` from `valuation.rs`: the harness now supplies three accounts for an xStock slot and the program still reads pairs. Task 1's test goes green again with the rest of this task.
 
 - [ ] **Step 3: Implement**
 
@@ -1559,7 +1613,7 @@ pub fn load_health(
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 154 tests in all (`xstocks` is now 7, `budget` 2, the unit suite 44).
+Expected: every binary reports `ok`, 156 tests in all (`xstocks` is now 9, `budget` 2, the unit suite 41).
 
 - [ ] **Step 5: Commit**
 
@@ -1776,10 +1830,10 @@ and pass it to `seize_for_repayment`, between the collateral decimals and the bo
 - [ ] **Step 4: Run the tests to verify they pass, then the full suite and lints**
 
 Run: `./scripts/test.sh --test xstocks`
-Expected: 8 tests, all `ok`.
+Expected: 10 tests, all `ok`.
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 155 tests in all — 43 unit and 112 LiteSVM.
+Expected: every binary reports `ok`, 157 tests in all — 41 unit and 116 LiteSVM.
 
 Run: `cargo clippy -p hodl_loans --all-targets -- -D warnings`
 Expected: no warnings.
@@ -1795,7 +1849,7 @@ git commit -m "feat: seize xStock collateral at the display price"
 
 ## Done when
 
-- `./scripts/test.sh` reports 155 passing tests and `cargo clippy -p hodl_loans --all-targets -- -D warnings` is clean.
+- `./scripts/test.sh` reports 157 passing tests and `cargo clippy -p hodl_loans --all-targets -- -D warnings` is clean.
 - A live-shaped xStock mint lists only as `XStock`; a hook program or a frozen default is rejected at listing and again at every transfer.
 - A position's borrowing power follows the mint's effective multiplier, including one scheduled for a future timestamp.
 - A liquidator seizing an xStock receives raw units worth the display value it paid for, at any multiplier.
