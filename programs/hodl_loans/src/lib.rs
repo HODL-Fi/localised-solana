@@ -130,6 +130,10 @@ pub mod hodl_loans {
         instructions::handle_liquidate(ctx, loan_id, amount)
     }
 
+    pub fn write_off_loan<'info>(ctx: Context<'info, WriteOffLoan<'info>>, loan_id: u64) -> Result<()> {
+        instructions::handle_write_off_loan(ctx, loan_id)
+    }
+
     pub fn deposit_liquidity(ctx: Context<DepositLiquidity>, amount: u64) -> Result<()> {
         instructions::handle_deposit_liquidity(ctx, amount)
     }

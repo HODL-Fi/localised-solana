@@ -344,7 +344,8 @@ pub fn default_market_params() -> hodl_loans::MarketParams {
         max_utilization_bps: 9_000,
         min_loan_amount: 1_000 * ONE_CNGN,
         max_tenure_seconds: 365 * 86_400,
-        bad_debt_dust_usd: 1_000_000_000_000_000_000,
+        // $5 at USD_SCALE: below that, liquidating costs more than it recovers.
+        bad_debt_dust_usd: 5_000_000_000_000,
         ngn_feed: Pubkey::new_from_array([7; 32]),
         ngn_max_stale_slots: 150,
         ngn_min_samples: 3,
@@ -1008,6 +1009,33 @@ impl Env {
             prices,
         );
         send(&mut self.svm, &[instruction], &[&liquidator.key])
+    }
+}
+
+// ---- Write-off (Task 4) ----
+
+pub fn write_off_loan_ix(admin: &Pubkey, position_owner: &Pubkey, mint: &Pubkey, loan_id: u64, prices: Vec<AccountMeta>) -> Instruction {
+    let mut instruction = ix(
+        hodl_loans::instruction::WriteOffLoan { loan_id },
+        hodl_loans::accounts::WriteOffLoan {
+            admin: *admin,
+            config: config_pda(),
+            position: position_pda(position_owner),
+            market: market_pda(mint),
+            ngn_feed: ngn_feed(),
+        },
+    );
+    instruction.accounts.extend(prices);
+    instruction
+}
+
+impl Env {
+    pub fn write_off(&mut self, setup: &LoanSetup, loan_id: u64) -> TxResult {
+        let owner = setup.borrower.pubkey();
+        let prices = self.price_accounts(&owner);
+        let admin = self.admin.pubkey();
+        let instruction = write_off_loan_ix(&admin, &owner, &setup.cngn, loan_id, prices);
+        send(&mut self.svm, &[instruction], &[&self.admin])
     }
 }
 

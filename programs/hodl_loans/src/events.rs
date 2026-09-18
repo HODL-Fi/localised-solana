@@ -232,3 +232,16 @@ pub struct LoanPartiallyLiquidated {
     pub collateral_seized: u64,
     pub remaining_principal: u64,
 }
+
+#[event]
+pub struct LoanWrittenOff {
+    pub market: Pubkey,
+    pub position: Pubkey,
+    pub owner: Pubkey,
+    pub loan_id: u64,
+    pub principal: u64,
+    /// Principal plus the lender interest released for it.
+    pub loss: u128,
+    pub covered_by_reserve: u64,
+    pub total_bad_debt: u128,
+}

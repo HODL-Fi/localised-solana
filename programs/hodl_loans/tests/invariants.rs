@@ -85,3 +85,45 @@ fn multi_loan_accounting_holds() {
     // not unpaid interest — everything owed was paid off above.
     assert!(market.accrued_interest <= 60, "residual accrued_interest {} is more than rounding dust", market.accrued_interest);
 }
+
+#[test]
+fn a_default_runs_from_liquidation_to_write_off() {
+    let (mut env, setup) = Env::loan_ready();
+    let owner = setup.borrower.pubkey();
+    env.take_loan(&setup.borrower, &setup, 700_000 * ONE_CNGN, 365 * DAY).unwrap();
+    assert_invariants(&env, &setup, "after borrowing");
+
+    // USDC at $0.45 puts $437.94 of debt over the $405 liquidation line.
+    env.set_pyth_price(&setup.usdc, 45_000_000, 0);
+    let liquidator = env.new_liquidator(&setup.cngn, 10_000_000 * ONE_CNGN);
+    let seized_to = env.create_token_account(&setup.usdc, &liquidator.pubkey());
+    env.liquidate(&liquidator, &setup, &setup.usdc, &seized_to, 0, 300_000 * ONE_CNGN).unwrap();
+    assert_invariants(&env, &setup, "after liquidating");
+    let collateral = env.collateral(&setup.usdc);
+    assert_eq!(env.token_balance(&collateral_vault_pda(&setup.usdc)), collateral.total_deposited);
+    assert_eq!(
+        env.position(&owner).collateral[0].amount + env.token_balance(&seized_to),
+        1_000 * ONE_USDC
+    );
+
+    // The rest of the collateral collapses to dust, so the remaining loan is written off.
+    env.set_pyth_price(&setup.usdc, 100_000, 0);
+    env.write_off(&setup, 0).unwrap();
+    assert_invariants(&env, &setup, "after the write-off");
+    let market = env.market(&setup.cngn);
+    assert_eq!(market.total_borrows, 0);
+    assert!(market.total_bad_debt > 0);
+    assert!(!env.position(&owner).has_active_loans());
+
+    // The lender's exit is short by the bad debt, never above its deposit.
+    env.withdraw(&setup.lender, &setup.cngn, u64::MAX).unwrap();
+    let returned = env.token_balance(&setup.lender.token);
+    assert!(returned < POOL_CNGN, "lender got back {returned} of {POOL_CNGN} despite bad debt");
+
+    // With no loans left, the borrower can still withdraw the dust that was never seized.
+    let dust = env.position(&owner).collateral[0].amount;
+    let token = env.create_token_account(&setup.usdc, &owner);
+    let withdraw = withdraw_collateral_ix(&owner, &setup.usdc, &SPL_TOKEN, &token, None, dust, vec![]);
+    env.sponsored(withdraw, &setup.borrower.key).unwrap();
+    assert_eq!(env.token_balance(&token), dust);
+}
