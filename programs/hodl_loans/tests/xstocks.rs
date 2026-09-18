@@ -2,7 +2,7 @@ mod common;
 
 use common::*;
 use hodl_loans::{CollateralKind, HodlError};
-use anchor_lang::prelude::Pubkey;
+use anchor_lang::prelude::{AccountMeta, Pubkey};
 use solana_signer::Signer;
 use spl_token_2022_interface::state::AccountState;
 
@@ -223,4 +223,45 @@ fn a_scheduled_multiplier_takes_effect_on_its_timestamp() {
     env.set_pyth_price(&stock, 200 * ONE_DOLLAR, 0);
     env.set_ngn_price(NGN_USD, NGN_SPREAD);
     env.take_loan(&setup.borrower, &setup, CEILING_AT_1_5, 30 * DAY).unwrap();
+}
+
+#[test]
+fn a_foreign_mint_with_a_generous_multiplier_does_not_inflate_collateral() {
+    let (mut env, setup) = Env::loan_ready();
+    let stock = env.list_xstock_collateral(200);
+    let foreign = env.list_xstock_collateral(200);
+    // The foreign mint's own multiplier is as generous as the extension allows.
+    let now = env.now();
+    env.set_multiplier(&foreign, 1_000_000.0, now);
+
+    let borrower = env.new_borrower();
+    env.deposit_collateral(&borrower, &stock, 10 * ONE_XSTOCK);
+    let borrower_cngn = env.create_token_account(&setup.cngn, &borrower.pubkey());
+    let setup = LoanSetup { borrower, borrower_cngn, ..setup };
+    let owner = setup.borrower.pubkey();
+
+    // The only used slot is `stock`'s: its correct (asset, price) pair, but a stranger's mint
+    // stands in for the third account.
+    let mut prices = price_pairs(&[stock]);
+    prices.push(AccountMeta::new_readonly(foreign, false));
+    let ixn = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 1_000 * ONE_CNGN, 30 * DAY, prices);
+    let result = send(&mut env.svm, &[ixn], &[&env.admin, &setup.borrower.key]);
+    assert_hodl_error(result, HodlError::PriceAccountMismatch);
+}
+
+#[test]
+fn an_xstock_slot_rejects_the_two_account_standard_shape() {
+    let (mut env, setup) = Env::loan_ready();
+    let stock = env.list_xstock_collateral(200);
+    let borrower = env.new_borrower();
+    env.deposit_collateral(&borrower, &stock, 10 * ONE_XSTOCK);
+    let borrower_cngn = env.create_token_account(&setup.cngn, &borrower.pubkey());
+    let setup = LoanSetup { borrower, borrower_cngn, ..setup };
+    let owner = setup.borrower.pubkey();
+
+    // Only the (asset, price) pair: the mint account an XStock slot needs is missing.
+    let prices = price_pairs(&[stock]);
+    let ixn = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 1_000 * ONE_CNGN, 30 * DAY, prices);
+    let result = send(&mut env.svm, &[ixn], &[&env.admin, &setup.borrower.key]);
+    assert_hodl_error(result, HodlError::PriceAccountMismatch);
 }

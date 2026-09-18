@@ -32,9 +32,10 @@ pub struct WithdrawCollateral<'info> {
 }
 
 /// Without active loans no prices are read, and `market` and `ngn_feed` may be omitted.
-/// With active loans, `market` and `ngn_feed` are required, `remaining_accounts` must hold one
-/// `(CollateralAsset, PriceUpdateV2)` pair per collateral slot still used **after**
-/// this withdrawal, in slot order, and the position must stay healthy.
+/// With active loans, `market` and `ngn_feed` are required, and `remaining_accounts` must
+/// hold, per collateral slot still used **after** this withdrawal, in slot order, a
+/// `(CollateralAsset, PriceUpdateV2)` pair — an `XStock` slot needs its mint too, as a third
+/// account, for its scaled-UI multiplier — and the position must stay healthy.
 pub fn handle_withdraw_collateral<'info>(ctx: Context<'info, WithdrawCollateral<'info>>, amount: u64) -> Result<()> {
     ctx.accounts.access.require_active()?;
     require!(amount > 0, HodlError::AmountTooSmall);

@@ -26,8 +26,9 @@ pub struct WriteOffLoan<'info> {
     pub ngn_feed: UncheckedAccount<'info>,
 }
 
-/// Spec §11 `write_off_loan`. `remaining_accounts`: one `(CollateralAsset, PriceUpdateV2)` pair
-/// per used collateral slot, in slot order.
+/// Spec §11 `write_off_loan`. `remaining_accounts`: per used collateral slot, in slot order, a
+/// `(CollateralAsset, PriceUpdateV2)` pair, plus the mint as a third account for an `XStock`
+/// slot — its scaled-UI multiplier is read from there.
 ///
 /// Only for a liquidatable position whose remaining collateral is worth less than
 /// `bad_debt_dust_usd` — below that, liquidating costs more than it recovers, so the loan is

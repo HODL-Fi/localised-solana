@@ -37,8 +37,9 @@ pub struct TakeLoan<'info> {
     pub token_program: Interface<'info, TokenInterface>,
 }
 
-/// Spec §10 `take_loan`. `remaining_accounts`: one `(CollateralAsset, PriceUpdateV2)` pair
-/// per used collateral slot, in slot order.
+/// Spec §10 `take_loan`. `remaining_accounts`: per used collateral slot, in slot order, a
+/// `(CollateralAsset, PriceUpdateV2)` pair — an `XStock` slot adds its mint as a third
+/// account, the source of its scaled-UI multiplier.
 pub fn handle_take_loan<'info>(
     ctx: Context<'info, TakeLoan<'info>>,
     amount: u64,

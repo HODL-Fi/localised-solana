@@ -78,6 +78,8 @@ fn full_position_stays_under_the_default_compute_budget() {
     assert!(cu < 25_000, "repay_loan at 10 loan slots used {cu} CU");
 }
 
+/// An all-xStock position is the most expensive health check the program can be asked to run:
+/// three accounts and a mint unpack per slot instead of two accounts and none.
 #[test]
 fn an_all_xstock_position_stays_under_the_default_compute_budget() {
     let (mut env, setup) = Env::loan_ready();
@@ -99,6 +101,8 @@ fn an_all_xstock_position_stays_under_the_default_compute_budget() {
         send_cu(&mut env.svm, &[ixn], &[&env.admin, &setup.borrower.key]).unwrap_or_else(|e| panic!("take_loan #{i} failed: {e}"));
     }
 
+    // 10th (last) loan slot: the health check unpacks 8 mints on top of the usual 8 collateral
+    // slots and 9 existing loans. Measured 75,540 CU.
     let prices = env.price_accounts(&owner);
     let ixn = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 1_000 * ONE_CNGN, 30 * DAY, prices);
     let cu = send_cu(&mut env.svm, &[ixn], &[&env.admin, &setup.borrower.key]).unwrap();

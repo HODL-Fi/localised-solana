@@ -57,9 +57,10 @@ pub struct Liquidate<'info> {
     pub collateral_token_program: Interface<'info, TokenInterface>,
 }
 
-/// Spec §11 `liquidate`. `remaining_accounts`: one `(CollateralAsset, PriceUpdateV2)` pair per
-/// used collateral slot, in slot order — the whole position is priced, because health decides
-/// whether it may be liquidated at all.
+/// Spec §11 `liquidate`. `remaining_accounts`: per used collateral slot, in slot order, a
+/// `(CollateralAsset, PriceUpdateV2)` pair — an `XStock` slot adds its mint as a third
+/// account, the source of its scaled-UI multiplier — the whole position is priced, because
+/// health decides whether it may be liquidated at all.
 ///
 /// A late loan is not liquidatable on its own: only an unhealthy position is (spec §2).
 /// Promo forfeiture (spec §11 step 3) arrives with Plan 5.

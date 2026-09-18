@@ -150,6 +150,22 @@ mod tests {
     }
 
     #[test]
+    fn display_amount_rounds_down_not_up() {
+        // A live AAPLX-shaped multiplier (token/scaled_ui.rs documents this exact value)
+        // applied to a raw balance of 3: floor gives 3 display units, ceil would give 4. An
+        // xStock balance must never be valued above what it represents.
+        let c = CollateralValue {
+            amount: 3,
+            decimals: 8,
+            multiplier: 1_000_899_999_999,
+            price: UsdPrice { price: 200 * USD, conf: 0 },
+            ltv_bps: 5_000,
+            liquidation_threshold_bps: 7_500,
+        };
+        assert_eq!(c.display_amount().unwrap(), 3);
+    }
+
+    #[test]
     fn no_collateral_means_any_debt_is_unhealthy() {
         let h = compute_health(&[], 1, 6, ngn()).unwrap();
         assert_eq!(h.borrow_limit, 0);
