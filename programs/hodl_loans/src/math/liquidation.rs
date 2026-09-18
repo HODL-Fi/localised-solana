@@ -19,7 +19,16 @@ pub struct Seizure {
 /// ```
 ///
 /// `multiplier` is the asset's scaled-UI factor (`MULTIPLIER_ONE` for a `Standard` asset):
-/// Pyth quotes an xStock per display token, so the seizure converts back to raw units.
+/// Pyth quotes an xStock per display token, so the seizure converts back to raw units. For a
+/// `Standard` asset the factor is 1 and the step leaves the value exact.
+///
+/// **It is not a no-op for a `Standard` asset, though.** The `× MULTIPLIER_SCALE` runs
+/// unconditionally, so `display` above ≈3.4 × 10^26 (`u128::MAX / MULTIPLIER_SCALE`) returns
+/// `MathOverflow` where the pre-multiplier code fell through to the slot cap below. It fails
+/// closed, which is the right direction, but the consequence is specific: such an asset is
+/// **unliquidatable** rather than slot-capped. Reaching it needs a collateral price near zero
+/// and a repayment near `u64::MAX`, and the same position would already be a write-off
+/// candidate — but the failure mode is a revert, not a capped seizure.
 ///
 /// The division is interleaved so a large repayment cannot overflow `u128`, and every step
 /// rounds down, so the liquidator never receives more collateral than the formula allows.

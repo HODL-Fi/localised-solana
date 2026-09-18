@@ -1216,13 +1216,14 @@ impl Env {
 // ---- The xStock multiplier (Task 3) ----
 
 /// Serialized size of a legacy transaction carrying `instruction`, signed `signers` times.
-/// Solana's packet limit is 1,232 bytes; above it the client needs a v0 transaction with an
-/// address lookup table.
+/// Above `PACKET_DATA_SIZE` the client needs a v0 transaction with an address lookup table.
 pub fn legacy_tx_size(instruction: &Instruction, payer: &Pubkey, signers: usize) -> usize {
     1 + 64 * signers + Message::new(std::slice::from_ref(instruction), Some(payer)).serialize().len()
 }
 
-pub const PACKET_DATA_SIZE: usize = 1_232;
+/// The 1,232-byte packet limit, from the SDK rather than restated here: `solana-packet` derives
+/// it as `1280 − 40 − 8` and was already in the dependency tree.
+pub use solana_packet::PACKET_DATA_SIZE;
 
 impl Env {
     /// Schedules the issuer's next multiplier. `effective_at` in the past takes effect at once.

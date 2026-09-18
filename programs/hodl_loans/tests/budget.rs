@@ -42,21 +42,21 @@ fn full_position_stays_under_the_default_compute_budget() {
     }
 
     // 10th (last) loan slot: the health check walks all 8 collateral slots and the 9 existing
-    // overdue loans. Measured 62,866 CU.
+    // overdue loans. Measured 66,126 CU.
     let prices = env.price_accounts(&owner);
     let ixn = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 1_000 * ONE_CNGN, 30 * DAY, prices);
     let cu = send_cu(&mut env.svm, &[ixn], &[&env.admin, &setup.borrower.key]).unwrap();
     assert!(cu < 75_000, "take_loan at 8 collateral slots / 9 existing overdue loans used {cu} CU");
 
     // withdraw_collateral's post-withdrawal health check walks the same 8 slots and now 10
-    // loans. Measured 66,522 CU.
+    // loans. Measured 70,170 CU.
     let token = env.create_token_account(&setup.usdc, &owner);
     let wd = withdraw_collateral_ix(&owner, &setup.usdc, &SPL_TOKEN, &token, Some(&setup.cngn), ONE_USDC, env.price_accounts(&owner));
     let cu = send_cu(&mut env.svm, &[wd], &[&env.admin, &setup.borrower.key]).unwrap();
     assert!(cu < 75_000, "withdraw_collateral at 8 collateral slots / 10 loans used {cu} CU");
 
     // liquidate prices all 8 collateral slots and all 10 loans, then moves two token types.
-    // Measured 78,638 CU. Crash every collateral price to $0.001 so the position is liquidatable.
+    // Measured 83,018 CU. Crash every collateral price to $0.001 so the position is liquidatable.
     for m in &mints {
         env.set_pyth_price(m, 100_000, 0);
     }
@@ -102,7 +102,14 @@ fn an_all_xstock_position_stays_under_the_default_compute_budget() {
     }
 
     // 10th (last) loan slot: the health check unpacks 8 mints on top of the usual 8 collateral
-    // slots and 9 existing loans. Measured 75,540 CU.
+    // slots and 9 existing loans. **Measured 72,533 CU — this is the figure spec §15 points at,
+    // and the only place it is written down.**
+    //
+    // It is a floor for mainnet, not an estimate of it: `MintKind::XStock` initializes a
+    // metadata *pointer* but writes no `TokenMetadata` extension, so the fixture mint is
+    // smaller than a live Backed xStock, which carries name, symbol and URI. Unpacking the
+    // real mint and walking its TLV entries costs more, so a mainnet `take_loan` reads
+    // somewhat higher than this.
     let prices = env.price_accounts(&owner);
     let ixn = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 1_000 * ONE_CNGN, 30 * DAY, prices);
     let cu = send_cu(&mut env.svm, &[ixn], &[&env.admin, &setup.borrower.key]).unwrap();
@@ -110,6 +117,13 @@ fn an_all_xstock_position_stays_under_the_default_compute_budget() {
 
     // Compute is not the binding limit here: at three accounts a slot the transaction no longer
     // fits in a packet, so such a position needs a v0 transaction with an address lookup table.
+    // Measured 1,346 bytes against the 1,232-byte limit.
+    //
+    // This assertion pins a limitation rather than a behaviour, so it is kept deliberately: spec
+    // §15 tells clients and liquidators they must use versioned transactions with lookup tables
+    // for an all-xStock position, and that promise is only true while this holds. If a future
+    // change shrinks the layout enough to fit, this test failing is the prompt to rewrite §15 —
+    // a spec change, not a broken test.
     let prices = env.price_accounts(&owner);
     let ixn = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 1_000 * ONE_CNGN, 30 * DAY, prices);
     let size = legacy_tx_size(&ixn, &env.admin.pubkey(), 2);

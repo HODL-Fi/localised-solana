@@ -1654,6 +1654,7 @@ dependencies = [
  "solana-account",
  "solana-keypair",
  "solana-message",
+ "solana-packet",
  "solana-signer",
  "solana-transaction",
  "spl-token-2022-interface",
