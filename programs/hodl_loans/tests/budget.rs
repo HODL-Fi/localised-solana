@@ -54,6 +54,21 @@ fn full_position_stays_under_the_default_compute_budget() {
     let cu = send_cu(&mut env.svm, &[wd], &[&env.admin, &setup.borrower.key]).unwrap();
     assert!(cu < 75_000, "withdraw_collateral at 8 collateral slots / 10 loans used {cu} CU");
 
+    // liquidate prices all 8 collateral slots and all 10 loans, then moves two token types.
+    // Crash every collateral price to $0.001 so the position is liquidatable.
+    for m in &mints {
+        env.set_pyth_price(m, 100_000, 0);
+    }
+    let liquidator = env.new_liquidator(&setup.cngn, 100_000 * ONE_CNGN);
+    let seized_to = env.create_token_account(&setup.usdc, &liquidator.pubkey());
+    let prices = env.price_accounts(&owner);
+    let lq = liquidate_ix(
+        &liquidator.pubkey(), &owner, &setup.cngn, &liquidator.cngn, &setup.usdc, &SPL_TOKEN,
+        &seized_to, 0, 100 * ONE_CNGN, prices,
+    );
+    let cu = send_cu(&mut env.svm, &[lq], &[&liquidator.key]).unwrap();
+    assert!(cu < 100_000, "liquidate at 8 collateral slots / 10 loans used {cu} CU");
+
     // repay_loan needs no price accounts but still scans all 10 loan slots to find loan 0.
     // Measured 19,215 CU.
     env.mint_to(&setup.cngn, &setup.borrower_cngn, 100_000 * ONE_CNGN);

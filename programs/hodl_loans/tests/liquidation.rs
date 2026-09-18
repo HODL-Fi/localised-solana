@@ -1,0 +1,195 @@
+mod common;
+
+use common::*;
+use hodl_loans::HodlError;
+use solana_signer::Signer;
+
+const DAY: i64 = 86_400;
+/// The borrower's loan: 700,000 cNGN, worth $437.94 at the NGN ask.
+const LOAN: u64 = 700_000 * ONE_CNGN;
+/// $0.45 at Pyth exponent -8: 1,000 USDC then covers $450, under the $437.94 debt × 90% line.
+const USDC_CRASHED: i64 = 45_000_000;
+
+/// A position holding 1,000 USDC that owes `LOAN` and has just gone under water.
+fn underwater() -> (Env, LoanSetup) {
+    let (mut env, setup) = Env::loan_ready();
+    env.take_loan(&setup.borrower, &setup, LOAN, 365 * DAY).unwrap();
+    env.set_pyth_price(&setup.usdc, USDC_CRASHED, 0);
+    (env, setup)
+}
+
+#[test]
+fn healthy_positions_cannot_be_liquidated() {
+    let (mut env, setup) = Env::loan_ready();
+    env.take_loan(&setup.borrower, &setup, LOAN, 365 * DAY).unwrap();
+    let liquidator = env.new_liquidator(&setup.cngn, LOAN);
+    let collateral_account = env.create_token_account(&setup.usdc, &liquidator.pubkey());
+
+    let result = env.liquidate(&liquidator, &setup, &setup.usdc, &collateral_account, 0, ONE_CNGN);
+    assert_hodl_error(result, HodlError::NotLiquidatable);
+
+    // Being overdue is not enough on its own (spec §2): only an unhealthy position is liquidatable.
+    env.warp_seconds(400 * DAY);
+    env.set_pyth_price(&setup.usdc, ONE_DOLLAR, 0);
+    env.set_ngn_price(NGN_USD, NGN_SPREAD);
+    let result = env.liquidate(&liquidator, &setup, &setup.usdc, &collateral_account, 0, ONE_CNGN);
+    assert_hodl_error(result, HodlError::NotLiquidatable);
+}
+
+#[test]
+fn liquidation_seizes_collateral_plus_the_bonus() {
+    let (mut env, setup) = underwater();
+    let liquidator = env.new_liquidator(&setup.cngn, LOAN);
+    let collateral_account = env.create_token_account(&setup.usdc, &liquidator.pubkey());
+    let cash_before = env.market(&setup.cngn).cash;
+
+    // 100,000 cNGN is $62.50; with the 5% bonus that seizes $65.625 of USDC at $0.45.
+    let repaid = 100_000 * ONE_CNGN;
+    env.liquidate(&liquidator, &setup, &setup.usdc, &collateral_account, 0, repaid).unwrap();
+    let seized = 145_833_333;
+
+    assert_eq!(env.token_balance(&collateral_account), seized);
+    assert_eq!(env.token_balance(&liquidator.cngn), LOAN - repaid);
+    assert_eq!(env.token_balance(&collateral_vault_pda(&setup.usdc)), 1_000 * ONE_USDC - seized);
+    assert_eq!(env.collateral(&setup.usdc).total_deposited, 1_000 * ONE_USDC - seized);
+
+    let position = env.position(&setup.borrower.pubkey());
+    assert_eq!(position.collateral[0].amount, 1_000 * ONE_USDC - seized);
+    let loan = position.loans[0];
+    // No time has passed, so the whole repayment is principal and the terms are untouched.
+    assert_eq!((loan.principal, loan.repaid), (LOAN - repaid, repaid));
+    assert_eq!(loan.interest_anchor, loan.originated_at);
+
+    let market = env.market(&setup.cngn);
+    assert_eq!(market.total_borrows, LOAN - repaid);
+    assert_eq!(market.cash, cash_before + repaid);
+    assert_eq!(market.protocol_reserve, 0);
+    assert_eq!(market.lp_rate_product, (LOAN - repaid) as u128 * 1_500 * 9_000);
+}
+
+#[test]
+fn the_collateral_slot_caps_the_repayment() {
+    let (mut env, setup) = underwater();
+    let liquidator = env.new_liquidator(&setup.cngn, 10_000_000 * ONE_CNGN);
+    let collateral_account = env.create_token_account(&setup.usdc, &liquidator.pubkey());
+
+    // Repaying all 700,000 cNGN would seize 1,020.83 USDC, but the slot holds 1,000.
+    env.liquidate(&liquidator, &setup, &setup.usdc, &collateral_account, 0, u64::MAX).unwrap();
+
+    assert_eq!(env.token_balance(&collateral_account), 1_000 * ONE_USDC);
+    assert_eq!(env.collateral(&setup.usdc).total_deposited, 0);
+    let position = env.position(&setup.borrower.pubkey());
+    assert!(!position.has_collateral());
+    // 700,000 × 1,000 / 1,020.833333 cNGN, rounded down.
+    let paid = 685_714_285_938;
+    assert_eq!(position.loans[0].principal, LOAN - paid);
+    assert_eq!(env.market(&setup.cngn).total_borrows, LOAN - paid);
+}
+
+#[test]
+fn liquidation_splits_a_repayment_pro_rata_and_keeps_the_penalty_clock_running() {
+    let (mut env, setup) = Env::loan_ready();
+    // A 73-day loan left to run 146 days: 3,000 cNGN of interest, then 4,120 of penalty,
+    // so the balance is 107,120 cNGN ($67.02). USDC at $0.05 puts the line at $45.
+    env.take_loan(&setup.borrower, &setup, 100_000 * ONE_CNGN, 73 * DAY).unwrap();
+    env.warp_seconds(146 * DAY);
+    env.set_pyth_price(&setup.usdc, 5_000_000, 0);
+    env.set_ngn_price(NGN_USD, NGN_SPREAD);
+    let liquidator = env.new_liquidator(&setup.cngn, 10_000_000 * ONE_CNGN);
+    let collateral_account = env.create_token_account(&setup.usdc, &liquidator.pubkey());
+    let anchor = env.position(&setup.borrower.pubkey()).loans[0].interest_anchor;
+
+    // Spec §11 step 7 splits a liquidation pro rata, not interest-first as a repayment does:
+    // 8,120 × 100,000 / 107,120 of it is principal.
+    let repaid = 8_120 * ONE_CNGN;
+    env.liquidate(&liquidator, &setup, &setup.usdc, &collateral_account, 0, repaid).unwrap();
+    let principal_repaid = 7_580_283_793;
+    let interest_paid = repaid - principal_repaid;
+
+    let loan = env.position(&setup.borrower.pubkey()).loans[0];
+    assert_eq!(loan.principal, 100_000 * ONE_CNGN - principal_repaid);
+    assert_eq!(loan.repaid, repaid);
+    // Spec §11 step 10: the anchor does not move, so the penalty keeps accruing from maturity.
+    assert_eq!(loan.interest_anchor, anchor);
+
+    let market = env.market(&setup.cngn);
+    // The reserve takes 10% of the interest share only.
+    assert_eq!(market.protocol_reserve, interest_paid / 10);
+    assert_eq!(market.total_borrows, 100_000 * ONE_CNGN - principal_repaid);
+    assert_eq!(market.cash, POOL_CNGN - 100_000 * ONE_CNGN + repaid);
+    // $5.075 of cNGN plus the 5% bonus, at $0.05 a USDC.
+    assert_eq!(env.token_balance(&collateral_account), 106_575_000);
+}
+
+#[test]
+fn a_fully_repaid_loan_clears_its_slot() {
+    let (mut env, setup) = Env::loan_ready();
+    env.take_loan(&setup.borrower, &setup, 100_000 * ONE_CNGN, 365 * DAY).unwrap();
+    env.take_loan(&setup.borrower, &setup, 600_000 * ONE_CNGN, 365 * DAY).unwrap();
+    env.set_pyth_price(&setup.usdc, USDC_CRASHED, 0);
+    let liquidator = env.new_liquidator(&setup.cngn, 10_000_000 * ONE_CNGN);
+    let collateral_account = env.create_token_account(&setup.usdc, &liquidator.pubkey());
+
+    env.liquidate(&liquidator, &setup, &setup.usdc, &collateral_account, 0, u64::MAX).unwrap();
+
+    let position = env.position(&setup.borrower.pubkey());
+    assert_eq!(position.loans[0], bytemuck::Zeroable::zeroed());
+    assert_eq!(position.loans[1].principal, 600_000 * ONE_CNGN);
+    assert_eq!(env.market(&setup.cngn).total_borrows, 600_000 * ONE_CNGN);
+    // 100,000 cNGN is $62.50; the 5% bonus seizes $65.625 at $0.45.
+    assert_eq!(env.token_balance(&collateral_account), 145_833_333);
+}
+
+#[test]
+fn liquidation_rejections() {
+    let (mut env, setup) = underwater();
+    let usdt = env.list_spl_collateral(6);
+    env.set_pyth_price(&usdt, ONE_DOLLAR, 0);
+    let liquidator = env.new_liquidator(&setup.cngn, LOAN);
+    let collateral_account = env.create_token_account(&setup.usdc, &liquidator.pubkey());
+    let usdt_account = env.create_token_account(&usdt, &liquidator.pubkey());
+
+    let zero = env.liquidate(&liquidator, &setup, &setup.usdc, &collateral_account, 0, 0);
+    assert_hodl_error(zero, HodlError::AmountTooSmall);
+    let unknown = env.liquidate(&liquidator, &setup, &setup.usdc, &collateral_account, 7, ONE_CNGN);
+    assert_hodl_error(unknown, HodlError::LoanNotFound);
+    // The position holds no USDT.
+    let wrong_asset = env.liquidate(&liquidator, &setup, &usdt, &usdt_account, 0, ONE_CNGN);
+    assert_hodl_error(wrong_asset, HodlError::InsufficientCollateral);
+
+    // A repayment too small to seize a whole base unit of collateral.
+    let dust = env.liquidate(&liquidator, &setup, &setup.usdc, &collateral_account, 0, 1);
+    assert_hodl_error(dust, HodlError::AmountTooSmall);
+
+    // Prices must be fresh and complete.
+    let owner = setup.borrower.pubkey();
+    let program = env.mint_program(&setup.usdc);
+    let no_prices = liquidate_ix(
+        &liquidator.pubkey(), &owner, &setup.cngn, &liquidator.cngn, &setup.usdc, &program,
+        &collateral_account, 0, ONE_CNGN, vec![],
+    );
+    assert_hodl_error(send(&mut env.svm, &[no_prices], &[&liquidator.key]), HodlError::PriceAccountMismatch);
+    env.warp_seconds(61);
+    env.set_ngn_price(NGN_USD, NGN_SPREAD);
+    let stale = env.liquidate(&liquidator, &setup, &setup.usdc, &collateral_account, 0, ONE_CNGN);
+    assert_hodl_error(stale, HodlError::StalePrice);
+}
+
+#[test]
+fn liquidation_checks_the_borrowed_market() {
+    let (mut env, setup) = underwater();
+    let other = env.create_mint(MintKind::CngnLike, 6);
+    let create = create_market_ix(&env.admin.pubkey(), &other, &TOKEN_2022, default_market_params());
+    send(&mut env.svm, &[create], &[&env.admin]).unwrap();
+    let liquidator = env.new_liquidator(&other, LOAN);
+    let collateral_account = env.create_token_account(&setup.usdc, &liquidator.pubkey());
+
+    let owner = setup.borrower.pubkey();
+    let prices = env.price_accounts(&owner);
+    let program = env.mint_program(&setup.usdc);
+    let instruction = liquidate_ix(
+        &liquidator.pubkey(), &owner, &other, &liquidator.cngn, &setup.usdc, &program,
+        &collateral_account, 0, ONE_CNGN, prices,
+    );
+    assert_hodl_error(send(&mut env.svm, &[instruction], &[&liquidator.key]), HodlError::MarketMismatch);
+}

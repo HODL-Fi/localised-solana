@@ -202,3 +202,33 @@ pub struct ReserveHarvested {
     pub old_reserve: u64,
     pub new_reserve: u64,
 }
+
+#[event]
+pub struct LoanLiquidated {
+    pub market: Pubkey,
+    pub position: Pubkey,
+    pub owner: Pubkey,
+    pub liquidator: Pubkey,
+    pub loan_id: u64,
+    pub amount: u64,
+    pub principal_repaid: u64,
+    pub interest_paid: u64,
+    pub collateral_mint: Pubkey,
+    pub collateral_seized: u64,
+    pub remaining_principal: u64,
+}
+
+#[event]
+pub struct LoanPartiallyLiquidated {
+    pub market: Pubkey,
+    pub position: Pubkey,
+    pub owner: Pubkey,
+    pub liquidator: Pubkey,
+    pub loan_id: u64,
+    pub amount: u64,
+    pub principal_repaid: u64,
+    pub interest_paid: u64,
+    pub collateral_mint: Pubkey,
+    pub collateral_seized: u64,
+    pub remaining_principal: u64,
+}

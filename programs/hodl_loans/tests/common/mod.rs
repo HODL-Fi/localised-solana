@@ -923,6 +923,94 @@ pub fn harvest_reserve_ix(admin: &Pubkey, mint: &Pubkey, destination: &Pubkey, a
     )
 }
 
+// ---- Liquidation (Task 3) ----
+
+/// Liquidation is open to anyone, so a liquidator needs no `Access` account.
+pub struct Liquidator {
+    pub key: Keypair,
+    /// Its cNGN account, which funds repayments.
+    pub cngn: Pubkey,
+}
+
+impl Liquidator {
+    pub fn pubkey(&self) -> Pubkey {
+        self.key.pubkey()
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn liquidate_ix(
+    liquidator: &Pubkey,
+    position_owner: &Pubkey,
+    mint: &Pubkey,
+    liquidator_token: &Pubkey,
+    collateral_mint: &Pubkey,
+    collateral_token_program: &Pubkey,
+    liquidator_collateral: &Pubkey,
+    loan_id: u64,
+    amount: u64,
+    prices: Vec<AccountMeta>,
+) -> Instruction {
+    let mut instruction = ix(
+        hodl_loans::instruction::Liquidate { loan_id, amount },
+        hodl_loans::accounts::Liquidate {
+            liquidator: *liquidator,
+            position: position_pda(position_owner),
+            market: market_pda(mint),
+            mint: *mint,
+            vault: market_vault_pda(mint),
+            liquidator_token: *liquidator_token,
+            collateral: collateral_pda(collateral_mint),
+            collateral_mint: *collateral_mint,
+            collateral_vault: collateral_vault_pda(collateral_mint),
+            liquidator_collateral: *liquidator_collateral,
+            ngn_feed: ngn_feed(),
+            token_program: TOKEN_2022,
+            collateral_token_program: *collateral_token_program,
+        },
+    );
+    instruction.accounts.extend(prices);
+    instruction
+}
+
+impl Env {
+    /// A funded wallet holding `balance` cNGN, with no whitelist.
+    pub fn new_liquidator(&mut self, cngn: &Pubkey, balance: u64) -> Liquidator {
+        let key = self.funded_keypair();
+        let account = self.create_token_account(cngn, &key.pubkey());
+        self.mint_to(cngn, &account, balance);
+        Liquidator { key, cngn: account }
+    }
+
+    /// Repays `amount` of `loan_id` against the position's current collateral prices.
+    pub fn liquidate(
+        &mut self,
+        liquidator: &Liquidator,
+        setup: &LoanSetup,
+        collateral_mint: &Pubkey,
+        liquidator_collateral: &Pubkey,
+        loan_id: u64,
+        amount: u64,
+    ) -> TxResult {
+        let owner = setup.borrower.pubkey();
+        let program = self.mint_program(collateral_mint);
+        let prices = self.price_accounts(&owner);
+        let instruction = liquidate_ix(
+            &liquidator.pubkey(),
+            &owner,
+            &setup.cngn,
+            &liquidator.cngn,
+            collateral_mint,
+            &program,
+            liquidator_collateral,
+            loan_id,
+            amount,
+            prices,
+        );
+        send(&mut self.svm, &[instruction], &[&liquidator.key])
+    }
+}
+
 // ---- Compute budget measurement (test-only) ----
 
 /// Like `send`, but returns the compute units the transaction consumed instead of `()`. Only

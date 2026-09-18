@@ -126,6 +126,10 @@ pub mod hodl_loans {
         instructions::handle_repay_loan(ctx, loan_id, amount)
     }
 
+    pub fn liquidate<'info>(ctx: Context<'info, Liquidate<'info>>, loan_id: u64, amount: u64) -> Result<()> {
+        instructions::handle_liquidate(ctx, loan_id, amount)
+    }
+
     pub fn deposit_liquidity(ctx: Context<DepositLiquidity>, amount: u64) -> Result<()> {
         instructions::handle_deposit_liquidity(ctx, amount)
     }
