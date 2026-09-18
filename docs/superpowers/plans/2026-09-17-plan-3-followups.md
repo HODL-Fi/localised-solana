@@ -21,3 +21,7 @@ What the Plan 3 whole-branch review raised and deliberately left standing or pus
 
 - **A blacklisted wallet may liquidate.** Spec §13 lists `liquidate` under "Anyone" — `liquidate` has no access check (§11), so a blacklisted wallet can still call it as the liquidator, even though it cannot call any whitelisted-user instruction. This is the existing, intentional design: §13 already notes that "anyone can liquidate" a blacklisted borrower; this entry records that the liquidator side of that same sentence was reviewed and is accepted too.
 - **The slot-cap rounding sliver is deliberate.** When `seize_for_repayment`'s slot-cap branch binds, `seize_amount` is set to the exact remaining slot while `capped_repayment` is floored — so the liquidator pays fractionally less than the exact proportional share for that last, whole-slot seizure. This hands the liquidator a sub-base-unit rounding sliver once per slot-capped liquidation call. It is the same round-down discipline the function applies everywhere else, just landing on the repayment instead of the seizure in this one branch, and is accepted as dust.
+
+## Cosmetic, picked up whenever the file is next touched
+
+- `programs/hodl_loans/tests/liquidation.rs`, in `two_consecutive_partial_liquidations_converge_to_healthy`: a comment labels the closing rate "$0.035 per cNGN" where the value is $0.000035. The arithmetic that follows it uses the right magnitude, so only the label is wrong.
