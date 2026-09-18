@@ -56,8 +56,8 @@ New in this plan:
 - **The stored `multiplier` field goes stale on its own.** Token-2022 never rewrites `multiplier` when `new_multiplier_effective_timestamp` passes; a consumer must compare block time and choose. Both AAPLX and NVDAX were already past their effective timestamps when checked, so reading `multiplier` naively would have undervalued both.
 - **No sponsored Pyth push account was found for the xStock feeds**, so an xStock is listed with `price_account` pinned to whatever account HODL itself maintains, and the 60-second age cap does the rest.
 - **Float conversion truncates in the protocol's favour.** `1.0009 × 10^12` is `1_000_899_999_999` in binary floating point, one unit low — it undervalues collateral by 10^-12 of a token, never the borrower's debt.
-- **Compute at full load, measured in LiteSVM:** a position holding 8 xStock slots with 9 existing loans spends 79,912 CU on `take_loan`, against the 200,000 default. Compute is not the binding limit — the 24 price-related accounts push the legacy transaction past the 1,232-byte packet limit, so such a position needs a v0 transaction with an address lookup table. `tests/budget.rs` pins both.
-- **Verification.** The full Plan 4 code was compiled and tested before this plan was written: 158 tests pass (41 unit, 117 LiteSVM), `cargo clippy -D warnings` is clean, every task's end state was rebuilt from Plan 3's head and passes its own suite and clippy, and each task's failing-test step was run to capture its expected errors.
+- **Compute at full load, measured in LiteSVM:** a position holding 8 xStock slots with 9 existing loans spends about 74,000 CU on `take_loan`, against the 200,000 default. Compute is not the binding limit — the 24 price-related accounts push the legacy transaction past the 1,232-byte packet limit, so such a position needs a v0 transaction with an address lookup table. `tests/budget.rs` pins both.
+- **Verification.** The full Plan 4 code was compiled and tested before this plan was written: 161 tests pass (42 unit, 119 LiteSVM), `cargo clippy -D warnings` is clean, every task's end state was rebuilt from Plan 3's head and passes its own suite and clippy, and each task's failing-test step was run to capture its expected errors.
 
 ## Plan-level refinements to the spec
 
@@ -1289,9 +1289,56 @@ fn a_scheduled_multiplier_takes_effect_on_its_timestamp() {
 }
 ```
 
+Two more pin the account walk itself. `require_keys_eq!(mint_info.key(), slot.mint, …)` is the only thing standing between a caller and an attacker-chosen multiplier, so it gets a test that fails if the line is deleted. These need `AccountMeta` on the `anchor_lang::prelude` import, since they build the account list by hand instead of through `Env::price_accounts`:
+
+```rust
+#[test]
+fn a_foreign_mint_with_a_generous_multiplier_does_not_inflate_collateral() {
+    let (mut env, setup) = Env::loan_ready();
+    let stock = env.list_xstock_collateral(200);
+    let foreign = env.list_xstock_collateral(200);
+    // The foreign mint's own multiplier is as generous as the extension allows.
+    let now = env.now();
+    env.set_multiplier(&foreign, 1_000_000.0, now);
+
+    let borrower = env.new_borrower();
+    env.deposit_collateral(&borrower, &stock, 10 * ONE_XSTOCK);
+    let borrower_cngn = env.create_token_account(&setup.cngn, &borrower.pubkey());
+    let setup = LoanSetup { borrower, borrower_cngn, ..setup };
+    let owner = setup.borrower.pubkey();
+
+    // The only used slot is `stock`'s: its correct (asset, price) pair, but a stranger's mint
+    // stands in for the third account.
+    let mut prices = price_pairs(&[stock]);
+    prices.push(AccountMeta::new_readonly(foreign, false));
+    let ixn = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 1_000 * ONE_CNGN, 30 * DAY, prices);
+    let result = send(&mut env.svm, &[ixn], &[&env.admin, &setup.borrower.key]);
+    assert_hodl_error(result, HodlError::PriceAccountMismatch);
+}
+
+#[test]
+fn an_xstock_slot_rejects_the_two_account_standard_shape() {
+    let (mut env, setup) = Env::loan_ready();
+    let stock = env.list_xstock_collateral(200);
+    let borrower = env.new_borrower();
+    env.deposit_collateral(&borrower, &stock, 10 * ONE_XSTOCK);
+    let borrower_cngn = env.create_token_account(&setup.cngn, &borrower.pubkey());
+    let setup = LoanSetup { borrower, borrower_cngn, ..setup };
+    let owner = setup.borrower.pubkey();
+
+    // Only the (asset, price) pair: the mint account an XStock slot needs is missing.
+    let prices = price_pairs(&[stock]);
+    let ixn = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 1_000 * ONE_CNGN, 30 * DAY, prices);
+    let result = send(&mut env.svm, &[ixn], &[&env.admin, &setup.borrower.key]);
+    assert_hodl_error(result, HodlError::PriceAccountMismatch);
+}
+```
+
 In `programs/hodl_loans/tests/budget.rs`, add `use solana_signer::Signer;` under the existing `use common::*;` and append:
 
 ```rust
+/// An all-xStock position is the most expensive health check the program can be asked to run:
+/// three accounts and a mint unpack per slot instead of two accounts and none.
 #[test]
 fn an_all_xstock_position_stays_under_the_default_compute_budget() {
     let (mut env, setup) = Env::loan_ready();
@@ -1313,6 +1360,8 @@ fn an_all_xstock_position_stays_under_the_default_compute_budget() {
         send_cu(&mut env.svm, &[ixn], &[&env.admin, &setup.borrower.key]).unwrap_or_else(|e| panic!("take_loan #{i} failed: {e}"));
     }
 
+    // 10th (last) loan slot: the health check unpacks 8 mints on top of the usual 8 collateral
+    // slots and 9 existing loans. Measured 75,540 CU.
     let prices = env.price_accounts(&owner);
     let ixn = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 1_000 * ONE_CNGN, 30 * DAY, prices);
     let cu = send_cu(&mut env.svm, &[ixn], &[&env.admin, &setup.borrower.key]).unwrap();
@@ -1330,7 +1379,7 @@ fn an_all_xstock_position_stays_under_the_default_compute_budget() {
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `./scripts/test.sh --test xstocks`
-Expected: three tests fail — `the_multiplier_scales_borrowing_power` and `a_scheduled_multiplier_takes_effect_on_its_timestamp` with `expected Custom(6011), got InstructionError(0, Custom(6007))`, and Task 1's `a_hook_switched_on_after_listing_blocks_the_liquidation_seizure` with the same `Custom(6007)` in place of the error it expects. All three are `PriceAccountMismatch` from `valuation.rs`: the harness now supplies three accounts for an xStock slot and the program still reads pairs. Task 1's test goes green again with the rest of this task.
+Expected: four tests fail — `the_multiplier_scales_borrowing_power` and `a_scheduled_multiplier_takes_effect_on_its_timestamp` with `expected Custom(6011), got InstructionError(0, Custom(6007))`, `an_xstock_slot_rejects_the_two_account_standard_shape`, and Task 1's `a_hook_switched_on_after_listing_blocks_the_liquidation_seizure` with the same `Custom(6007)` in place of the error it expects. All four trace to `PriceAccountMismatch` in `valuation.rs`: the harness now supplies three accounts for an xStock slot and the program still reads pairs. Task 1's test goes green again with the rest of this task. Note that `a_foreign_mint_with_a_generous_multiplier_does_not_inflate_collateral` *passes* at this red state, for the wrong reason — the program rejects its three-account list wholesale. It only pins the identity check once this task is implemented.
 
 - [ ] **Step 3: Implement**
 
@@ -1489,6 +1538,22 @@ mod tests {
     }
 
     #[test]
+    fn display_amount_rounds_down_not_up() {
+        // A live AAPLX-shaped multiplier (token/scaled_ui.rs documents this exact value)
+        // applied to a raw balance of 3: floor gives 3 display units, ceil would give 4. An
+        // xStock balance must never be valued above what it represents.
+        let c = CollateralValue {
+            amount: 3,
+            decimals: 8,
+            multiplier: 1_000_899_999_999,
+            price: UsdPrice { price: 200 * USD, conf: 0 },
+            ltv_bps: 5_000,
+            liquidation_threshold_bps: 7_500,
+        };
+        assert_eq!(c.display_amount().unwrap(), 3);
+    }
+
+    #[test]
     fn no_collateral_means_any_debt_is_unhealthy() {
         let h = compute_health(&[], 1, 6, ngn()).unwrap();
         assert_eq!(h.borrow_limit, 0);
@@ -1629,10 +1694,45 @@ pub fn load_health(
 }
 ```
 
+Four instruction doc comments describe the accounts contract this task just changed, and are now wrong for an xStock slot — an integrator reading the handler would build a two-per-slot list and get `PriceAccountMismatch`. Correct each in its own surrounding style. In `programs/hodl_loans/src/instructions/loans/take_loan.rs`:
+
+```rust
+/// Spec §10 `take_loan`. `remaining_accounts`: per used collateral slot, in slot order, a
+/// `(CollateralAsset, PriceUpdateV2)` pair — an `XStock` slot adds its mint as a third
+/// account, the source of its scaled-UI multiplier.
+```
+
+In `programs/hodl_loans/src/instructions/liquidation/liquidate.rs`:
+
+```rust
+/// Spec §11 `liquidate`. `remaining_accounts`: per used collateral slot, in slot order, a
+/// `(CollateralAsset, PriceUpdateV2)` pair — an `XStock` slot adds its mint as a third
+/// account, the source of its scaled-UI multiplier — the whole position is priced, because
+/// health decides whether it may be liquidated at all.
+```
+
+In `programs/hodl_loans/src/instructions/liquidation/write_off.rs`:
+
+```rust
+/// Spec §11 `write_off_loan`. `remaining_accounts`: per used collateral slot, in slot order, a
+/// `(CollateralAsset, PriceUpdateV2)` pair, plus the mint as a third account for an `XStock`
+/// slot — its scaled-UI multiplier is read from there.
+```
+
+In `programs/hodl_loans/src/instructions/positions/withdraw_collateral.rs`:
+
+```rust
+/// Without active loans no prices are read, and `market` and `ngn_feed` may be omitted.
+/// With active loans, `market` and `ngn_feed` are required, and `remaining_accounts` must
+/// hold, per collateral slot still used **after** this withdrawal, in slot order, a
+/// `(CollateralAsset, PriceUpdateV2)` pair — an `XStock` slot needs its mint too, as a third
+/// account, for its scaled-UI multiplier — and the position must stay healthy.
+```
+
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 157 tests in all (`xstocks` is now 10, `budget` 2, the unit suite 41).
+Expected: every binary reports `ok`, 160 tests in all (`xstocks` is now 12, `budget` 2, the unit suite 42).
 
 - [ ] **Step 5: Commit**
 
@@ -1849,10 +1949,10 @@ and pass it to `seize_for_repayment`, between the collateral decimals and the bo
 - [ ] **Step 4: Run the tests to verify they pass, then the full suite and lints**
 
 Run: `./scripts/test.sh --test xstocks`
-Expected: 11 tests, all `ok`.
+Expected: 13 tests, all `ok`.
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 158 tests in all — 41 unit and 117 LiteSVM.
+Expected: every binary reports `ok`, 161 tests in all — 42 unit and 119 LiteSVM.
 
 Run: `cargo clippy -p hodl_loans --all-targets -- -D warnings`
 Expected: no warnings.
@@ -1868,7 +1968,7 @@ git commit -m "feat: seize xStock collateral at the display price"
 
 ## Done when
 
-- `./scripts/test.sh` reports 158 passing tests and `cargo clippy -p hodl_loans --all-targets -- -D warnings` is clean.
+- `./scripts/test.sh` reports 161 passing tests and `cargo clippy -p hodl_loans --all-targets -- -D warnings` is clean.
 - A live-shaped xStock mint lists only as `XStock`; a hook program or a frozen default is rejected at listing and again at every transfer.
 - A position's borrowing power follows the mint's effective multiplier, including one scheduled for a future timestamp.
 - A liquidator seizing an xStock receives raw units worth the display value it paid for, at any multiplier.
