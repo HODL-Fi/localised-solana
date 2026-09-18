@@ -8,6 +8,7 @@ use crate::math::checked::{add, sub, to_u64};
 use crate::math::liquidation::{principal_share, seize_for_repayment};
 use crate::math::loan::{accrued_lp_interest, loan_balance, lp_contribution, reserve_share};
 use crate::state::{CollateralAsset, Market, Position};
+use crate::token::extensions::require_collateral_mint;
 use crate::token::transfer::{transfer_from_user, transfer_from_vault};
 use crate::valuation::load_valuation;
 
@@ -168,6 +169,7 @@ pub fn handle_liquidate<'info>(ctx: Context<'info, Liquidate<'info>>, loan_id: u
         ctx.accounts.liquidator.to_account_info(),
         paid,
     )?;
+    require_collateral_mint(&ctx.accounts.collateral_mint.to_account_info(), ctx.accounts.collateral.kind)?;
     let seeds: &[&[u8]] = &[COLLATERAL_SEED, collateral_mint.as_ref(), &[ctx.accounts.collateral.bump]];
     transfer_from_vault(
         ctx.accounts.collateral_token_program.key(),

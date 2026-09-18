@@ -78,8 +78,12 @@ pub mod hodl_loans {
         instructions::handle_sweep_market_excess(ctx)
     }
 
-    pub fn list_collateral(ctx: Context<ListCollateral>, params: CollateralParams) -> Result<()> {
-        instructions::handle_list_collateral(ctx, params)
+    pub fn list_collateral(
+        ctx: Context<ListCollateral>,
+        params: CollateralParams,
+        kind: CollateralKind,
+    ) -> Result<()> {
+        instructions::handle_list_collateral(ctx, params, kind)
     }
 
     pub fn update_collateral_params(ctx: Context<UpdateCollateralParams>, params: CollateralParams) -> Result<()> {

@@ -32,10 +32,10 @@ fn listing_is_admin_only_and_once_per_mint() {
     let mut env = Env::initialized();
     let mint = env.create_mint(MintKind::SplToken, 6);
     let stranger = env.funded_keypair();
-    let by_stranger = list_collateral_ix(&stranger.pubkey(), &mint, &SPL_TOKEN, default_collateral_params(&mint));
+    let by_stranger = list_collateral_ix(&stranger.pubkey(), &mint, &SPL_TOKEN, default_collateral_params(&mint), hodl_loans::CollateralKind::Standard);
     assert_hodl_error(send(&mut env.svm, &[by_stranger], &[&stranger]), HodlError::Unauthorized);
 
-    let listing = list_collateral_ix(&env.admin.pubkey(), &mint, &SPL_TOKEN, default_collateral_params(&mint));
+    let listing = list_collateral_ix(&env.admin.pubkey(), &mint, &SPL_TOKEN, default_collateral_params(&mint), hodl_loans::CollateralKind::Standard);
     send(&mut env.svm, std::slice::from_ref(&listing), &[&env.admin]).unwrap();
     assert!(send(&mut env.svm, &[listing], &[&env.admin]).is_err());
     assert_eq!(env.config().collateral_count, 1);
@@ -47,7 +47,7 @@ fn mints_with_non_metadata_extensions_are_rejected() {
     let admin = env.admin.pubkey();
     for kind in [MintKind::TransferFee, MintKind::CngnLike] {
         let mint = env.create_mint(kind, 6);
-        let instruction = list_collateral_ix(&admin, &mint, &TOKEN_2022, default_collateral_params(&mint));
+        let instruction = list_collateral_ix(&admin, &mint, &TOKEN_2022, default_collateral_params(&mint), hodl_loans::CollateralKind::Standard);
         assert_hodl_error(send(&mut env.svm, &[instruction], &[&env.admin]), HodlError::UnsupportedMintExtension);
     }
 }
@@ -78,7 +78,7 @@ fn collateral_parameter_rules() {
     // `list_collateral` applies the same rules.
     let other = env.create_mint(MintKind::SplToken, 6);
     let bad_listing = CollateralParams { ltv_bps: 7_001, ..default_collateral_params(&other) };
-    let instruction = list_collateral_ix(&admin, &other, &SPL_TOKEN, bad_listing);
+    let instruction = list_collateral_ix(&admin, &other, &SPL_TOKEN, bad_listing, hodl_loans::CollateralKind::Standard);
     assert_hodl_error(send(&mut env.svm, &[instruction], &[&env.admin]), HodlError::InvalidParameters);
 
     // Every rule's boundary is accepted.
@@ -151,7 +151,7 @@ fn delist_closes_an_unused_asset() {
     assert_eq!(env.config().collateral_count, 0);
 
     // The mint can be listed again.
-    let relist = list_collateral_ix(&admin, &mint, &SPL_TOKEN, default_collateral_params(&mint));
+    let relist = list_collateral_ix(&admin, &mint, &SPL_TOKEN, default_collateral_params(&mint), hodl_loans::CollateralKind::Standard);
     send(&mut env.svm, &[relist], &[&env.admin]).unwrap();
 }
 

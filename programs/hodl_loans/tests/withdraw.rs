@@ -84,6 +84,32 @@ fn with_loans_the_position_must_stay_healthy() {
 }
 
 #[test]
+fn a_token_2022_standard_asset_moves_through_the_same_paths() {
+    // 6 decimals, metadata only: the Token-2022 collateral shape spec §14 allows as `Standard`.
+    const ONE_T22: u64 = 1_000_000;
+    let (mut env, setup) = Env::loan_ready();
+    let t22 = env.list_t22_collateral(6);
+    let borrower = env.new_borrower();
+    let owner = borrower.pubkey();
+    let token = env.deposit_collateral(&borrower, &t22, 1_000 * ONE_T22);
+    let borrower_cngn = env.create_token_account(&setup.cngn, &owner);
+    let setup = LoanSetup { borrower, borrower_cngn, ..setup };
+    assert_eq!(env.token_balance(&collateral_vault_pda(&t22)), 1_000 * ONE_T22);
+    assert_eq!(env.position(&owner).collateral[0].amount, 1_000 * ONE_T22);
+
+    // $1,000 of collateral backs 500,000 cNGN ($312.8125 at the NGN ask).
+    env.take_loan(&setup.borrower, &setup, 500_000 * ONE_CNGN, 365 * DAY).unwrap();
+    let cngn = setup.cngn;
+    let withdraw = |amount| withdraw_collateral_ix(&owner, &t22, &TOKEN_2022, &token, Some(&cngn), amount, price_pairs(&[t22]));
+    let key = &setup.borrower.key;
+
+    // 447 units × 70% = $312.90 still covers the debt; 446 ($312.20) does not.
+    env.sponsored(withdraw(553 * ONE_T22), key).unwrap();
+    assert_eq!(env.token_balance(&token), 553 * ONE_T22);
+    assert_hodl_error(env.sponsored(withdraw(ONE_T22), key), HodlError::Unhealthy);
+}
+
+#[test]
 fn pairs_cover_the_slots_left_after_withdrawal() {
     let (mut env, setup) = Env::loan_ready();
     let owner = setup.borrower.pubkey();

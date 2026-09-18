@@ -5,6 +5,7 @@ use crate::constants::{ACCESS_SEED, COLLATERAL_SEED, POSITION_SEED};
 use crate::errors::HodlError;
 use crate::events::CollateralDeposited;
 use crate::state::{Access, CollateralAsset, Position};
+use crate::token::extensions::require_collateral_mint;
 use crate::token::transfer::transfer_from_user;
 
 #[derive(Accounts)]
@@ -48,6 +49,8 @@ pub fn handle_deposit_collateral(ctx: Context<DepositCollateral>, amount: u64) -
         slot.amount
     };
 
+    // An issuer can turn something on after listing, so every transfer re-checks the mint.
+    require_collateral_mint(&ctx.accounts.mint.to_account_info(), ctx.accounts.collateral.kind)?;
     transfer_from_user(
         ctx.accounts.token_program.key(),
         ctx.accounts.mint.to_account_info(),

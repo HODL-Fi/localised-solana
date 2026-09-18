@@ -18,8 +18,11 @@ use solana_message::{Message, VersionedMessage};
 use solana_signer::Signer;
 use solana_transaction::versioned::VersionedTransaction;
 use spl_token_2022_interface::{
-    extension::{metadata_pointer, transfer_fee, BaseStateWithExtensions, ExtensionType, StateWithExtensions},
-    state::{Account as TokenAccountState, Mint as MintState},
+    extension::{
+        confidential_transfer, default_account_state, metadata_pointer, pausable, scaled_ui_amount,
+        transfer_fee, transfer_hook, BaseStateWithExtensions, ExtensionType, StateWithExtensions,
+    },
+    state::{Account as TokenAccountState, AccountState, Mint as MintState},
 };
 
 pub const TOKEN_2022: Pubkey = spl_token_2022_interface::ID;
@@ -81,8 +84,15 @@ pub enum MintKind {
     SplToken,
     /// Token-2022 mint with the Solana cNGN extensions: permanent delegate + metadata pointer.
     CngnLike,
+    /// Token-2022 mint carrying metadata only: the shape a `Standard` collateral asset
+    /// may have (spec §14).
+    Token2022Plain,
     /// Token-2022 mint with a transfer fee (must be rejected).
     TransferFee,
+    /// Token-2022 mint shaped like a live Backed xStock (AAPLX, TSLAX, NVDAX, checked
+    /// 2026-09-18): metadata pointer, permanent delegate, scaled-UI amount, pausable,
+    /// transfer hook with no program, default account state, confidential transfer.
+    XStock,
 }
 
 pub struct Env {
@@ -167,7 +177,20 @@ impl Env {
         let (program, extensions) = match kind {
             MintKind::SplToken => (SPL_TOKEN, vec![]),
             MintKind::CngnLike => (TOKEN_2022, vec![ExtensionType::PermanentDelegate, ExtensionType::MetadataPointer]),
+            MintKind::Token2022Plain => (TOKEN_2022, vec![ExtensionType::MetadataPointer]),
             MintKind::TransferFee => (TOKEN_2022, vec![ExtensionType::TransferFeeConfig]),
+            MintKind::XStock => (
+                TOKEN_2022,
+                vec![
+                    ExtensionType::MetadataPointer,
+                    ExtensionType::PermanentDelegate,
+                    ExtensionType::ScaledUiAmount,
+                    ExtensionType::Pausable,
+                    ExtensionType::TransferHook,
+                    ExtensionType::DefaultAccountState,
+                    ExtensionType::ConfidentialTransferMint,
+                ],
+            ),
         };
         let space = ExtensionType::try_calculate_account_len::<MintState>(&extensions).unwrap();
         let lamports = self.svm.minimum_balance_for_rent_exemption(space);
@@ -181,9 +204,24 @@ impl Env {
                 ixs.push(metadata_pointer::instruction::initialize(&TOKEN_2022, &mint.pubkey(), Some(authority), Some(mint.pubkey())).unwrap());
                 ixs.push(spl_token_2022_interface::instruction::initialize_mint2(&TOKEN_2022, &mint.pubkey(), &authority, None, decimals).unwrap());
             }
+            MintKind::Token2022Plain => {
+                ixs.push(metadata_pointer::instruction::initialize(&TOKEN_2022, &mint.pubkey(), Some(authority), Some(mint.pubkey())).unwrap());
+                ixs.push(spl_token_2022_interface::instruction::initialize_mint2(&TOKEN_2022, &mint.pubkey(), &authority, None, decimals).unwrap());
+            }
             MintKind::TransferFee => {
                 ixs.push(transfer_fee::instruction::initialize_transfer_fee_config(&TOKEN_2022, &mint.pubkey(), Some(&authority), Some(&authority), 10, 1_000).unwrap());
                 ixs.push(spl_token_2022_interface::instruction::initialize_mint2(&TOKEN_2022, &mint.pubkey(), &authority, None, decimals).unwrap());
+            }
+            MintKind::XStock => {
+                let m = mint.pubkey();
+                ixs.push(metadata_pointer::instruction::initialize(&TOKEN_2022, &m, Some(authority), Some(m)).unwrap());
+                ixs.push(spl_token_2022_interface::instruction::initialize_permanent_delegate(&TOKEN_2022, &m, &authority).unwrap());
+                ixs.push(scaled_ui_amount::instruction::initialize(&TOKEN_2022, &m, Some(authority), 1.0).unwrap());
+                ixs.push(pausable::instruction::initialize(&TOKEN_2022, &m, &authority).unwrap());
+                ixs.push(transfer_hook::instruction::initialize(&TOKEN_2022, &m, Some(authority), None).unwrap());
+                ixs.push(default_account_state::instruction::initialize_default_account_state(&TOKEN_2022, &m, &AccountState::Initialized).unwrap());
+                ixs.push(confidential_transfer::instruction::initialize_mint(&TOKEN_2022, &m, Some(authority), true, None).unwrap());
+                ixs.push(spl_token_2022_interface::instruction::initialize_mint2(&TOKEN_2022, &m, &authority, Some(&authority), decimals).unwrap());
             }
         }
         send(&mut self.svm, &ixs, &[&self.admin, &mint]).expect("create mint");
@@ -208,7 +246,13 @@ impl Env {
     pub fn create_token_account(&mut self, mint: &Pubkey, owner: &Pubkey) -> Pubkey {
         let account = Keypair::new();
         let program = self.mint_program(mint);
-        let space = ExtensionType::try_calculate_account_len::<TokenAccountState>(&[]).unwrap();
+        // A Token-2022 mint extension can oblige every account to carry a matching one.
+        let required = if program == TOKEN_2022 {
+            ExtensionType::get_required_init_account_extensions(&self.mint_extensions(mint))
+        } else {
+            vec![]
+        };
+        let space = ExtensionType::try_calculate_account_len::<TokenAccountState>(&required).unwrap();
         let lamports = self.svm.minimum_balance_for_rent_exemption(space);
         let ixs = vec![
             system_instruction::create_account(&self.admin.pubkey(), &account.pubkey(), lamports, space as u64, &program),
@@ -520,9 +564,15 @@ pub fn default_collateral_params(mint: &Pubkey) -> hodl_loans::CollateralParams 
     }
 }
 
-pub fn list_collateral_ix(admin: &Pubkey, mint: &Pubkey, token_program: &Pubkey, params: hodl_loans::CollateralParams) -> Instruction {
+pub fn list_collateral_ix(
+    admin: &Pubkey,
+    mint: &Pubkey,
+    token_program: &Pubkey,
+    params: hodl_loans::CollateralParams,
+    kind: hodl_loans::CollateralKind,
+) -> Instruction {
     ix(
-        hodl_loans::instruction::ListCollateral { params },
+        hodl_loans::instruction::ListCollateral { params, kind },
         hodl_loans::accounts::ListCollateral {
             admin: *admin,
             config: config_pda(),
@@ -582,7 +632,13 @@ impl Env {
     /// Creates a classic SPL Token mint and lists it with default parameters. Returns the mint.
     pub fn list_spl_collateral(&mut self, decimals: u8) -> Pubkey {
         let mint = self.create_mint(MintKind::SplToken, decimals);
-        let instruction = list_collateral_ix(&self.admin.pubkey(), &mint, &SPL_TOKEN, default_collateral_params(&mint));
+        let instruction = list_collateral_ix(
+            &self.admin.pubkey(),
+            &mint,
+            &SPL_TOKEN,
+            default_collateral_params(&mint),
+            hodl_loans::CollateralKind::Standard,
+        );
         send(&mut self.svm, &[instruction], &[&self.admin]).expect("list collateral");
         mint
     }
@@ -1050,4 +1106,94 @@ pub fn send_cu(svm: &mut LiteSVM, ixs: &[Instruction], signers: &[&Keypair]) -> 
     svm.send_transaction(tx)
         .map(|m| m.compute_units_consumed)
         .map_err(|e| format!("{:?} cu={} logs: {:#?}", e.err, e.meta.compute_units_consumed, e.meta.logs))
+}
+
+// ---- Collateral kinds and xStock mints (Task 1) ----
+
+/// A live Backed xStock carries 8 decimals; the scaled-UI multiplier is what makes a raw
+/// balance a number of shares.
+pub const XSTOCK_DECIMALS: u8 = 8;
+pub const ONE_XSTOCK: u64 = 100_000_000;
+
+/// Spec §8 launch values for an xStock: LTV 50%, threshold 75%, bonus 10%, pinned price.
+pub fn xstock_collateral_params(mint: &Pubkey) -> hodl_loans::CollateralParams {
+    hodl_loans::CollateralParams {
+        ltv_bps: 5_000,
+        liquidation_threshold_bps: 7_500,
+        liquidation_bonus_bps: 1_000,
+        ..default_collateral_params(mint)
+    }
+}
+
+impl Env {
+    /// A metadata-only Token-2022 mint listed as `Standard` collateral, priced at $1.
+    pub fn list_t22_collateral(&mut self, decimals: u8) -> Pubkey {
+        let mint = self.create_mint(MintKind::Token2022Plain, decimals);
+        let instruction = list_collateral_ix(
+            &self.admin.pubkey(),
+            &mint,
+            &TOKEN_2022,
+            default_collateral_params(&mint),
+            hodl_loans::CollateralKind::Standard,
+        );
+        send(&mut self.svm, &[instruction], &[&self.admin]).expect("list collateral");
+        self.set_pyth_price(&mint, ONE_DOLLAR, 0);
+        mint
+    }
+
+    /// A live-shaped xStock mint, listed as `XStock` collateral and priced at `dollars` a
+    /// share (Pyth exponent -8), with the multiplier at 1.
+    pub fn list_xstock_collateral(&mut self, dollars: i64) -> Pubkey {
+        let mint = self.create_mint(MintKind::XStock, XSTOCK_DECIMALS);
+        let instruction = list_collateral_ix(
+            &self.admin.pubkey(),
+            &mint,
+            &TOKEN_2022,
+            xstock_collateral_params(&mint),
+            hodl_loans::CollateralKind::XStock,
+        );
+        send(&mut self.svm, &[instruction], &[&self.admin]).expect("list xstock");
+        self.set_pyth_price(&mint, dollars * ONE_DOLLAR, 0);
+        mint
+    }
+
+    pub fn set_mint_paused(&mut self, mint: &Pubkey, paused: bool) {
+        let authority = self.admin.pubkey();
+        let instruction = if paused {
+            pausable::instruction::pause(&TOKEN_2022, mint, &authority, &[]).unwrap()
+        } else {
+            pausable::instruction::resume(&TOKEN_2022, mint, &authority, &[]).unwrap()
+        };
+        send(&mut self.svm, &[instruction], &[&self.admin]).expect("set mint pause");
+    }
+
+    /// Points the mint's transfer hook at a program (or clears it).
+    pub fn set_transfer_hook(&mut self, mint: &Pubkey, program: Option<Pubkey>) {
+        let authority = self.admin.pubkey();
+        let instruction =
+            transfer_hook::instruction::update(&TOKEN_2022, mint, &authority, &[], program).unwrap();
+        send(&mut self.svm, &[instruction], &[&self.admin]).expect("set transfer hook");
+    }
+
+    /// Flips the mint to freezing new token accounts by default (the issuer's blocklist power).
+    pub fn set_default_account_state(&mut self, mint: &Pubkey, state: AccountState) {
+        let authority = self.admin.pubkey();
+        let instruction = default_account_state::instruction::update_default_account_state(
+            &TOKEN_2022, mint, &authority, &[], &state,
+        )
+        .unwrap();
+        send(&mut self.svm, &[instruction], &[&self.admin]).expect("set default account state");
+    }
+
+    /// The issuer moving tokens out of an account it does not own, through the permanent
+    /// delegate — the risk the spec accepts for xStocks.
+    pub fn delegate_burn(&mut self, mint: &Pubkey, from: &Pubkey, amount: u64) {
+        let authority = self.admin.pubkey();
+        let decimals = self.mint_decimals(mint);
+        let instruction = spl_token_2022_interface::instruction::burn_checked(
+            &TOKEN_2022, from, mint, &authority, &[], amount, decimals,
+        )
+        .unwrap();
+        send(&mut self.svm, &[instruction], &[&self.admin]).expect("delegate burn");
+    }
 }
