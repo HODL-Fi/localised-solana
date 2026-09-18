@@ -51,6 +51,18 @@ fn listing_rejects_a_hook_program_or_a_frozen_default() {
 }
 
 #[test]
+fn an_xstock_mint_without_a_multiplier_is_rejected() {
+    let mut env = Env::initialized();
+    let admin = env.admin.pubkey();
+
+    // An xStock without a ScaledUiAmount extension would be listable but unpriceable: an XStock
+    // with no multiplier is not an xStock. Listing is the one moment we can reject it cheaply.
+    let no_multiplier = env.create_mint(MintKind::CngnLike, XSTOCK_DECIMALS);
+    let listing = list_collateral_ix(&admin, &no_multiplier, &TOKEN_2022, xstock_collateral_params(&no_multiplier), CollateralKind::XStock);
+    assert_hodl_error(send(&mut env.svm, &[listing], &[&env.admin]), HodlError::UnsupportedMintExtension);
+}
+
+#[test]
 fn an_issuer_pause_blocks_transfers_of_that_asset() {
     let mut env = Env::initialized();
     let stock = env.list_xstock_collateral(200);

@@ -1,8 +1,8 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_2022::spl_token_2022::{
     extension::{
-        default_account_state::DefaultAccountState, transfer_hook::TransferHook,
-        BaseStateWithExtensions, ExtensionType, StateWithExtensions,
+        default_account_state::DefaultAccountState, scaled_ui_amount::ScaledUiAmountConfig,
+        transfer_hook::TransferHook, BaseStateWithExtensions, ExtensionType, StateWithExtensions,
     },
     state::{AccountState, Mint as MintState},
 };
@@ -66,12 +66,18 @@ pub fn require_collateral_mint(mint: &AccountInfo, kind: CollateralKind) -> Resu
     }
 }
 
-/// An `XStock` mint's allowed extensions, plus the two settings whose *values* matter:
+/// An `XStock` mint's allowed extensions, plus the three settings whose *values* matter:
+/// a ScaledUiAmount extension must be present (to price the collateral at valuation time),
 /// a transfer hook must name no program, and accounts must not be frozen by default.
 fn require_xstock_mint(mint: &AccountInfo) -> Result<()> {
     require_allowed_extensions(mint, XSTOCK_COLLATERAL_EXTENSIONS)?;
     let data = mint.try_borrow_data()?;
     let state = StateWithExtensions::<MintState>::unpack(&data)
+        .map_err(|_| HodlError::UnsupportedMintExtension)?;
+    // An XStock with no multiplier would be listable but unpriceable: reading it at
+    // valuation time would fail. Listing is the one moment we can reject it cheaply.
+    let _config = state
+        .get_extension::<ScaledUiAmountConfig>()
         .map_err(|_| HodlError::UnsupportedMintExtension)?;
     if let Ok(hook) = state.get_extension::<TransferHook>() {
         // A hook program would run issuer code inside every transfer of the collateral.
