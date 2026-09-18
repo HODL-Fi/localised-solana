@@ -94,9 +94,13 @@ pub fn require_collateral_mint_on_entry(mint: &AccountInfo, kind: CollateralKind
 /// - **`ScaledUiAmount` presence** is an entry clause: it makes the asset priceable. A
 ///   withdrawal with no active loans reads no price at all, so requiring it out here would
 ///   block an exit to protect a valuation nobody is doing.
-/// - **The allowed-extension set** is fixed when a mint is initialized — Token-2022 extensions
-///   are added before `initialize_mint` — so re-running the allowlist out here can never catch
-///   anything the entry policy passed. Only the *values* above are still an issuer's to move.
+/// - **The allowed-extension set** is nearly all fixed at initialization: a fixed-length
+///   Token-2022 mint extension has to be initialized before `initialize_mint`. The exceptions
+///   are the variable-length TLV entries an issuer can realloc in later — and those are
+///   precisely the case where re-checking traps without protecting. `TokenMetadata` is already
+///   on both allowlists, so it changes nothing; a token-group entry is on neither, so an
+///   issuer adding one would seal every vault holding the asset over a label. Only the
+///   *values* above are worth re-reading on the way out.
 pub fn require_collateral_mint_on_exit(mint: &AccountInfo) -> Result<()> {
     if *mint.owner != anchor_spl::token_2022::ID {
         return Ok(());
