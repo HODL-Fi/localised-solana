@@ -39,11 +39,20 @@ fn promo_vault_rejections() {
     let again = create_promo_vault_ix(&admin, &cngn);
     assert!(send(&mut env.svm, &[again], &[&env.admin]).is_err());
 
-    // Every promo vault instruction is admin-only.
+    // Every promo vault instruction is admin-only. `create_promo_vault` needs a market that
+    // doesn't already have one, so `init` doesn't fail on "already in use" before the
+    // authorization check ever runs.
+    let other_mint = env.create_mint(MintKind::CngnLike, 6);
+    let create_market = create_market_ix(&admin, &other_mint, &TOKEN_2022, default_market_params());
+    send(&mut env.svm, &[create_market], &[&env.admin]).expect("create market");
+    let by_stranger = create_promo_vault_ix(&stranger.pubkey(), &other_mint);
+    assert_hodl_error(send(&mut env.svm, &[by_stranger], &[&stranger]), HodlError::Unauthorized);
     let source = env.create_token_account(&cngn, &stranger.pubkey());
     let by_stranger = fund_promo_vault_ix(&stranger.pubkey(), &cngn, &source, ONE_CNGN);
     assert_hodl_error(send(&mut env.svm, &[by_stranger], &[&stranger]), HodlError::Unauthorized);
     let by_stranger = withdraw_promo_vault_ix(&stranger.pubkey(), &cngn, &destination, ONE_CNGN);
+    assert_hodl_error(send(&mut env.svm, &[by_stranger], &[&stranger]), HodlError::Unauthorized);
+    let by_stranger = sweep_promo_excess_ix(&stranger.pubkey(), &cngn, &destination);
     assert_hodl_error(send(&mut env.svm, &[by_stranger], &[&stranger]), HodlError::Unauthorized);
 
     // Zero moves nothing.
