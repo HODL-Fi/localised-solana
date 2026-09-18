@@ -110,7 +110,7 @@ pub fn handle_close_campaign(ctx: Context<CloseCampaign>) -> Result<()> {
         campaign: campaign.key(),
         campaign_id: campaign.campaign_id,
         granted: campaign.granted,
-        returned: unspent as u64,
+        returned: to_u64(unspent)?,
     });
     Ok(())
 }
