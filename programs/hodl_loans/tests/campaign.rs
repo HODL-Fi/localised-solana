@@ -62,6 +62,31 @@ fn campaign_rejections() {
 }
 
 #[test]
+fn closing_a_campaign_twice_is_rejected_even_with_a_second_campaign_still_open() {
+    // A single-campaign vault drains `unissued` to zero on its first close, so closing it again
+    // happens to fail on an underflow in `sub` — the right outcome, for the wrong reason. With a
+    // second campaign still holding its own budget in `unissued`, that underflow no longer fires:
+    // a second close would silently subtract campaign 1's `unspent` a second time, over-crediting
+    // the vault's `free()` at campaign 2's expense. This pins the `active` guard itself.
+    let (mut env, cngn) = Env::with_promo_vault(FUNDING);
+    let admin = env.admin.pubkey();
+
+    let budget_1 = 200_000 * ONE_CNGN;
+    let budget_2 = 300_000 * ONE_CNGN;
+    env.create_campaign(&cngn, 1, budget_1);
+    env.create_campaign(&cngn, 2, budget_2);
+
+    send(&mut env.svm, &[close_campaign_ix(&admin, &cngn, 1)], &[&env.admin]).unwrap();
+    assert!(!env.campaign(&cngn, 1).active);
+    assert!(env.campaign(&cngn, 2).active);
+    // Only campaign 1's reservation came back; campaign 2's is untouched.
+    assert_eq!(env.promo_vault(&cngn).unissued, budget_2);
+
+    let twice = close_campaign_ix(&admin, &cngn, 1);
+    assert_hodl_error(send(&mut env.svm, &[twice], &[&env.admin]), HodlError::CampaignInactive);
+}
+
+#[test]
 fn closing_a_campaign_returns_only_what_it_never_granted() {
     let (mut env, cngn) = Env::with_promo_vault(FUNDING);
     let admin = env.admin.pubkey();
