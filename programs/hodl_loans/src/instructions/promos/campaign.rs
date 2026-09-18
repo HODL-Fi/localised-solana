@@ -3,7 +3,7 @@ use anchor_lang::prelude::*;
 use crate::constants::{ACCOUNT_VERSION, CAMPAIGN_SEED, CONFIG_SEED, PROMO_VAULT_SEED};
 use crate::errors::HodlError;
 use crate::events::{CampaignClosed, CampaignCreated};
-use crate::math::checked::{add, sub};
+use crate::math::checked::{add, sub, to_u64};
 use crate::state::{Campaign, Config, Market, PromoVault};
 
 #[derive(Accounts)]
@@ -46,7 +46,7 @@ pub fn handle_create_campaign(
     require!(budget <= ctx.accounts.promo_vault.free()?, HodlError::PromoVaultInsufficient);
 
     let promo_vault = &mut ctx.accounts.promo_vault;
-    promo_vault.unissued = add(promo_vault.unissued as u128, budget as u128)? as u64;
+    promo_vault.unissued = to_u64(add(promo_vault.unissued as u128, budget as u128)?)?;
     promo_vault.require_invariant()?;
 
     ctx.accounts.campaign.set_inner(Campaign {
@@ -100,7 +100,7 @@ pub fn handle_close_campaign(ctx: Context<CloseCampaign>) -> Result<()> {
     let unspent = sub(ctx.accounts.campaign.budget as u128, ctx.accounts.campaign.granted as u128)?;
 
     let promo_vault = &mut ctx.accounts.promo_vault;
-    promo_vault.unissued = sub(promo_vault.unissued as u128, unspent)? as u64;
+    promo_vault.unissued = to_u64(sub(promo_vault.unissued as u128, unspent)?)?;
     promo_vault.require_invariant()?;
 
     let campaign = &mut ctx.accounts.campaign;

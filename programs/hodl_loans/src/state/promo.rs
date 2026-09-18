@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 
 use crate::errors::HodlError;
-use crate::math::checked::{add, sub};
+use crate::math::checked::{add, sub, to_u64};
 
 /// Spec §12. One per market: the cNGN behind every promo balance, and the accounting that keeps
 /// `outstanding + unissued ≤ cash` true at all times.
@@ -30,13 +30,13 @@ impl PromoVault {
     /// to the treasury both draw from here, so the §12 invariant holds by construction.
     pub fn free(&self) -> Result<u64> {
         let committed = add(self.outstanding as u128, self.unissued as u128)?;
-        Ok(sub(self.cash as u128, committed)? as u64)
+        to_u64(sub(self.cash as u128, committed)?)
     }
 
     /// Promo leaving a position, on expiry, revocation, forfeiture or `close_position`. The cNGN
     /// itself does not move on expiry or revocation — it becomes free HODL funds again.
     pub fn release(&mut self, amount: u64) -> Result<()> {
-        self.outstanding = sub(self.outstanding as u128, amount as u128)? as u64;
+        self.outstanding = to_u64(sub(self.outstanding as u128, amount as u128)?)?;
         Ok(())
     }
 

@@ -5,7 +5,7 @@ use crate::constants::{ACCOUNT_VERSION, CONFIG_SEED, MARKET_SEED, PROMO_VAULT_SE
 use crate::errors::HodlError;
 use crate::events::{PromoVaultCreated, PromoVaultFunded, PromoVaultWithdrawn};
 use crate::instructions::admin::sweep::sweep_to_treasury;
-use crate::math::checked::{add, sub};
+use crate::math::checked::{add, sub, to_u64};
 use crate::state::{Config, Market, PromoVault};
 use crate::token::transfer::{transfer_from_user, transfer_from_vault};
 
@@ -104,7 +104,7 @@ pub fn handle_fund_promo_vault(ctx: Context<FundPromoVault>, amount: u64) -> Res
     )?;
 
     let promo_vault = &mut ctx.accounts.promo_vault;
-    promo_vault.cash = add(promo_vault.cash as u128, amount as u128)? as u64;
+    promo_vault.cash = to_u64(add(promo_vault.cash as u128, amount as u128)?)?;
     emit!(PromoVaultFunded {
         market: ctx.accounts.market.key(),
         amount,
@@ -162,7 +162,7 @@ pub fn handle_withdraw_promo_vault(ctx: Context<WithdrawPromoVault>, amount: u64
     )?;
 
     let promo_vault = &mut ctx.accounts.promo_vault;
-    promo_vault.cash = sub(promo_vault.cash as u128, amount as u128)? as u64;
+    promo_vault.cash = to_u64(sub(promo_vault.cash as u128, amount as u128)?)?;
     promo_vault.require_invariant()?;
     emit!(PromoVaultWithdrawn {
         market: market_key,
