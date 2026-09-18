@@ -960,7 +960,20 @@ git commit -m "feat: per-kind collateral mint policy with transfer-time re-check
   - `constants::MULTIPLIER_SCALE: u128 = 1_000_000_000_000`, `constants::MULTIPLIER_ONE: u128`, `constants::MAX_MULTIPLIER: u128 = 1_000_000 × MULTIPLIER_SCALE`
   - `token::scaled_ui::read_multiplier(mint: &AccountInfo, kind: CollateralKind, now: i64) -> Result<u128>` — `MULTIPLIER_ONE` for a `Standard` asset, the effective scaled-UI factor for an `XStock`
 
-- [ ] **Step 1: Wire the module and write the failing tests**
+- [ ] **Step 1: Add the constants, wire the module, and write the failing tests**
+
+Add the three constants to `programs/hodl_loans/src/constants.rs`, after `MAX_PRICE_AGE_SECONDS`:
+
+```rust
+/// Fixed-point scale for an xStock's scaled-UI multiplier (10^12 per whole multiple).
+pub const MULTIPLIER_SCALE: u128 = 1_000_000_000_000;
+/// The multiplier a `Standard` asset always carries.
+pub const MULTIPLIER_ONE: u128 = MULTIPLIER_SCALE;
+/// Largest multiplier an xStock mint may declare. A corporate action moves it by small
+/// factors; anything beyond this is a misconfigured or hostile mint, and large values would
+/// push `amount × multiplier` towards overflow.
+pub const MAX_MULTIPLIER: u128 = 1_000_000 * MULTIPLIER_SCALE;
+```
 
 In `programs/hodl_loans/src/token/mod.rs`:
 
@@ -1016,22 +1029,9 @@ mod tests {
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `./scripts/test.sh`
-Expected: `error[E0425]: cannot find function scale_multiplier in this scope`, once per assertion.
+Expected: `error[E0425]: cannot find function scale_multiplier in this scope` — ten times, once per assertion.
 
 - [ ] **Step 3: Implement**
-
-Add the three constants to `programs/hodl_loans/src/constants.rs`, after `MAX_PRICE_AGE_SECONDS`:
-
-```rust
-/// Fixed-point scale for an xStock's scaled-UI multiplier (10^12 per whole multiple).
-pub const MULTIPLIER_SCALE: u128 = 1_000_000_000_000;
-/// The multiplier a `Standard` asset always carries.
-pub const MULTIPLIER_ONE: u128 = MULTIPLIER_SCALE;
-/// Largest multiplier an xStock mint may declare. A corporate action moves it by small
-/// factors; anything beyond this is a misconfigured or hostile mint, and large values would
-/// push `amount × multiplier` towards overflow.
-pub const MAX_MULTIPLIER: u128 = 1_000_000 * MULTIPLIER_SCALE;
-```
 
 Add the implementation above the test module in `programs/hodl_loans/src/token/scaled_ui.rs`:
 
