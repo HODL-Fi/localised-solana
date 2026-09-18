@@ -23,7 +23,7 @@
 | 2. Collateral, prices and loans (merged) | `CollateralAsset`, positions, Pyth and Switchboard reads, health checks, `take_loan`, `repay_loan`, reserve harvest |
 | 3. Liquidation and bad debt (merged) | Pinned price accounts, seizure math, `liquidate`, `write_off_loan` (reserve first) |
 | 4. xStocks (merged) | Per-kind mint policy, scaled-UI multiplier, display-amount pricing, display-price seizure |
-| **5. Promo balance** (this plan) | `PromoVault`, campaigns, Ed25519 vouchers, promo in the health check, expiry and revocation, forfeiture |
+| **5. Promo balance** (this plan) | `PromoVault`, campaigns, Ed25519 vouchers, promo in the health check, expiry and revocation, forfeiture, `set_promo_cap` |
 | 6. Hardening and devnet | Trident invariant fuzzing, ported EVM regressions, devnet run, pre-audit scan |
 
 ## Global Constraints
@@ -48,7 +48,7 @@ New in this plan:
 
 ## Facts verified while writing this plan (2026-09-18)
 
-- **The whole plan was built and tested before it was written:** 202 tests pass (47 unit, 155 LiteSVM), `cargo clippy -p hodl_loans --all-targets -- -D warnings` is clean, every task's end state was rebuilt from Plan 4's head and passes its own suite and clippy, and each task's failing-test step was run to capture its real errors.
+- **The whole plan was built and tested before it was written:** 205 tests pass (47 unit, 158 LiteSVM), `cargo clippy -p hodl_loans --all-targets -- -D warnings` is clean, every task's end state was rebuilt from Plan 4's head and passes its own suite and clippy, and each task's failing-test step was run to capture its real errors.
 - **`liquidate` overflows the SBF stack before it overflows compute.** Adding the promo accounts made it fail with `Access violation in stack frame 5 at address 0x200005ff8`, having burned only 12,719 CU — an account-construction failure, not a compute one. Boxing `Config` fixed it; grouping the forfeiture helper's arguments into a struct was not enough on its own.
 - **LiteSVM does not load the native Ed25519 program by default.** Without `features = ["precompiles"]` every voucher redemption fails with `InvalidProgramForExecution`, which looks like a program bug and is not one.
 - **Anchor 1.2.0's `solana_program` shim re-exports neither `ed25519_program` nor the instructions-sysvar loaders.** `solana-instructions-sysvar` 3 is already in the lockfile through `anchor-lang`, so depending on it directly costs no version churn; the Ed25519 program address is pinned as a constant and matches `solana_sdk_ids::ed25519_program::ID`.
@@ -79,6 +79,7 @@ src/instructions/promos/vault.rs              new: create, fund, withdraw, sweep
 src/instructions/promos/campaign.rs           new: create_campaign, close_campaign
 src/instructions/promos/redeem.rs             new: redeem_promo, close_voucher_receipt
 src/instructions/promos/lifecycle.rs          new: expire, revoke, release, forfeit
+src/instructions/promos/cap.rs                new: set_promo_cap
 src/instructions/promos/mod.rs                new
 src/instructions/mod.rs
 src/instructions/admin/sweep.rs               shared sweep_to_treasury helper
@@ -93,8 +94,8 @@ src/events.rs                                 + 10 events
 src/lib.rs                                    + 10 entry points
 tests/common/mod.rs                           harness: promo vault, campaigns, vouchers, lifecycle
 tests/budget.rs, tests/loans.rs, tests/liquidation.rs   updated for the new account sets
-tests/promo_vault.rs, tests/campaign.rs, tests/promo_redeem.rs,
-tests/promo_health.rs, tests/promo_lifecycle.rs, tests/promo_forfeit.rs   new
+tests/promo_vault.rs, tests/campaign.rs, tests/promo_redeem.rs, tests/promo_health.rs,
+tests/promo_lifecycle.rs, tests/promo_forfeit.rs, tests/promo_cap.rs      new
 ```
 
 All paths below are relative to the repository root.
@@ -3438,7 +3439,7 @@ Run: `./scripts/test.sh --test promo_forfeit`
 Expected: 5 tests, all `ok`.
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 202 tests in all — 47 unit and 155 LiteSVM.
+Expected: every binary reports `ok`, 202 tests in all (`promo_forfeit` is new with 5).
 
 Run: `cargo clippy -p hodl_loans --all-targets -- -D warnings`
 Expected: no warnings.
@@ -3452,18 +3453,255 @@ git commit -m "feat: forfeit a defaulting position's promo to lenders"
 
 ---
 
+### Task 8: The promo cap
+
+**Files:**
+- Create: `programs/hodl_loans/src/instructions/promos/cap.rs`, `tests/promo_cap.rs`
+- Modify: `src/instructions/promos/mod.rs`, `src/events.rs`, `src/lib.rs`, `tests/common/mod.rs`
+
+**Interfaces:**
+- Consumes: `Config::{promo_cap_bps, collateral_count}`, `CollateralAsset::{ltv_bps, liquidation_threshold_bps, mint, bump}`, `MAX_BPS`.
+- Produces:
+  - `set_promo_cap(promo_cap_bps)` — admin, with every listed `CollateralAsset` in `remaining_accounts`
+  - Harness: `set_promo_cap_ix(admin, promo_cap_bps, assets)`, which derives and sorts the asset accounts for the caller
+
+- [ ] **Step 1: Write the harness and the failing tests**
+
+Append to `programs/hodl_loans/tests/common/mod.rs`:
+
+```rust
+// ---- The promo cap (Task 8) ----
+
+/// `set_promo_cap` re-checks every listed asset, so the caller passes them all, in ascending
+/// key order.
+pub fn set_promo_cap_ix(admin: &Pubkey, promo_cap_bps: u16, assets: &[Pubkey]) -> Instruction {
+    let mut instruction = ix(
+        hodl_loans::instruction::SetPromoCap { promo_cap_bps },
+        hodl_loans::accounts::SetPromoCap { admin: *admin, config: config_pda() },
+    );
+    let mut sorted: Vec<Pubkey> = assets.iter().map(collateral_pda).collect();
+    sorted.sort();
+    instruction.accounts.extend(sorted.into_iter().map(|k| AccountMeta::new_readonly(k, false)));
+    instruction
+}
+```
+
+Create `programs/hodl_loans/tests/promo_cap.rs`:
+
+```rust
+mod common;
+
+use common::*;
+use hodl_loans::HodlError;
+use solana_signer::Signer;
+
+#[test]
+fn the_cap_is_re_checked_against_every_listed_asset() {
+    let (mut env, _cngn) = Env::with_cngn_market();
+    let admin = env.admin.pubkey();
+    // Default collateral is 70% LTV against a 90% threshold, so 20 points of room.
+    let usdc = env.list_spl_collateral(6);
+    let sol = env.list_spl_collateral(9);
+    assert_eq!(env.config().collateral_count, 2);
+    assert_eq!(env.config().promo_cap_bps, 2_000);
+
+    // Exactly the room every asset has is allowed; one point more is not.
+    let raise = set_promo_cap_ix(&admin, 2_001, &[usdc, sol]);
+    assert_hodl_error(send(&mut env.svm, &[raise], &[&env.admin]), HodlError::InvalidParameters);
+    let exact = set_promo_cap_ix(&admin, 2_000, &[usdc, sol]);
+    send(&mut env.svm, &[exact], &[&env.admin]).unwrap();
+
+    // Lowering it is always safe.
+    let lower = set_promo_cap_ix(&admin, 500, &[usdc, sol]);
+    send(&mut env.svm, &[lower], &[&env.admin]).unwrap();
+    assert_eq!(env.config().promo_cap_bps, 500);
+
+    // The tightest asset is the one that binds: 5% of room leaves room for a 5% cap.
+    let tight = hodl_loans::CollateralParams {
+        ltv_bps: 7_000,
+        liquidation_threshold_bps: 7_500,
+        ..default_collateral_params(&sol)
+    };
+    let update = update_collateral_params_ix(&admin, &sol, tight);
+    send(&mut env.svm, &[update], &[&env.admin]).unwrap();
+    let over = set_promo_cap_ix(&admin, 501, &[usdc, sol]);
+    assert_hodl_error(send(&mut env.svm, &[over], &[&env.admin]), HodlError::InvalidParameters);
+    let ok = set_promo_cap_ix(&admin, 500, &[usdc, sol]);
+    send(&mut env.svm, &[ok], &[&env.admin]).unwrap();
+}
+
+#[test]
+fn no_listed_asset_can_be_skipped_or_stood_in_for() {
+    let (mut env, _cngn) = Env::with_cngn_market();
+    let admin = env.admin.pubkey();
+    let permissive = env.list_spl_collateral(6);
+    let strict_params_mint = env.list_spl_collateral(9);
+    // The cap has to come down before an asset can be tightened past it: the same rule binds
+    // both directions, and it is currently 20%.
+    send(&mut env.svm, &[set_promo_cap_ix(&admin, 100, &[permissive, strict_params_mint])], &[&env.admin]).unwrap();
+    let strict = hodl_loans::CollateralParams {
+        ltv_bps: 7_000,
+        liquidation_threshold_bps: 7_100,
+        ..default_collateral_params(&strict_params_mint)
+    };
+    send(&mut env.svm, &[update_collateral_params_ix(&admin, &strict_params_mint, strict)], &[&env.admin]).unwrap();
+
+    // Leaving the strict asset out fails on the count.
+    let short = set_promo_cap_ix(&admin, 1_000, &[permissive]);
+    assert_hodl_error(send(&mut env.svm, &[short], &[&env.admin]), HodlError::InvalidParameters);
+
+    // Passing the permissive one twice satisfies a bare count check, which is why the keys must
+    // strictly increase: a duplicate is not a second asset.
+    let duplicated = set_promo_cap_ix(&admin, 1_000, &[permissive, permissive]);
+    assert_hodl_error(send(&mut env.svm, &[duplicated], &[&env.admin]), HodlError::InvalidParameters);
+
+    // With both passed honestly, the strict asset's 1% of room is what binds.
+    let over = set_promo_cap_ix(&admin, 101, &[permissive, strict_params_mint]);
+    assert_hodl_error(send(&mut env.svm, &[over], &[&env.admin]), HodlError::InvalidParameters);
+    let ok = set_promo_cap_ix(&admin, 100, &[permissive, strict_params_mint]);
+    send(&mut env.svm, &[ok], &[&env.admin]).unwrap();
+}
+
+#[test]
+fn setting_the_cap_is_admin_only_and_bounded() {
+    let (mut env, _cngn) = Env::with_cngn_market();
+    let admin = env.admin.pubkey();
+    let stranger = env.funded_keypair();
+
+    let by_stranger = set_promo_cap_ix(&stranger.pubkey(), 100, &[]);
+    assert_hodl_error(send(&mut env.svm, &[by_stranger], &[&stranger]), HodlError::Unauthorized);
+
+    // Above 100% is meaningless, and with no assets listed there is nothing to contradict it.
+    let absurd = set_promo_cap_ix(&admin, 10_001, &[]);
+    assert_hodl_error(send(&mut env.svm, &[absurd], &[&env.admin]), HodlError::InvalidParameters);
+    send(&mut env.svm, &[set_promo_cap_ix(&admin, 10_000, &[])], &[&env.admin]).unwrap();
+    assert_eq!(env.config().promo_cap_bps, 10_000);
+}
+```
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `./scripts/test.sh --test promo_cap`
+Expected: `error[E0422]: cannot find struct, variant or union type SetPromoCap in module hodl_loans::instruction`, and the same for `hodl_loans::accounts`.
+
+- [ ] **Step 3: Implement**
+
+Create `programs/hodl_loans/src/instructions/promos/cap.rs`. Spec §8 says the account count must equal `collateral_count` "so none can be skipped" — which a bare count does not achieve, since the same permissive asset can be passed several times. Requiring the keys to strictly increase closes that, and re-deriving each PDA stops a look-alike account standing in for a stricter asset:
+
+```rust
+use anchor_lang::prelude::*;
+
+use crate::constants::{COLLATERAL_SEED, CONFIG_SEED, MAX_BPS};
+use crate::errors::HodlError;
+use crate::events::PromoCapSet;
+use crate::state::{CollateralAsset, Config};
+
+#[derive(Accounts)]
+pub struct SetPromoCap<'info> {
+    pub admin: Signer<'info>,
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ HodlError::Unauthorized)]
+    pub config: Account<'info, Config>,
+}
+
+/// Spec §8 and §12. The cap bounds how much promo counts against a borrower's own collateral,
+/// so raising it eats into the gap between every asset's LTV and its liquidation threshold —
+/// the gap that keeps a fully drawn position solvent. Every listed asset is re-checked against
+/// the new value before it takes effect.
+///
+/// `remaining_accounts` carries every `CollateralAsset`, **in ascending key order**. The count
+/// must equal `config.collateral_count` and the keys must strictly increase, which together
+/// rule out the mistake a bare count check allows: passing one permissive asset several times
+/// and leaving the rest unexamined.
+pub fn handle_set_promo_cap(ctx: Context<SetPromoCap>, promo_cap_bps: u16) -> Result<()> {
+    require!(promo_cap_bps <= MAX_BPS, HodlError::InvalidParameters);
+    require!(
+        ctx.remaining_accounts.len() == ctx.accounts.config.collateral_count as usize,
+        HodlError::InvalidParameters
+    );
+
+    let mut previous = Pubkey::default();
+    for info in ctx.remaining_accounts {
+        require_keys_eq!(*info.owner, *ctx.program_id, HodlError::InvalidParameters);
+        require!(info.key() > previous, HodlError::InvalidParameters);
+        previous = info.key();
+
+        let data = info.try_borrow_data()?;
+        let asset = CollateralAsset::try_deserialize(&mut &data[..])
+            .map_err(|_| HodlError::InvalidParameters)?;
+        // The asset account must be the one the program derives for its own mint, so a
+        // look-alike cannot stand in for a stricter asset.
+        let expected = Pubkey::create_program_address(
+            &[COLLATERAL_SEED, asset.mint.as_ref(), &[asset.bump]],
+            ctx.program_id,
+        )
+        .map_err(|_| HodlError::InvalidParameters)?;
+        require_keys_eq!(info.key(), expected, HodlError::InvalidParameters);
+
+        require!(
+            asset.ltv_bps as u32 + promo_cap_bps as u32 <= asset.liquidation_threshold_bps as u32,
+            HodlError::InvalidParameters
+        );
+    }
+
+    let config = &mut ctx.accounts.config;
+    let old = config.promo_cap_bps;
+    config.promo_cap_bps = promo_cap_bps;
+    emit!(PromoCapSet { old, new: promo_cap_bps });
+    Ok(())
+}
+```
+
+Add `pub mod cap;` and `pub use cap::*;` to the promos module, the event:
+
+```rust
+#[event]
+pub struct PromoCapSet {
+    pub old: u16,
+    pub new: u16,
+}
+```
+
+and the entry point:
+
+```rust
+    pub fn set_promo_cap(ctx: Context<SetPromoCap>, promo_cap_bps: u16) -> Result<()> {
+        instructions::handle_set_promo_cap(ctx, promo_cap_bps)
+    }
+```
+
+- [ ] **Step 4: Run the tests, then the full suite and lints**
+
+Run: `./scripts/test.sh --test promo_cap`
+Expected: 3 tests, all `ok`.
+
+Run: `./scripts/test.sh`
+Expected: every binary reports `ok`, 205 tests in all — 47 unit and 158 LiteSVM.
+
+Run: `cargo clippy -p hodl_loans --all-targets -- -D warnings`
+Expected: no warnings.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add -A
+git commit -m "feat: set_promo_cap, re-checked against every listed asset"
+```
+
+---
+
 ## Done when
 
-- `./scripts/test.sh` reports 202 passing tests and `cargo clippy -p hodl_loans --all-targets -- -D warnings` is clean.
+- `./scripts/test.sh` reports 205 passing tests and `cargo clippy -p hodl_loans --all-targets -- -D warnings` is clean.
 - `outstanding + unissued ≤ cash` holds after every instruction that touches the promo vault, and the free balance is what bounds both campaign creation and withdrawal.
 - A voucher only works for the wallet, amount, nonce and expiry the promo signer actually signed, only once, and only against an open campaign within its window.
 - Promo lifts both the borrow limit and the liquidation line by the same capped amount, and is worth nothing to a position holding no collateral of its own.
 - Idle promo can be reclaimed by anyone, revoked by the admin, and neither can touch a position with a live loan.
 - A defaulting position's promo reaches lenders as cNGN in the market vault, without reducing what the borrower owes.
+- The cap cannot be raised past the room any listed asset has between its LTV and its liquidation threshold, and no asset can be skipped or stood in for while it is checked.
 
 ## Deliberately not in this plan
 
 - **Per-referral rules** (one voucher per invited friend, and so on). Spec §12 puts these in the backend, before it signs.
 - **A per-asset multiplier ceiling** (the Plan 4 follow-up). It belongs with promo's own caps but is a `CollateralAsset` change, not a promo one.
 - **Trident invariants over the promo vault.** The `outstanding + unissued ≤ cash` invariant is exactly the shape a fuzzer should attack; that arrives with the rest of the fuzzing in Plan 6.
-- **A promo-aware `set_promo_cap`.** Lowering the cap while positions hold promo simply counts less of it; nothing needs migrating, and the instruction already validates against every listed collateral asset.
+- **Migrating positions when the cap changes.** `set_promo_cap` (Task 8) re-checks every listed asset, but it does nothing to positions already holding promo: lowering the cap simply counts less of their promo from that block on. That is the intended behaviour — promo was never theirs to spend — and no migration is needed.

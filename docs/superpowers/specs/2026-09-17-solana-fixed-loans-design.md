@@ -265,7 +265,7 @@ Market rules, enforced by `create_market` and `update_market_params`:
 - `ngn_feed` is not the default key; `ngn_max_stale_slots > 0`; `ngn_min_samples ≥ 1`; `ngn_max_spread_bps ≤ BPS`
 - `promo_inactivity_seconds ≥ 0`
 
-`set_promo_cap` rejects a value that breaks the second collateral rule for any listed asset. Every `CollateralAsset` account is passed as a remaining account, and the count must equal `config.collateral_count`, so none can be skipped. `list_collateral` increments `collateral_count` and `delist_collateral` decrements it.
+`set_promo_cap` rejects a value that breaks the second collateral rule for any listed asset. Every `CollateralAsset` account is passed as a remaining account, **in ascending key order**, and the count must equal `config.collateral_count`. The count alone would not stop one permissive asset being passed several times while the rest go unexamined; requiring the keys to strictly increase does, and each account's PDA is re-derived from its own stored mint and bump so a look-alike cannot stand in for a stricter asset. `list_collateral` increments `collateral_count` and `delist_collateral` decrements it.
 
 ### Launch values
 
