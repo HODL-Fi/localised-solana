@@ -68,6 +68,41 @@ fn liquidation_seizes_collateral_plus_the_bonus() {
 }
 
 #[test]
+fn liquidating_the_second_collateral_slot_uses_its_own_price() {
+    let (mut env, setup) = underwater();
+    // A second, 9-decimal mint fills slot 1 (slot 0 already holds the USDC from `loan_ready`).
+    // `load_valuation` values used slots in position order via the `priced` count in
+    // `liquidate.rs`; this exercises that index for a slot other than 0 — a mismatch there
+    // would price the seizure off USDC's $0.45 instead of this mint's $10.
+    let sol = env.list_spl_collateral(9);
+    env.set_pyth_price(&sol, 10 * ONE_DOLLAR, 0);
+    let sol_deposit = 2_000_000_000; // 2 tokens, 9 decimals
+    env.deposit_collateral(&setup.borrower, &sol, sol_deposit);
+    let liquidator = env.new_liquidator(&setup.cngn, LOAN);
+    let collateral_account = env.create_token_account(&sol, &liquidator.pubkey());
+
+    // No time has passed since origination, so the whole repayment is principal and the
+    // balance cap does not bind. 10,000 cNGN is $6.25 at the plain NGN price (625,000,000 of
+    // USD_SCALE, not the ask): floor(10,000,000,000 × 625,000,000 / 1e6) = 6,250,000,000,000.
+    // With the 5% bonus that's floor(6,250,000,000,000 × 10,500 / 10,000) = 6,562,500,000,000
+    // ($6.5625), seized from the 9-decimal slot-1 mint at $10 (10,000,000,000,000 of
+    // USD_SCALE): floor(6,562,500,000,000 × 1e9 / 1e13) = 656,250,000 — well under the
+    // 2,000,000,000 the slot holds, so the seizure is not slot-capped either.
+    let repaid = 10_000 * ONE_CNGN;
+    env.liquidate(&liquidator, &setup, &sol, &collateral_account, 0, repaid).unwrap();
+    let seized = 656_250_000;
+
+    assert_eq!(env.token_balance(&collateral_account), seized);
+    assert_eq!(env.token_balance(&liquidator.cngn), LOAN - repaid);
+    assert_eq!(env.collateral(&sol).total_deposited, sol_deposit - seized);
+
+    let position = env.position(&setup.borrower.pubkey());
+    // Slot 0 (USDC) is untouched: pricing and seizing slot 1 must not reach into slot 0.
+    assert_eq!(position.collateral[0].amount, 1_000 * ONE_USDC);
+    assert_eq!(position.collateral[1].amount, sol_deposit - seized);
+}
+
+#[test]
 fn the_collateral_slot_caps_the_repayment() {
     let (mut env, setup) = underwater();
     let liquidator = env.new_liquidator(&setup.cngn, 10_000_000 * ONE_CNGN);
@@ -98,6 +133,8 @@ fn liquidation_splits_a_repayment_pro_rata_and_keeps_the_penalty_clock_running()
     let liquidator = env.new_liquidator(&setup.cngn, 10_000_000 * ONE_CNGN);
     let collateral_account = env.create_token_account(&setup.usdc, &liquidator.pubkey());
     let anchor = env.position(&setup.borrower.pubkey()).loans[0].interest_anchor;
+    // No market-touching instruction has run since `take_loan`, so nothing has accrued yet.
+    let accrued_before = env.market(&setup.cngn).accrued_interest;
 
     // Spec §11 step 7 splits a liquidation pro rata, not interest-first as a repayment does:
     // 8,120 × 100,000 / 107,120 of it is principal.
@@ -119,6 +156,20 @@ fn liquidation_splits_a_repayment_pro_rata_and_keeps_the_penalty_clock_running()
     assert_eq!(market.cash, POOL_CNGN - 100_000 * ONE_CNGN + repaid);
     // $5.075 of cNGN plus the 5% bonus, at $0.05 a USDC.
     assert_eq!(env.token_balance(&collateral_account), 106_575_000);
+
+    // Spec §11 step 8: `market.accrue` runs first, on the untouched 100,000 cNGN principal —
+    // 90% of 15% APR over 146/365 of a year (exactly 0.4) is 100,000 × 0.15 × 0.9 × 0.4 =
+    // 5,400 cNGN, i.e. 5,400,000,000 base units. Liquidation then releases only the repaid
+    // share via R(principal_repaid, loan):
+    // released = floor(principal_repaid × rate_bps × (BPS − reserve_factor_bps) × 146 days
+    //                   / (BPS × BPS × YEAR))
+    //          = floor(7,580,283,793 × 1,500 × 9,000 × 12,614,400 / (10,000 × 10,000 × 31,536,000))
+    // rate_bps × (BPS − reserve_factor_bps) / (BPS × BPS) × (146 days / YEAR) reduces exactly to
+    // 54 / 1,000 (1,500 × 9,000 / 10,000 = 1,350; 1,350 / 10,000 × 12,614,400 / 31,536,000, and
+    // 12,614,400 / 31,536,000 = 146/365 = 0.4 exactly, so 1,350 × 0.4 / 10,000 = 540/10,000 = 0.054):
+    //          = floor(7,580,283,793 × 54 / 1,000) = floor(409,335,324,822 / 1,000) = 409,335,324.
+    let released = 409_335_324;
+    assert_eq!(market.accrued_interest, accrued_before + 5_400_000_000 - released);
 }
 
 #[test]
