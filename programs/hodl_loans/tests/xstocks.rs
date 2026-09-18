@@ -110,6 +110,75 @@ fn a_hook_switched_on_after_listing_stops_transfers_cleanly() {
     env.sponsored(withdraw, &borrower.key).unwrap();
 }
 
+/// The freeze authority's blocklist lever (spec §14, §20 item 3) must not seal a live position.
+/// `DefaultAccountState` governs the state *new* accounts are initialized in; the vault, the
+/// borrower's account and the liquidator's already exist, so flipping it to `Frozen` changes
+/// nothing about whether their transfers are legal. Enforcing it on the way out would turn an
+/// expected issuer action into a permanent trap: withdraw, liquidate and sweep would all revert,
+/// `write_off_loan` needs the collateral to be dust, and `delist_collateral` needs an empty vault.
+#[test]
+fn a_frozen_default_after_listing_does_not_trap_the_collateral() {
+    let (mut env, setup) = Env::loan_ready();
+    let stock = env.list_xstock_collateral(200);
+    let borrower = env.new_borrower();
+    let owner = borrower.pubkey();
+    let token = env.deposit_collateral(&borrower, &stock, 10 * ONE_XSTOCK);
+    let borrower_cngn = env.create_token_account(&setup.cngn, &owner);
+    let setup = LoanSetup { borrower, borrower_cngn, ..setup };
+
+    // 10 xStock at $200 backs 1,000,000 cNGN ($625.625 at the NGN ask), under the 50% LTV limit.
+    env.take_loan(&setup.borrower, &setup, 1_000_000 * ONE_CNGN, 365 * DAY).unwrap();
+
+    // A donation to sweep later, and the liquidator's account, both created before the flip.
+    env.mint_to(&stock, &collateral_vault_pda(&stock), 7 * ONE_XSTOCK);
+    let liquidator = env.new_liquidator(&setup.cngn, 1_000_000 * ONE_CNGN);
+    let seized_to = env.create_token_account(&stock, &liquidator.pubkey());
+    let destination = env.create_token_account(&stock, &env.treasury.pubkey());
+
+    // The issuer switches on blocklist-style compliance.
+    env.set_default_account_state(&stock, AccountState::Frozen);
+
+    // The borrower still gets collateral out: 9 shares at $200 still back the $625.625 debt.
+    let withdraw =
+        withdraw_collateral_ix(&owner, &stock, &TOKEN_2022, &token, Some(&setup.cngn), ONE_XSTOCK, env.price_accounts(&owner));
+    env.sponsored(withdraw, &setup.borrower.key).unwrap();
+    assert_eq!(env.token_balance(&token), ONE_XSTOCK);
+
+    // A liquidator still seizes: $720 of collateral × the 75% threshold is under the debt.
+    env.set_pyth_price(&stock, 80 * ONE_DOLLAR, 0);
+    env.liquidate(&liquidator, &setup, &stock, &seized_to, 0, 100_000 * ONE_CNGN).unwrap();
+    assert!(env.token_balance(&seized_to) > 0);
+
+    // And the admin still sweeps the donation out.
+    let sweep = sweep_collateral_excess_ix(&env.admin.pubkey(), &stock, &TOKEN_2022, &destination);
+    send(&mut env.svm, &[sweep], &[&env.admin]).unwrap();
+    assert_eq!(env.token_balance(&destination), 7 * ONE_XSTOCK);
+}
+
+/// The mirror of the test above: the entry policy still holds the `DefaultAccountState` line.
+/// `listing_rejects_a_hook_program_or_a_frozen_default` covers a fresh listing; this covers the
+/// other entry point, a deposit into an asset whose mint has flipped since it was listed.
+#[test]
+fn a_frozen_default_after_listing_still_blocks_new_deposits() {
+    let mut env = Env::initialized();
+    let stock = env.list_xstock_collateral(200);
+    let borrower = env.new_borrower();
+    let token = env.deposit_collateral(&borrower, &stock, 10 * ONE_XSTOCK);
+    env.mint_to(&stock, &token, ONE_XSTOCK);
+    let owner = borrower.pubkey();
+
+    env.set_default_account_state(&stock, AccountState::Frozen);
+
+    let deposit = deposit_collateral_ix(&owner, &stock, &TOKEN_2022, &token, ONE_XSTOCK);
+    assert_hodl_error(env.sponsored(deposit, &borrower.key), HodlError::UnsupportedMintExtension);
+
+    // Reverting the flag lets new exposure in again.
+    env.set_default_account_state(&stock, AccountState::Initialized);
+    let deposit = deposit_collateral_ix(&owner, &stock, &TOKEN_2022, &token, ONE_XSTOCK);
+    env.sponsored(deposit, &borrower.key).unwrap();
+    assert_eq!(env.position(&owner).collateral[0].amount, 11 * ONE_XSTOCK);
+}
+
 #[test]
 fn a_hook_switched_on_after_listing_blocks_the_admin_sweep() {
     let mut env = Env::initialized();
@@ -291,4 +360,144 @@ fn liquidating_an_xstock_seizes_at_the_display_price() {
     env.set_multiplier(&stock, 0.5, now);
     env.liquidate(&liquidator, &setup, &stock, &seized_to, 0, 160_000 * ONE_CNGN).unwrap();
     assert_eq!(env.token_balance(&seized_to), 137_500_000 + 275_000_000);
+}
+
+/// A position mixing kinds, in the order `Standard, XStock, Standard`. Every other xStock test
+/// holds a single kind, so the cursor's *variable* stride — the new control flow in this plan —
+/// is never exercised across kinds: a fixed stride of two or of three would walk the same
+/// accounts for a uniform position and only diverge here.
+///
+/// Slot 0 is 1,000 USDC at $1 and 70% LTV ($700 of limit); slot 1 is 10 xStock at $200 and 50%
+/// LTV ($1,000); slot 2 is 500 Token-2022 units at $1 and 70% LTV ($350). The combined limit is
+/// $2,050, which is 3,276,723 cNGN at the ask.
+#[test]
+fn a_mixed_standard_and_xstock_position_values_every_slot() {
+    const MIXED_CEILING: u64 = 3_276_723 * ONE_CNGN;
+
+    let (mut env, setup) = Env::loan_ready();
+    let stock = env.list_xstock_collateral(200);
+    let plain = env.list_t22_collateral(6);
+    let borrower = env.new_borrower();
+    let owner = borrower.pubkey();
+    env.deposit_collateral(&borrower, &setup.usdc, 1_000 * ONE_USDC);
+    env.deposit_collateral(&borrower, &stock, 10 * ONE_XSTOCK);
+    env.deposit_collateral(&borrower, &plain, 500 * ONE_USDC);
+    let borrower_cngn = env.create_token_account(&setup.cngn, &owner);
+    let setup = LoanSetup { borrower, borrower_cngn, ..setup };
+
+    // Two accounts, three, two — seven in all, not six and not nine.
+    let position = env.position(&owner);
+    assert_eq!([position.collateral[0].mint, position.collateral[1].mint, position.collateral[2].mint], [setup.usdc, stock, plain]);
+    assert_eq!(env.price_accounts(&owner).len(), 7);
+
+    // The uniform two-per-slot shape lands the xStock slot's third account on the *next* slot's
+    // `CollateralAsset`, which is not its mint.
+    let uniform = price_pairs(&[setup.usdc, stock, plain]);
+    let ixn = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 1_000 * ONE_CNGN, 30 * DAY, uniform);
+    assert_hodl_error(send(&mut env.svm, &[ixn], &[&env.admin, &setup.borrower.key]), HodlError::PriceAccountMismatch);
+
+    // With the right shape the three slots sum to exactly $2,050 of borrowing power.
+    assert_hodl_error(env.take_loan(&setup.borrower, &setup, MIXED_CEILING + ONE_CNGN, 30 * DAY), HodlError::Unhealthy);
+    env.take_loan(&setup.borrower, &setup, MIXED_CEILING, 30 * DAY).unwrap();
+    assert_eq!(env.token_balance(&setup.borrower_cngn), MIXED_CEILING);
+}
+
+/// `withdraw_collateral`'s health path with an active loan against an xStock. Both existing
+/// xStock withdraw tests pass `None` for the market and no price accounts — the no-loan path —
+/// so the three-account shape its doc comment describes was never actually walked here.
+#[test]
+fn withdrawing_against_an_active_loan_prices_the_xstock_mint() {
+    let (mut env, setup) = Env::loan_ready();
+    let stock = env.list_xstock_collateral(200);
+    let borrower = env.new_borrower();
+    let owner = borrower.pubkey();
+    let token = env.deposit_collateral(&borrower, &stock, 10 * ONE_XSTOCK);
+    let borrower_cngn = env.create_token_account(&setup.cngn, &owner);
+    let setup = LoanSetup { borrower, borrower_cngn, ..setup };
+
+    // 800,000 cNGN is $500.50 at the ask, against $1,000 of limit.
+    env.take_loan(&setup.borrower, &setup, 800_000 * ONE_CNGN, 365 * DAY).unwrap();
+
+    // The two-account shape is short the mint the slot needs.
+    let short = withdraw_collateral_ix(&owner, &stock, &TOKEN_2022, &token, Some(&setup.cngn), 3 * ONE_XSTOCK, price_pairs(&[stock]));
+    assert_hodl_error(env.sponsored(short, &setup.borrower.key), HodlError::PriceAccountMismatch);
+
+    // 7 shares left is $1,400 of collateral, $700 of limit — still over the $500.50 debt.
+    let ok = withdraw_collateral_ix(&owner, &stock, &TOKEN_2022, &token, Some(&setup.cngn), 3 * ONE_XSTOCK, env.price_accounts(&owner));
+    env.sponsored(ok, &setup.borrower.key).unwrap();
+    assert_eq!(env.token_balance(&token), 3 * ONE_XSTOCK);
+
+    // 4 shares would be $800, $400 of limit — under the debt.
+    let too_much = withdraw_collateral_ix(&owner, &stock, &TOKEN_2022, &token, Some(&setup.cngn), 3 * ONE_XSTOCK, env.price_accounts(&owner));
+    assert_hodl_error(env.sponsored(too_much, &setup.borrower.key), HodlError::Unhealthy);
+
+    // The multiplier is read from the mint on this path too: at 1.5 the same 4 shares are 6
+    // display tokens, $1,200 of collateral and $600 of limit, and the withdrawal goes through.
+    let now = env.now();
+    env.set_multiplier(&stock, 1.5, now);
+    let now_ok = withdraw_collateral_ix(&owner, &stock, &TOKEN_2022, &token, Some(&setup.cngn), 3 * ONE_XSTOCK, env.price_accounts(&owner));
+    env.sponsored(now_ok, &setup.borrower.key).unwrap();
+    assert_eq!(env.position(&owner).collateral[0].amount, 4 * ONE_XSTOCK);
+}
+
+/// `write_off_loan` against an xStock. Its doc comment claims the three-account shape; nothing
+/// pinned it, and a write-off is the only escape from a position whose collateral is dust.
+#[test]
+fn writing_off_an_xstock_position_prices_the_mint() {
+    let (mut env, setup) = Env::loan_ready();
+    let stock = env.list_xstock_collateral(200);
+    let borrower = env.new_borrower();
+    let owner = borrower.pubkey();
+    env.deposit_collateral(&borrower, &stock, 10 * ONE_XSTOCK);
+    let borrower_cngn = env.create_token_account(&setup.cngn, &owner);
+    let setup = LoanSetup { borrower, borrower_cngn, ..setup };
+
+    env.take_loan(&setup.borrower, &setup, 700_000 * ONE_CNGN, 365 * DAY).unwrap();
+    // $0.001 a share: 10 shares is $0.01, under the market's $5 dust threshold.
+    env.set_pyth_price(&stock, 100_000, 0);
+
+    // The two-account shape reaches the end of the supplied accounts with a slot still to value.
+    let admin = env.admin.pubkey();
+    let short = write_off_loan_ix(&admin, &owner, &setup.cngn, 0, price_pairs(&[stock]));
+    assert_hodl_error(send(&mut env.svm, &[short], &[&env.admin]), HodlError::PriceAccountMismatch);
+
+    env.write_off(&setup, 0).unwrap();
+    assert_eq!(env.market(&setup.cngn).total_bad_debt, 700_000 * ONE_CNGN as u128);
+    // The write-off clears the debt and leaves the dust in the position.
+    assert!(!env.position(&owner).has_active_loans());
+    assert_eq!(env.position(&owner).collateral[0].amount, 10 * ONE_XSTOCK);
+}
+
+/// A multiplier past `MAX_MULTIPLIER` reaching a health check as `InvalidPrice`. `scale_multiplier`
+/// unit-tests its own rejections, but nothing drove one through the program — and this is the
+/// failure mode that argues against tightening the cap: an out-of-range multiplier does not
+/// merely undervalue the asset, it seals every priced path against the position.
+///
+/// `a_foreign_mint_with_a_generous_multiplier_does_not_inflate_collateral` uses `1_000_000.0`,
+/// which is exactly the cap and passes the `<=` bound, so it never reaches this branch.
+#[test]
+fn a_multiplier_above_the_cap_fails_every_priced_path() {
+    let (mut env, setup) = Env::loan_ready();
+    let stock = env.list_xstock_collateral(200);
+    let borrower = env.new_borrower();
+    let owner = borrower.pubkey();
+    let token = env.deposit_collateral(&borrower, &stock, 10 * ONE_XSTOCK);
+    let borrower_cngn = env.create_token_account(&setup.cngn, &owner);
+    let setup = LoanSetup { borrower, borrower_cngn, ..setup };
+    env.take_loan(&setup.borrower, &setup, 500_000 * ONE_CNGN, 365 * DAY).unwrap();
+
+    // Twice `MAX_MULTIPLIER`, which the mint accepts and the program will not.
+    let now = env.now();
+    env.set_multiplier(&stock, 2_000_000.0, now);
+
+    assert_hodl_error(env.take_loan(&setup.borrower, &setup, 1_000 * ONE_CNGN, 30 * DAY), HodlError::InvalidPrice);
+    let withdraw = withdraw_collateral_ix(&owner, &stock, &TOKEN_2022, &token, Some(&setup.cngn), ONE_XSTOCK, env.price_accounts(&owner));
+    assert_hodl_error(env.sponsored(withdraw, &setup.borrower.key), HodlError::InvalidPrice);
+
+    // The way out is the unpriced one: repay, then withdraw without a market.
+    env.mint_to(&setup.cngn, &setup.borrower_cngn, 100_000 * ONE_CNGN);
+    env.repay(&setup, 0, u64::MAX).unwrap();
+    let withdraw = withdraw_collateral_ix(&owner, &stock, &TOKEN_2022, &token, None, 10 * ONE_XSTOCK, vec![]);
+    env.sponsored(withdraw, &setup.borrower.key).unwrap();
+    assert_eq!(env.token_balance(&token), 10 * ONE_XSTOCK);
 }
