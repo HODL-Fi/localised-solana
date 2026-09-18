@@ -4,6 +4,8 @@ What the Plan 3 whole-branch review raised and deliberately left standing or pus
 
 ## Plan 4 (xStocks)
 
+> **Resolved 2026-09-18 by Plan 4** (`docs/superpowers/plans/2026-09-17-plan-4-xstocks.md`, Task 4): `seize_for_repayment` takes the multiplier as its sixth argument and divides the display amount back into raw units.
+
 - `seize_for_repayment` (`math/liquidation.rs`) needs the xStock scaled-UI multiplier. Spec §11 step 5's formula already carries `multiplier` in the seizure divisor, but the function takes no multiplier parameter yet — it's the one site outside `valuation.rs` that prices collateral, and it will need the same `ScaledUiAmountConfig` read Plan 4 adds there.
 
 ## Plan 6 (hardening, fuzzing, devnet)

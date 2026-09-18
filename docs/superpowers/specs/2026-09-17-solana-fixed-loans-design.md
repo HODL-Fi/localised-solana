@@ -209,19 +209,26 @@ Every account starts with `version: u8` and `bump: u8`, and ends with reserved p
 
 ### xStock multiplier
 
-For `XStock` assets, read `ScaledUiAmountConfig` from the mint. Use `new_multiplier` once `now ≥ new_multiplier_effective_timestamp`, otherwise `multiplier`. The stored `f64` is converted to a 10^12 fixed-point value.
+For `XStock` assets, read `ScaledUiAmountConfig` from the mint. Use `new_multiplier` once `now ≥ new_multiplier_effective_timestamp`, otherwise `multiplier`. Token-2022 never moves the scheduled value into `multiplier` on its own, so reading that field alone goes stale the moment a corporate action takes effect — as it had on both AAPLX and NVDAX when they were checked (§20 item 2).
+
+The stored `f64` is converted to a `MULTIPLIER_SCALE = 10^12` fixed-point value, **rounded down**: a factor binary floating point cannot hold exactly lands one unit low, which undervalues collateral by 10^-12 of a token and never the borrower's debt. A multiplier that is not finite, not positive, above `MAX_MULTIPLIER = 10^6` or that rounds to zero is rejected with `InvalidPrice`.
+
+The multiplier is never stored in a protocol account; every valuation reads it from the mint.
 
 A `Standard` asset has multiplier 1.
 
 ### Price accounts
 
-For health checks, the instruction's remaining accounts are, for each non-empty collateral slot **in slot order**: `(CollateralAsset, PriceUpdateV2)`. The mint account is not passed: the asset carries the decimals, and its own `mint` field identifies it. (Plan 4 passes the mint again for `XStock` assets, whose multiplier lives on the mint.)
+For health checks, the instruction's remaining accounts are, for each non-empty collateral slot **in slot order**:
+- `Standard`: `(CollateralAsset, PriceUpdateV2)` — two accounts. The mint is not passed: the asset carries the decimals, and its own `mint` field identifies it.
+- `XStock`: `(CollateralAsset, PriceUpdateV2, mint)` — three, because the multiplier lives on the mint.
 
-The program loops over the position's slots, not over the accounts supplied. For each slot it requires:
+The program loops over the position's slots, not over the accounts supplied, advancing a cursor by two or three depending on the asset's kind. For each slot it requires:
 - the `CollateralAsset` to be program-owned and its `mint` to equal `slot.mint`;
-- the price account to carry that asset's feed ID, and to be the asset's `price_account` when it pins one.
+- the price account to carry that asset's feed ID, and to be the asset's `price_account` when it pins one;
+- for an `XStock`, the third account's key to equal `slot.mint`.
 
-A missing, extra or mismatched account fails with `PriceAccountMismatch`.
+After the loop the cursor must land exactly on the end of the supplied accounts. A missing, extra or mismatched account fails with `PriceAccountMismatch`.
 
 ### Values
 
@@ -234,6 +241,8 @@ borrow_limit     = Σ value_i × ltv_i / BPS                    + promo_counted
 liquidation_line = Σ value_i × liquidation_threshold_i / BPS  + promo_counted
 debt             = Σ balance_j(now) × (ngn_price + ngn_spread) / 10^cngn_decimals
 ```
+
+`amount_i × multiplier_i` is the display amount, **rounded down** before it is priced: Pyth quotes an xStock per display token, not per raw unit (§20 item 2).
 
 - **Healthy for borrowing or withdrawing:** `debt ≤ borrow_limit`.
 - **Liquidatable:** `debt > liquidation_line`.
@@ -377,6 +386,8 @@ Repayment needs no prices, so it works during an oracle outage.
    seize_raw = amount × ngn_price × (BPS + bonus) × 10^decimals / (10^cngn_decimals × collateral_price × multiplier × BPS)
    ```
 
+   The division is interleaved — value, then bonus, then collateral units, then the multiplier — so a large repayment cannot overflow `u128`, and every step rounds down. Dividing by the multiplier converts the display amount the price bought back into the raw units the vault moves; for a `Standard` asset the multiplier is 1 and the step is exact.
+
 6. If `seize_raw > slot.amount`: set `amount = amount × slot.amount / seize_raw` and `seize_raw = slot.amount`.
 7. `principal_repaid = amount × principal / balance` (round down). Require > 0 (`ZeroPrincipalRepaid`).
 8. `interest_paid = amount − principal_repaid`. Release `R(principal_repaid, loan)`. `reserve = interest_paid × reserve_factor_bps / BPS`; `protocol_reserve += reserve`.
@@ -518,17 +529,19 @@ At maximum borrowing, debt ≤ own value × (LTV + promo_cap) ≤ own value × t
 - **`XStock` mints** may carry only:
   - `PermanentDelegate`, `Pausable`, `ScaledUiAmount`, `MetadataPointer`, `TokenMetadata`;
   - `ConfidentialTransferMint` (vaults never configure confidential balances);
-  - `TransferHook` with no hook program set.
+  - `TransferHook` with **no hook program set**;
+  - `DefaultAccountState` at **`Initialized`**.
 
-  Anything else, including `TransferFeeConfig`, `DefaultAccountState`, `NonTransferable` and `InterestBearingConfig`, is rejected with `UnsupportedMintExtension`.
-- Every instruction that transfers an `XStock` re-checks the mint's extensions, so an issuer that later enables a transfer hook or another unsupported feature causes a clean failure.
+  Anything else, including `TransferFeeConfig`, `NonTransferable` and `InterestBearingConfig`, is rejected with `UnsupportedMintExtension`. The last two entries are the only ones whose *value* is checked as well as their presence: a hook program would run issuer code inside every transfer, and a frozen default would freeze any token account created after the flip — including a collateral vault.
+- Every instruction that **moves** collateral — deposit, withdraw, liquidate, sweep — re-checks the mint against its kind's policy, so an issuer that later enables a transfer hook, or flips the default account state, causes a clean failure rather than a silent one. Listing is a moment; an issuer's powers are permanent.
 - **Accepted issuer risks for xStocks**, limited by lower LTV and deposit caps:
-  - The permanent delegate can move or burn tokens from the custody vault.
+  - The permanent delegate can move or burn tokens from the custody vault. The protocol's books keep the borrower's balance; the vault is short, and withdrawals fail in the token program once it empties.
   - A paused mint blocks deposits, withdrawals and liquidation seizures of that asset.
+  - The freeze authority can set `DefaultAccountState` to `Frozen`. Every live xStock carries the extension at `Initialized` today, and xStocks' own docs say it is there so Backed can switch on blocklist-style compliance tooling later (§20 item 3).
 
 ## 15. Transactions
 
-- A health check with 8 collateral slots passes 16 price-related accounts plus fixed accounts. Clients and liquidators must use versioned transactions with address lookup tables.
+- A health check with 8 collateral slots passes 16 price-related accounts (24 if every slot is an `XStock`, which takes three each) plus fixed accounts. Clients and liquidators must use versioned transactions with address lookup tables: measured in LiteSVM, a sponsored legacy `take_loan` fits about 6 `Standard` slots, and an all-xStock position at 8 slots exceeds the 1,232-byte packet limit. Compute is not the binding constraint — that same transaction spends 79,912 CU of the 200,000 default.
 - Pyth price updates and Switchboard feed updates must be posted in the same transaction or recently enough to meet the age limits. This is the caller's job.
 - The program calls no other program except the token programs. Pyth and Switchboard data is read from accounts, so there is no re-entrancy path.
 
@@ -621,6 +634,8 @@ These facts determine exact code paths and must be confirmed first:
 1. **cNGN mint on Solana** (`3jiqwBQVRC5zRwHyqvnkQurebJ5RNxg3F5fXMwaxgkv8`, from `localised-backend/docs/circle/cngn_addesses.md`): token program, decimals, extensions. If it carries a permanent delegate or pausable extension, record them as issuer risks and add them to the market's accepted list.
    **Resolved 2026-09-17 (mainnet RPC):** Token-2022, 6 decimals, extensions `permanentDelegate`, `metadataPointer`, `tokenMetadata`, freeze authority set. The market mint allowlist is those three extensions. Accepted issuer risks: the permanent delegate can move funds out of the market vault, and the freeze authority can freeze it.
 2. **Pyth xStock feeds** (e.g. `Crypto.AAPLX/USD`): whether the price is per display token (after the scaled-UI multiplier) or per raw unit. §8 assumes per display token. Also whether sponsored on-chain feed accounts exist for them.
+   **Resolved 2026-09-18:** per display token. Pyth publishes dedicated `Crypto.{TICKER}X/USD` feeds for the tokens themselves, plus redemption-rate feeds (`Crypto.AAPLX/AAPL.RR`) measuring their drift from the underlying share — which only makes sense if both are per share. Live, `Crypto.AAPLX/USD` ($337.42) tracked `Equity.US.AAPL/USD` ($336.29) within 0.34% while AAPLX's effective multiplier was ≈1.0033, and Backed's developer docs call the scaled amount (raw × multiplier) the one that "reflects the true equity value". Confidence medium-high: no single authoritative sentence states it. **No sponsored push account was found for these feeds**, so HODL maintains and pins the price account itself, bounded by `MAX_PRICE_AGE_SECONDS`. Also confirmed: Token-2022 does not move `new_multiplier` into `multiplier` when its timestamp passes — the consumer must compare block time and choose (§8).
 3. **Mainnet xStock extensions:** the actual extension list matches §14.
+   **Resolved 2026-09-18 (mainnet RPC):** AAPLX `XsbEhLAtcf6HdfpFZ5xEMdqW8nfAvcsP5bdudRLJzJp`, TSLAX `XsDoVfqeBukxuZHWhdvWHBhgEHjGNst4MLodqsJHzoB`, NVDAX `Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh` — each Token-2022, 8 decimals, freeze authority set, carrying `MetadataPointer`, `TokenMetadata`, `PermanentDelegate`, `Pausable`, `ScaledUiAmount`, `ConfidentialTransferMint`, `TransferHook` (program `null`) and `DefaultAccountState` (`initialized`), and nothing else. `DefaultAccountState` was **not** in §14's allowed set; rejecting it would have rejected every real xStock, so §14 now allows it and checks its value. Full RPC output: `docs/superpowers/research/2026-09-18-xstocks-facts.md`.
 4. **Switchboard On-Demand NGN/USD feed:** the source list, the result field that gives spread or standard deviation, the update cost, and who cranks it.
 5. **Pyth feed IDs** for SOL/USD, USDC/USD and USDT/USD.

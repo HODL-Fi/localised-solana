@@ -13,6 +13,8 @@ What the Plan 2 reviews raised and deliberately left for later. The whole-branch
 
 ## Plan 4 (xStocks)
 
+> **Resolved 2026-09-18 by Plan 4** (Task 1): `tests/withdraw.rs::a_token_2022_standard_asset_moves_through_the_same_paths` deposits, borrows against and withdraws a metadata-only Token-2022 asset (`MintKind::Token2022Plain`).
+
 - No Token-2022 standard-collateral withdrawal test yet; add one with the Token-2022 collateral path.
 
 ## Plan 5 (promo)
