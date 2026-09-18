@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-use crate::state::{CollateralParams, MarketParams};
+use crate::state::{CollateralKind, CollateralParams, MarketParams};
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Role {
@@ -98,6 +98,7 @@ pub struct CollateralListed {
     pub collateral: Pubkey,
     pub mint: Pubkey,
     pub vault: Pubkey,
+    pub kind: CollateralKind,
     pub params: CollateralParams,
 }
 

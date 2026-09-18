@@ -5,7 +5,7 @@ use crate::constants::{ACCOUNT_VERSION, COLLATERAL_SEED, COLLATERAL_VAULT_SEED, 
 use crate::errors::HodlError;
 use crate::events::{CollateralDelisted, CollateralListed, CollateralParamsUpdated, CollateralPauseSet};
 use crate::state::{CollateralAsset, CollateralKind, CollateralParams, Config};
-use crate::token::extensions::{require_allowed_extensions, STANDARD_COLLATERAL_EXTENSIONS};
+use crate::token::extensions::require_collateral_mint_on_entry;
 
 #[derive(Accounts)]
 pub struct ListCollateral<'info> {
@@ -77,9 +77,13 @@ pub struct DelistCollateral<'info> {
     pub token_program: Interface<'info, TokenInterface>,
 }
 
-pub fn handle_list_collateral(ctx: Context<ListCollateral>, params: CollateralParams) -> Result<()> {
+pub fn handle_list_collateral(
+    ctx: Context<ListCollateral>,
+    params: CollateralParams,
+    kind: CollateralKind,
+) -> Result<()> {
     params.validate(ctx.accounts.config.promo_cap_bps)?;
-    require_allowed_extensions(&ctx.accounts.mint.to_account_info(), STANDARD_COLLATERAL_EXTENSIONS)?;
+    require_collateral_mint_on_entry(&ctx.accounts.mint.to_account_info(), kind)?;
 
     let mut asset = CollateralAsset {
         version: ACCOUNT_VERSION,
@@ -89,7 +93,7 @@ pub fn handle_list_collateral(ctx: Context<ListCollateral>, params: CollateralPa
         token_program: ctx.accounts.token_program.key(),
         vault: ctx.accounts.vault.key(),
         decimals: ctx.accounts.mint.decimals,
-        kind: CollateralKind::Standard,
+        kind,
         pyth_feed_id: [0; 32],
         price_account: Pubkey::default(),
         max_price_age_seconds: 0,
@@ -112,6 +116,7 @@ pub fn handle_list_collateral(ctx: Context<ListCollateral>, params: CollateralPa
         collateral: ctx.accounts.collateral.key(),
         mint: ctx.accounts.mint.key(),
         vault: ctx.accounts.vault.key(),
+        kind,
         params,
     });
     Ok(())

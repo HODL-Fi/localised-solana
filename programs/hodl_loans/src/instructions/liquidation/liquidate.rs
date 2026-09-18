@@ -8,6 +8,7 @@ use crate::math::checked::{add, sub, to_u64};
 use crate::math::liquidation::{principal_share, seize_for_repayment};
 use crate::math::loan::{accrued_lp_interest, loan_balance, lp_contribution, reserve_share};
 use crate::state::{CollateralAsset, Market, Position};
+use crate::token::extensions::require_collateral_mint_on_exit;
 use crate::token::transfer::{transfer_from_user, transfer_from_vault};
 use crate::valuation::load_valuation;
 
@@ -56,9 +57,10 @@ pub struct Liquidate<'info> {
     pub collateral_token_program: Interface<'info, TokenInterface>,
 }
 
-/// Spec §11 `liquidate`. `remaining_accounts`: one `(CollateralAsset, PriceUpdateV2)` pair per
-/// used collateral slot, in slot order — the whole position is priced, because health decides
-/// whether it may be liquidated at all.
+/// Spec §11 `liquidate`. `remaining_accounts`: per used collateral slot, in slot order, a
+/// `(CollateralAsset, PriceUpdateV2)` pair — an `XStock` slot adds its mint as a third
+/// account, the source of its scaled-UI multiplier — the whole position is priced, because
+/// health decides whether it may be liquidated at all.
 ///
 /// A late loan is not liquidatable on its own: only an unhealthy position is (spec §2).
 /// Promo forfeiture (spec §11 step 3) arrives with Plan 5.
@@ -93,6 +95,7 @@ pub fn handle_liquidate<'info>(ctx: Context<'info, Liquidate<'info>>, loan_id: u
         // `load_valuation` returns one value per used slot, in slot order.
         let priced = position.collateral[..slot_index].iter().filter(|s| s.amount > 0).count();
         let collateral_price = valuation.collateral[priced].price.price;
+        let multiplier = valuation.collateral[priced].multiplier;
 
         let loan = position.loans[loan_index];
         let balance = loan_balance(&loan.terms(), now)?.total()?;
@@ -103,6 +106,7 @@ pub fn handle_liquidate<'info>(ctx: Context<'info, Liquidate<'info>>, loan_id: u
             market.decimals,
             collateral_price,
             ctx.accounts.collateral.decimals,
+            multiplier,
             ctx.accounts.collateral.liquidation_bonus_bps,
             position.collateral[slot_index].amount,
         )?;
@@ -168,6 +172,7 @@ pub fn handle_liquidate<'info>(ctx: Context<'info, Liquidate<'info>>, loan_id: u
         ctx.accounts.liquidator.to_account_info(),
         paid,
     )?;
+    require_collateral_mint_on_exit(&ctx.accounts.collateral_mint.to_account_info())?;
     let seeds: &[&[u8]] = &[COLLATERAL_SEED, collateral_mint.as_ref(), &[ctx.accounts.collateral.bump]];
     transfer_from_vault(
         ctx.accounts.collateral_token_program.key(),

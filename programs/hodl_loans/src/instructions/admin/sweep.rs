@@ -5,6 +5,7 @@ use crate::constants::{COLLATERAL_SEED, CONFIG_SEED, MARKET_SEED};
 use crate::errors::HodlError;
 use crate::events::ExcessSwept;
 use crate::state::{CollateralAsset, Config, Market};
+use crate::token::extensions::require_collateral_mint_on_exit;
 use crate::token::transfer::transfer_from_vault;
 
 #[derive(Accounts)]
@@ -83,6 +84,7 @@ pub struct SweepCollateralExcess<'info> {
 pub fn handle_sweep_collateral_excess(ctx: Context<SweepCollateralExcess>) -> Result<()> {
     let excess = ctx.accounts.vault.amount.saturating_sub(ctx.accounts.collateral.total_deposited);
     require!(excess > 0, HodlError::AmountTooSmall);
+    require_collateral_mint_on_exit(&ctx.accounts.mint.to_account_info())?;
 
     let mint_key = ctx.accounts.mint.key();
     let seeds: &[&[u8]] = &[COLLATERAL_SEED, mint_key.as_ref(), &[ctx.accounts.collateral.bump]];
