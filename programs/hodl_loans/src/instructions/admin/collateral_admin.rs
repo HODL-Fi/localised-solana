@@ -5,7 +5,7 @@ use crate::constants::{ACCOUNT_VERSION, COLLATERAL_SEED, COLLATERAL_VAULT_SEED, 
 use crate::errors::HodlError;
 use crate::events::{CollateralDelisted, CollateralListed, CollateralParamsUpdated, CollateralPauseSet};
 use crate::state::{CollateralAsset, CollateralKind, CollateralParams, Config};
-use crate::token::extensions::require_collateral_mint;
+use crate::token::extensions::require_collateral_mint_on_entry;
 
 #[derive(Accounts)]
 pub struct ListCollateral<'info> {
@@ -83,7 +83,7 @@ pub fn handle_list_collateral(
     kind: CollateralKind,
 ) -> Result<()> {
     params.validate(ctx.accounts.config.promo_cap_bps)?;
-    require_collateral_mint(&ctx.accounts.mint.to_account_info(), kind)?;
+    require_collateral_mint_on_entry(&ctx.accounts.mint.to_account_info(), kind)?;
 
     let mut asset = CollateralAsset {
         version: ACCOUNT_VERSION,

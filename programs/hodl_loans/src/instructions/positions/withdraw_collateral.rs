@@ -5,7 +5,7 @@ use crate::constants::{ACCESS_SEED, COLLATERAL_SEED, POSITION_SEED};
 use crate::errors::HodlError;
 use crate::events::CollateralWithdrawn;
 use crate::state::{Access, CollateralAsset, Market, Position};
-use crate::token::extensions::require_collateral_mint;
+use crate::token::extensions::require_collateral_mint_on_exit;
 use crate::token::transfer::transfer_from_vault;
 use crate::valuation::load_health;
 
@@ -71,7 +71,7 @@ pub fn handle_withdraw_collateral<'info>(ctx: Context<'info, WithdrawCollateral<
     let collateral = &mut ctx.accounts.collateral;
     collateral.total_deposited = collateral.total_deposited.checked_sub(amount).ok_or(HodlError::MathOverflow)?;
 
-    require_collateral_mint(&ctx.accounts.mint.to_account_info(), ctx.accounts.collateral.kind)?;
+    require_collateral_mint_on_exit(&ctx.accounts.mint.to_account_info())?;
     let seeds: &[&[u8]] = &[COLLATERAL_SEED, mint_key.as_ref(), &[ctx.accounts.collateral.bump]];
     transfer_from_vault(
         ctx.accounts.token_program.key(),
