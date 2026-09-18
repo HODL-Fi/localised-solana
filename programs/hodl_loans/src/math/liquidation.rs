@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 
 use crate::constants::BPS;
 use crate::errors::HodlError;
-use crate::math::checked::{mul_div_floor, to_u64};
+use crate::math::checked::{add, mul_div_floor, to_u64};
 
 /// How much cNGN a liquidator pays and how much collateral it takes for it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,7 +33,7 @@ pub fn seize_for_repayment(
 ) -> Result<Seizure> {
     require!(collateral_price > 0 && ngn_price > 0, HodlError::InvalidPrice);
     let repaid_usd = mul_div_floor(repay_amount as u128, ngn_price, pow10(cngn_decimals)?)?;
-    let with_bonus = mul_div_floor(repaid_usd, BPS + bonus_bps as u128, BPS)?;
+    let with_bonus = mul_div_floor(repaid_usd, add(BPS, bonus_bps as u128)?, BPS)?;
     let seize = mul_div_floor(with_bonus, pow10(collateral_decimals)?, collateral_price)?;
 
     if seize <= slot_amount as u128 {
@@ -78,6 +78,13 @@ mod tests {
         // No bonus seizes exactly the repaid value.
         let s = seize_for_repayment(REPAY, NGN, 6, USD, 6, 0, u64::MAX).unwrap();
         assert_eq!(s.seize_amount, 1_000_000_000);
+    }
+
+    #[test]
+    fn a_full_bonus_still_scales_the_seizure() {
+        // A 100% bonus doubles the collateral seized for the same repayment.
+        let s = seize_for_repayment(REPAY, NGN, 6, USD, 6, 10_000, u64::MAX).unwrap();
+        assert_eq!(s.seize_amount, 2_000_000_000);
     }
 
     #[test]
