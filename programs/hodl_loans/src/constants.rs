@@ -28,6 +28,15 @@ pub const USD_DECIMALS: i32 = 12;
 /// price-selection surface for assets without a pinned price account.
 pub const MAX_PRICE_AGE_SECONDS: u64 = 60;
 
+/// Fixed-point scale for an xStock's scaled-UI multiplier (10^12 per whole multiple).
+pub const MULTIPLIER_SCALE: u128 = 1_000_000_000_000;
+/// The multiplier a `Standard` asset always carries.
+pub const MULTIPLIER_ONE: u128 = MULTIPLIER_SCALE;
+/// Largest multiplier an xStock mint may declare. A corporate action moves it by small
+/// factors; anything beyond this is a misconfigured or hostile mint, and large values would
+/// push `amount × multiplier` towards overflow.
+pub const MAX_MULTIPLIER: u128 = 1_000_000 * MULTIPLIER_SCALE;
+
 /// Largest `bad_debt_dust_usd` an admin may set (spec §11: a write-off's loss is bounded by
 /// the dust collateral it leaves behind).
 pub const MAX_BAD_DEBT_DUST_USD: u128 = 1_000 * USD_SCALE;
