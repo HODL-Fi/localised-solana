@@ -57,7 +57,7 @@ New in this plan:
 - **No sponsored Pyth push account was found for the xStock feeds**, so an xStock is listed with `price_account` pinned to whatever account HODL itself maintains, and the 60-second age cap does the rest.
 - **Float conversion truncates in the protocol's favour.** `1.0009 × 10^12` is `1_000_899_999_999` in binary floating point, one unit low — it undervalues collateral by 10^-12 of a token, never the borrower's debt.
 - **Compute at full load, measured in LiteSVM:** a position holding 8 xStock slots with 9 existing loans spends about 74,000 CU on `take_loan`, against the 200,000 default. Compute is not the binding limit — the 24 price-related accounts push the legacy transaction past the 1,232-byte packet limit, so such a position needs a v0 transaction with an address lookup table. `tests/budget.rs` pins both.
-- **Verification.** The full Plan 4 code was compiled and tested before this plan was written: 161 tests pass (42 unit, 119 LiteSVM), `cargo clippy -D warnings` is clean, every task's end state was rebuilt from Plan 3's head and passes its own suite and clippy, and each task's failing-test step was run to capture its expected errors.
+- **Verification.** The full Plan 4 code was compiled and tested before this plan was written: 162 tests pass (43 unit, 119 LiteSVM), `cargo clippy -D warnings` is clean, every task's end state was rebuilt from Plan 3's head and passes its own suite and clippy, and each task's failing-test step was run to capture its expected errors.
 
 ## Plan-level refinements to the spec
 
@@ -1909,6 +1909,18 @@ mod tests {
     fn seizure_rejects_missing_prices() {
         assert!(seize_for_repayment(REPAY, NGN, 6, 0, 6, MULTIPLIER_ONE, 500, u64::MAX).is_err());
         assert!(seize_for_repayment(REPAY, 0, 6, USD, 6, MULTIPLIER_ONE, 500, u64::MAX).is_err());
+        assert!(seize_for_repayment(REPAY, NGN, 6, USD, 6, 0, 500, u64::MAX).is_err());
+    }
+
+    #[test]
+    fn the_seizure_floors_an_inexact_multiplier() {
+        // A live AAPLX-shaped multiplier (token/scaled_ui.rs documents this exact value; and
+        // math/health.rs uses it for the same purpose on the pricing side) divides the display
+        // amount inexactly. Flooring the raw-unit division is what stops a liquidator from being
+        // paid more collateral than the formula allows — a `mul_div_ceil` here would round in
+        // the liquidator's favor, at the borrower's expense.
+        let s = seize_for_repayment(REPAY, NGN, 6, USD, 6, 1_000_899_999_999, 500, u64::MAX).unwrap();
+        assert_eq!(s.seize_amount, 1_049_055_849);
     }
 
     #[test]
@@ -1952,7 +1964,7 @@ Run: `./scripts/test.sh --test xstocks`
 Expected: 13 tests, all `ok`.
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 161 tests in all — 42 unit and 119 LiteSVM.
+Expected: every binary reports `ok`, 162 tests in all — 43 unit and 119 LiteSVM.
 
 Run: `cargo clippy -p hodl_loans --all-targets -- -D warnings`
 Expected: no warnings.
@@ -1968,7 +1980,7 @@ git commit -m "feat: seize xStock collateral at the display price"
 
 ## Done when
 
-- `./scripts/test.sh` reports 161 passing tests and `cargo clippy -p hodl_loans --all-targets -- -D warnings` is clean.
+- `./scripts/test.sh` reports 162 passing tests and `cargo clippy -p hodl_loans --all-targets -- -D warnings` is clean.
 - A live-shaped xStock mint lists only as `XStock`; a hook program or a frozen default is rejected at listing and again at every transfer.
 - A position's borrowing power follows the mint's effective multiplier, including one scheduled for a future timestamp.
 - A liquidator seizing an xStock receives raw units worth the display value it paid for, at any multiplier.
