@@ -4,21 +4,21 @@ use anchor_spl::token_2022::spl_token_2022::{
     state::Mint as MintState,
 };
 
-use crate::constants::{MAX_MULTIPLIER, MULTIPLIER_ONE, MULTIPLIER_SCALE};
+use crate::constants::{MAX_MULTIPLIER, MULTIPLIER_SCALE};
 use crate::errors::HodlError;
-use crate::state::CollateralKind;
 
-/// The multiplier to apply to raw token amounts, at `MULTIPLIER_SCALE`.
+/// An `XStock` mint's multiplier, at `MULTIPLIER_SCALE`.
 ///
-/// `Standard` assets are always 1. For an `XStock`, the issuer's `ScaledUiAmount` extension
-/// carries the factor its corporate actions (dividend reinvestment, splits) apply to balances:
-/// `new_multiplier` once `now` reaches `new_multiplier_effective_timestamp`, else `multiplier`.
-/// The stored value never moves into `multiplier` on its own, so reading that field alone goes
-/// stale the moment a scheduled change takes effect.
-pub fn read_multiplier(mint: &AccountInfo, kind: CollateralKind, now: i64) -> Result<u128> {
-    if kind == CollateralKind::Standard {
-        return Ok(MULTIPLIER_ONE);
-    }
+/// The issuer's `ScaledUiAmount` extension carries the factor its corporate actions (dividend
+/// reinvestment, splits) apply to balances: `new_multiplier` once `now` reaches
+/// `new_multiplier_effective_timestamp`, else `multiplier`. The stored value never moves into
+/// `multiplier` on its own, so reading that field alone goes stale the moment a scheduled
+/// change takes effect.
+///
+/// Only an `XStock` has one. A `Standard` asset's multiplier is `MULTIPLIER_ONE` and its mint
+/// is never passed as a health account, so its caller supplies the constant rather than
+/// calling this with a kind it would have to branch on.
+pub fn read_xstock_multiplier(mint: &AccountInfo, now: i64) -> Result<u128> {
     let data = mint.try_borrow_data()?;
     let state = StateWithExtensions::<MintState>::unpack(&data)
         .map_err(|_| HodlError::UnsupportedMintExtension)?;

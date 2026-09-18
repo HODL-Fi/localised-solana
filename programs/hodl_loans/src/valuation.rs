@@ -9,7 +9,7 @@ use crate::oracle::pyth::read_pyth_price;
 use crate::oracle::switchboard::read_ngn_price;
 use crate::constants::MULTIPLIER_ONE;
 use crate::state::{CollateralAsset, CollateralKind, Market, Position};
-use crate::token::scaled_ui::read_multiplier;
+use crate::token::scaled_ui::read_xstock_multiplier;
 
 /// Accounts per used collateral slot in `remaining_accounts`: `(CollateralAsset, PriceUpdateV2)`
 /// for a `Standard` asset, and `(CollateralAsset, PriceUpdateV2, mint)` for an `XStock`, whose
@@ -53,15 +53,17 @@ pub fn load_collateral_values(
         )?;
         // An xStock passes its mint too: the multiplier its issuer applies to balances lives
         // there, and Pyth prices the display token, not the raw unit.
-        let multiplier = if asset.kind == CollateralKind::Standard {
-            cursor += ACCOUNTS_PER_COLLATERAL;
-            MULTIPLIER_ONE
-        } else {
-            let mint_info = remaining.get(cursor + 2).ok_or(HodlError::PriceAccountMismatch)?;
-            require_keys_eq!(mint_info.key(), slot.mint, HodlError::PriceAccountMismatch);
-            cursor += ACCOUNTS_PER_XSTOCK;
-            read_multiplier(mint_info, asset.kind, clock.unix_timestamp)?
+        // The match is exhaustive, so a third `CollateralKind` has to state its own stride and
+        // multiplier here rather than silently inherit the xStock's.
+        let (stride, multiplier) = match asset.kind {
+            CollateralKind::Standard => (ACCOUNTS_PER_COLLATERAL, MULTIPLIER_ONE),
+            CollateralKind::XStock => {
+                let mint_info = remaining.get(cursor + 2).ok_or(HodlError::PriceAccountMismatch)?;
+                require_keys_eq!(mint_info.key(), slot.mint, HodlError::PriceAccountMismatch);
+                (ACCOUNTS_PER_XSTOCK, read_xstock_multiplier(mint_info, clock.unix_timestamp)?)
+            }
         };
+        cursor += stride;
         values.push(CollateralValue {
             amount: slot.amount,
             decimals: asset.decimals,
