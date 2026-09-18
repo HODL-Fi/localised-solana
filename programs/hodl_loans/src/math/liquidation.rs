@@ -112,6 +112,18 @@ mod tests {
     fn seizure_rejects_missing_prices() {
         assert!(seize_for_repayment(REPAY, NGN, 6, 0, 6, MULTIPLIER_ONE, 500, u64::MAX).is_err());
         assert!(seize_for_repayment(REPAY, 0, 6, USD, 6, MULTIPLIER_ONE, 500, u64::MAX).is_err());
+        assert!(seize_for_repayment(REPAY, NGN, 6, USD, 6, 0, 500, u64::MAX).is_err());
+    }
+
+    #[test]
+    fn the_seizure_floors_an_inexact_multiplier() {
+        // A live AAPLX-shaped multiplier (token/scaled_ui.rs documents this exact value; and
+        // math/health.rs uses it for the same purpose on the pricing side) divides the display
+        // amount inexactly. Flooring the raw-unit division is what stops a liquidator from being
+        // paid more collateral than the formula allows — a `mul_div_ceil` here would round in
+        // the liquidator's favor, at the borrower's expense.
+        let s = seize_for_repayment(REPAY, NGN, 6, USD, 6, 1_000_899_999_999, 500, u64::MAX).unwrap();
+        assert_eq!(s.seize_amount, 1_049_055_849);
     }
 
     #[test]
