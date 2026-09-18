@@ -344,7 +344,8 @@ pub fn default_market_params() -> hodl_loans::MarketParams {
         max_utilization_bps: 9_000,
         min_loan_amount: 1_000 * ONE_CNGN,
         max_tenure_seconds: 365 * 86_400,
-        bad_debt_dust_usd: 1_000_000_000_000_000_000,
+        // $5 at USD_SCALE: below that, liquidating costs more than it recovers.
+        bad_debt_dust_usd: 5_000_000_000_000,
         ngn_feed: Pubkey::new_from_array([7; 32]),
         ngn_max_stale_slots: 150,
         ngn_min_samples: 3,
@@ -504,10 +505,12 @@ pub fn feed_id(mint: &Pubkey) -> [u8; 32] {
     mint.to_bytes()
 }
 
-/// Spec §8 launch values for a stablecoin: LTV 70%, threshold 90%, bonus 5%.
+/// Spec §8 launch values for a stablecoin: LTV 70%, threshold 90%, bonus 5%,
+/// pinned to the mint's test price account.
 pub fn default_collateral_params(mint: &Pubkey) -> hodl_loans::CollateralParams {
     hodl_loans::CollateralParams {
         pyth_feed_id: feed_id(mint),
+        price_account: pyth_account(mint),
         max_price_age_seconds: 60,
         max_conf_bps: 200,
         ltv_bps: 7_000,
@@ -784,21 +787,11 @@ impl Env {
         self.set_account_data(&ngn_feed(), &switchboard_on_demand::ON_DEMAND_MAINNET_PID, pull_feed_data(value, std_dev, slot, 5));
     }
 
-    /// One `(CollateralAsset, PriceUpdateV2, mint)` triple per used collateral slot, in slot order.
+    /// One `(CollateralAsset, PriceUpdateV2)` pair per used collateral slot, in slot order.
     pub fn price_accounts(&self, owner: &Pubkey) -> Vec<AccountMeta> {
         let position = self.position(owner);
-        position
-            .collateral
-            .iter()
-            .filter(|slot| slot.amount > 0)
-            .flat_map(|slot| {
-                [
-                    AccountMeta::new_readonly(collateral_pda(&slot.mint), false),
-                    AccountMeta::new_readonly(pyth_account(&slot.mint), false),
-                    AccountMeta::new_readonly(slot.mint, false),
-                ]
-            })
-            .collect()
+        let mints: Vec<Pubkey> = position.collateral.iter().filter(|s| s.amount > 0).map(|s| s.mint).collect();
+        price_pairs(&mints)
     }
 
     pub fn take_loan(&mut self, borrower: &Borrower, setup: &LoanSetup, amount: u64, tenure_seconds: i64) -> TxResult {
@@ -901,15 +894,14 @@ pub fn withdraw_collateral_ix(
     instruction
 }
 
-/// One `(CollateralAsset, PriceUpdateV2, mint)` triple per listed mint, in the order given.
-pub fn price_triples(mints: &[Pubkey]) -> Vec<AccountMeta> {
+/// One `(CollateralAsset, PriceUpdateV2)` pair per listed mint, in the order given.
+pub fn price_pairs(mints: &[Pubkey]) -> Vec<AccountMeta> {
     mints
         .iter()
         .flat_map(|mint| {
             [
                 AccountMeta::new_readonly(collateral_pda(mint), false),
                 AccountMeta::new_readonly(pyth_account(mint), false),
-                AccountMeta::new_readonly(*mint, false),
             ]
         })
         .collect()
@@ -930,6 +922,121 @@ pub fn harvest_reserve_ix(admin: &Pubkey, mint: &Pubkey, destination: &Pubkey, a
             token_program: TOKEN_2022,
         },
     )
+}
+
+// ---- Liquidation (Task 3) ----
+
+/// Liquidation is open to anyone, so a liquidator needs no `Access` account.
+pub struct Liquidator {
+    pub key: Keypair,
+    /// Its cNGN account, which funds repayments.
+    pub cngn: Pubkey,
+}
+
+impl Liquidator {
+    pub fn pubkey(&self) -> Pubkey {
+        self.key.pubkey()
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn liquidate_ix(
+    liquidator: &Pubkey,
+    position_owner: &Pubkey,
+    mint: &Pubkey,
+    liquidator_token: &Pubkey,
+    collateral_mint: &Pubkey,
+    collateral_token_program: &Pubkey,
+    liquidator_collateral: &Pubkey,
+    loan_id: u64,
+    amount: u64,
+    prices: Vec<AccountMeta>,
+) -> Instruction {
+    let mut instruction = ix(
+        hodl_loans::instruction::Liquidate { loan_id, amount },
+        hodl_loans::accounts::Liquidate {
+            liquidator: *liquidator,
+            position: position_pda(position_owner),
+            market: market_pda(mint),
+            mint: *mint,
+            vault: market_vault_pda(mint),
+            liquidator_token: *liquidator_token,
+            collateral: collateral_pda(collateral_mint),
+            collateral_mint: *collateral_mint,
+            collateral_vault: collateral_vault_pda(collateral_mint),
+            liquidator_collateral: *liquidator_collateral,
+            ngn_feed: ngn_feed(),
+            token_program: TOKEN_2022,
+            collateral_token_program: *collateral_token_program,
+        },
+    );
+    instruction.accounts.extend(prices);
+    instruction
+}
+
+impl Env {
+    /// A funded wallet holding `balance` cNGN, with no whitelist.
+    pub fn new_liquidator(&mut self, cngn: &Pubkey, balance: u64) -> Liquidator {
+        let key = self.funded_keypair();
+        let account = self.create_token_account(cngn, &key.pubkey());
+        self.mint_to(cngn, &account, balance);
+        Liquidator { key, cngn: account }
+    }
+
+    /// Repays `amount` of `loan_id` against the position's current collateral prices.
+    pub fn liquidate(
+        &mut self,
+        liquidator: &Liquidator,
+        setup: &LoanSetup,
+        collateral_mint: &Pubkey,
+        liquidator_collateral: &Pubkey,
+        loan_id: u64,
+        amount: u64,
+    ) -> TxResult {
+        let owner = setup.borrower.pubkey();
+        let program = self.mint_program(collateral_mint);
+        let prices = self.price_accounts(&owner);
+        let instruction = liquidate_ix(
+            &liquidator.pubkey(),
+            &owner,
+            &setup.cngn,
+            &liquidator.cngn,
+            collateral_mint,
+            &program,
+            liquidator_collateral,
+            loan_id,
+            amount,
+            prices,
+        );
+        send(&mut self.svm, &[instruction], &[&liquidator.key])
+    }
+}
+
+// ---- Write-off (Task 4) ----
+
+pub fn write_off_loan_ix(admin: &Pubkey, position_owner: &Pubkey, mint: &Pubkey, loan_id: u64, prices: Vec<AccountMeta>) -> Instruction {
+    let mut instruction = ix(
+        hodl_loans::instruction::WriteOffLoan { loan_id },
+        hodl_loans::accounts::WriteOffLoan {
+            admin: *admin,
+            config: config_pda(),
+            position: position_pda(position_owner),
+            market: market_pda(mint),
+            ngn_feed: ngn_feed(),
+        },
+    );
+    instruction.accounts.extend(prices);
+    instruction
+}
+
+impl Env {
+    pub fn write_off(&mut self, setup: &LoanSetup, loan_id: u64) -> TxResult {
+        let owner = setup.borrower.pubkey();
+        let prices = self.price_accounts(&owner);
+        let admin = self.admin.pubkey();
+        let instruction = write_off_loan_ix(&admin, &owner, &setup.cngn, loan_id, prices);
+        send(&mut self.svm, &[instruction], &[&self.admin])
+    }
 }
 
 // ---- Compute budget measurement (test-only) ----

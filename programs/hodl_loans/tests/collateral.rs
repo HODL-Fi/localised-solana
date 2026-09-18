@@ -63,6 +63,8 @@ fn collateral_parameter_rules() {
         CollateralParams { pyth_feed_id: [0; 32], ..base },
         CollateralParams { max_price_age_seconds: 0, ..base },
         CollateralParams { max_conf_bps: 10_001, ..base },
+        // Above the 60-second cap on how far a caller may shop for a price.
+        CollateralParams { max_price_age_seconds: 61, ..base },
         CollateralParams { ltv_bps: 999, liquidation_threshold_bps: 5_000, ..base },
         // LTV 7,500 + promo cap 2,000 > threshold 9,000
         CollateralParams { ltv_bps: 7_500, ..base },
@@ -83,7 +85,9 @@ fn collateral_parameter_rules() {
     let boundaries = [
         CollateralParams { ltv_bps: 1_000, liquidation_threshold_bps: 3_000, ..base },
         CollateralParams { liquidation_bonus_bps: 1_111, ..base },
-        CollateralParams { max_conf_bps: 10_000, max_price_age_seconds: 1, ..base },
+        CollateralParams { max_conf_bps: 10_000, max_price_age_seconds: 60, ..base },
+        // Unpinned: any verified update for the feed inside the window is accepted.
+        CollateralParams { price_account: anchor_lang::prelude::Pubkey::default(), ..base },
     ];
     for params in boundaries {
         let instruction = update_collateral_params_ix(&admin, &mint, params);
