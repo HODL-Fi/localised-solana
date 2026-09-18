@@ -9,6 +9,7 @@ pub mod oracle;
 pub mod state;
 pub mod token;
 pub mod valuation;
+pub mod voucher;
 
 pub use constants::*;
 pub use errors::*;

@@ -81,6 +81,10 @@ pub const CAMPAIGN_SEED: &[u8] = b"campaign";
 #[constant]
 pub const VOUCHER_SEED: &[u8] = b"voucher";
 
+/// Domain separator in the voucher message (spec §12). It binds a signature to this program's
+/// voucher format, so a `promo_signer` key reused elsewhere cannot produce a valid voucher.
+pub const VOUCHER_DOMAIN: &str = "hodl_loans:promo_voucher:v1";
+
 #[cfg(test)]
 mod tests {
     use super::*;

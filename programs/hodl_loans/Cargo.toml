@@ -26,6 +26,7 @@ pyth-solana-receiver-sdk = "2.0.0"
 switchboard-on-demand = { version = "0.13.0", default-features = false, features = ["solana-v3"] }
 getrandom = { version = "0.2", features = ["custom"] }
 bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
+solana-instructions-sysvar = "3"
 
 [dev-dependencies]
 litesvm = "0.10.0"

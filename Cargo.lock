@@ -1652,6 +1652,7 @@ dependencies = [
  "litesvm",
  "pyth-solana-receiver-sdk",
  "solana-account",
+ "solana-instructions-sysvar 3.0.1",
  "solana-keypair",
  "solana-message",
  "solana-packet",

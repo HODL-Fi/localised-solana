@@ -1310,7 +1310,7 @@ mod tests {
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `./scripts/test.sh`
-Expected: 40 errors, of eight shapes — `error[E0412]: cannot find type Pubkey in this scope` and `error[E0433]: failed to resolve: use of undeclared type Pubkey` (the test module's `use super::*` resolves to nothing until the implementation below it imports `anchor_lang::prelude`), `error[E0425]: cannot find value ED25519_HEADER_LEN in this scope`, the same for `ED25519_DESCRIPTOR_LEN`, `THIS_INSTRUCTION` and `VOUCHER_DOMAIN`, `error[E0425]: cannot find function ed25519_instruction_covers in this scope`, and `error[E0433]: failed to resolve: use of undeclared type PromoVoucher`.
+Expected: 28 errors, of five distinct messages — `error[E0425]: cannot find value ED25519_HEADER_LEN in this scope`, the same for `ED25519_DESCRIPTOR_LEN` and `THIS_INSTRUCTION`, `error[E0425]: cannot find function ed25519_instruction_covers in this scope`, and `error[E0433]: failed to resolve: use of undeclared type PromoVoucher`. `Pubkey` and `VOUCHER_DOMAIN` do NOT error: the test module is a child of `voucher`, so its `use super::*` picks up the file's own private imports.
 
 - [ ] **Step 3: Implement**
 
