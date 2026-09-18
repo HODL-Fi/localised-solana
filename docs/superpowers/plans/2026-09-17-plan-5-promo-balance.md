@@ -377,7 +377,7 @@ fn the_promo_sweep_moves_only_donations() {
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `./scripts/test.sh --test promo_vault`
-Expected: `error[E0422]: cannot find struct, variant or union type CreatePromoVault in module hodl_loans::instruction`, and the same for `hodl_loans::accounts` and for `FundPromoVault`, `WithdrawPromoVault` and `SweepPromoExcess` — six errors in all. None of the instructions exists yet.
+Expected: `error[E0422]: cannot find struct, variant or union type CreatePromoVault in module hodl_loans::instruction`, and the same for `hodl_loans::accounts` and for `FundPromoVault`, `WithdrawPromoVault` and `SweepPromoExcess` — eight of those — plus `error[E0412]: cannot find type PromoVault in crate hodl_loans`. Nine errors in all: none of the four instructions exists yet, and neither does the account the test reads back.
 
 - [ ] **Step 3: Implement**
 
@@ -1310,7 +1310,7 @@ mod tests {
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `./scripts/test.sh`
-Expected: 28 errors, of five shapes — `error[E0425]: cannot find value ED25519_HEADER_LEN in this scope`, the same for `ED25519_DESCRIPTOR_LEN` and `THIS_INSTRUCTION`, `error[E0425]: cannot find function ed25519_instruction_covers in this scope`, and `error[E0433]: failed to resolve: use of undeclared type PromoVoucher`.
+Expected: 40 errors, of eight shapes — `error[E0412]: cannot find type Pubkey in this scope` and `error[E0433]: failed to resolve: use of undeclared type Pubkey` (the test module's `use super::*` resolves to nothing until the implementation below it imports `anchor_lang::prelude`), `error[E0425]: cannot find value ED25519_HEADER_LEN in this scope`, the same for `ED25519_DESCRIPTOR_LEN`, `THIS_INSTRUCTION` and `VOUCHER_DOMAIN`, `error[E0425]: cannot find function ed25519_instruction_covers in this scope`, and `error[E0433]: failed to resolve: use of undeclared type PromoVoucher`.
 
 - [ ] **Step 3: Implement**
 
@@ -2829,7 +2829,7 @@ fn the_promo_clock_restarts_only_when_the_last_loan_closes() {
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `./scripts/test.sh --test promo_lifecycle`
-Expected: `error[E0422]: cannot find struct, variant or union type ExpirePromo in module hodl_loans::instruction` and its `accounts` pair, the same for `RevokePromo`, and `error[E0560]: struct hodl_loans::accounts::ClosePosition has no field named market` (and `promo_vault`).
+Expected: `error[E0422]: cannot find struct, variant or union type ExpirePromo in module hodl_loans::instruction` and its `accounts` pair, the same for `RevokePromo`, `error[E0560]: struct hodl_loans::accounts::ClosePosition has no field named market` (and `promo_vault`), and `error[E0560]: struct hodl_loans::accounts::TakeLoan has no field named promo_vault` — seven distinct errors, which cargo reports as nine because two of them occur at more than one call site.
 
 - [ ] **Step 3: Implement**
 
@@ -3298,7 +3298,7 @@ fn a_liquidation_must_name_the_positions_own_promo_vault() {
 - [ ] **Step 2: Run it to verify it fails**
 
 Run: `./scripts/test.sh --test promo_forfeit`
-Expected: `error[E0560]: struct hodl_loans::accounts::Liquidate has no field named promo_vault`, the same for `promo_vault_token`, and four more for `WriteOffLoan`'s `mint`, `vault`, `promo_vault` and `promo_vault_token`.
+Expected: `error[E0560]: struct hodl_loans::accounts::Liquidate has no field named promo_vault`, the same for `promo_vault_token`, and five more for `WriteOffLoan`'s `mint`, `vault`, `promo_vault`, `promo_vault_token` and `token_program` — seven in all.
 
 - [ ] **Step 3: Implement**
 
