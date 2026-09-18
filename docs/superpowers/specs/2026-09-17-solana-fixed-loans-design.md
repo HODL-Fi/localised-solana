@@ -532,6 +532,8 @@ At maximum borrowing, debt ≤ own value × (LTV + promo_cap) ≤ own value × t
   - `TransferHook` with **no hook program set**;
   - `DefaultAccountState` at **`Initialized`**.
 
+  `ScaledUiAmount` must be **present**: it is what makes the asset priceable, and the rest of the set is permissive about presence, so a mint carrying only allowed extensions — metadata and a permanent delegate, say — would otherwise list as an `XStock` and then fail every health check that touched it, breaking borrowing, withdrawal and liquidation for any position holding it. Listing is the one moment that is cheap to catch.
+
   Anything else, including `TransferFeeConfig`, `NonTransferable` and `InterestBearingConfig`, is rejected with `UnsupportedMintExtension`. The last two entries are the only ones whose *value* is checked as well as their presence: a hook program would run issuer code inside every transfer, and a frozen default would freeze any token account created after the flip — including a collateral vault.
 - Every instruction that **moves** collateral — deposit, withdraw, liquidate, sweep — re-checks the mint against its kind's policy, so an issuer that later enables a transfer hook, or flips the default account state, causes a clean failure rather than a silent one. Listing is a moment; an issuer's powers are permanent.
 - **Accepted issuer risks for xStocks**, limited by lower LTV and deposit caps:

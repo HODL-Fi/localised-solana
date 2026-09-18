@@ -6,7 +6,7 @@
 
 **Architecture:**
 - **Builds on Plan 3** (`main` at `08ff1ed`): collateral, prices, positions, loans, liquidation, write-off.
-- **The listing decides the policy.** `list_collateral` gains a `kind`, and each kind has its own allowed extension set. `Standard` stays metadata-only; `XStock` allows the seven extensions the live Backed mints carry, and checks the two whose *values* matter — a transfer hook must name no program, and accounts must not be frozen by default.
+- **The listing decides the policy.** `list_collateral` gains a `kind`, and each kind has its own allowed extension set. `Standard` stays metadata-only; `XStock` allows the eight extensions the live Backed mints carry, requires the scaled-UI multiplier among them — an xStock without one would be listable but unpriceable — and checks the two settings whose *values* matter: a transfer hook must name no program, and accounts must not be frozen by default.
 - **The multiplier is read, never stored.** `ScaledUiAmountConfig` holds both the current factor and a scheduled one; the program picks by comparing block time to the effective timestamp, every time it prices the asset. Nothing is cached, so a corporate action needs no protocol action.
 - **Pricing and seizure convert in opposite directions.** Health multiplies a raw balance up to display units, because Pyth quotes the display token; seizure divides a display amount back down to the raw units the vault actually moves.
 - **Every transfer re-checks the mint.** Listing is a moment; an issuer's powers are permanent.
@@ -57,13 +57,14 @@ New in this plan:
 - **No sponsored Pyth push account was found for the xStock feeds**, so an xStock is listed with `price_account` pinned to whatever account HODL itself maintains, and the 60-second age cap does the rest.
 - **Float conversion truncates in the protocol's favour.** `1.0009 × 10^12` is `1_000_899_999_999` in binary floating point, one unit low — it undervalues collateral by 10^-12 of a token, never the borrower's debt.
 - **Compute at full load, measured in LiteSVM:** a position holding 8 xStock slots with 9 existing loans spends 79,912 CU on `take_loan`, against the 200,000 default. Compute is not the binding limit — the 24 price-related accounts push the legacy transaction past the 1,232-byte packet limit, so such a position needs a v0 transaction with an address lookup table. `tests/budget.rs` pins both.
-- **Verification.** The full Plan 4 code was compiled and tested before this plan was written: 157 tests pass (41 unit, 116 LiteSVM), `cargo clippy -D warnings` is clean, every task's end state was rebuilt from Plan 3's head and passes its own suite and clippy, and each task's failing-test step was run to capture its expected errors.
+- **Verification.** The full Plan 4 code was compiled and tested before this plan was written: 158 tests pass (41 unit, 117 LiteSVM), `cargo clippy -D warnings` is clean, every task's end state was rebuilt from Plan 3's head and passes its own suite and clippy, and each task's failing-test step was run to capture its expected errors.
 
 ## Plan-level refinements to the spec
 
 This plan's commit already writes these into the spec.
 
 - **§14 allows `DefaultAccountState` for `XStock` mints, checked at listing and at every transfer** (`state == Initialized`). The issuer's power to flip it later is a third accepted risk, alongside the permanent delegate and the pause.
+- **§14 requires `ScaledUiAmount` to be present on an `XStock` mint.** The allowed set is otherwise permissive about presence, so a mint carrying only extensions that happen to be allowed — metadata and a permanent delegate, say — would list as an `XStock` and then be unpriceable: every health check touching it fails, breaking borrow, withdraw and liquidate for any position holding it. Listing is the one moment that is cheap to catch.
 - **§8 price accounts:** an `XStock` slot passes three accounts — `(CollateralAsset, PriceUpdateV2, mint)` — and the program walks a cursor rather than fixed-size chunks, requiring the supplied accounts to be consumed exactly.
 - **§8 multiplier:** the `f64` conversion rounds down, and a multiplier that is not finite, not positive, above `MAX_MULTIPLIER = 10^6` or that rounds to zero is rejected with `InvalidPrice`.
 - **§15:** 8 xStock slots is 24 price-related accounts; the measured legacy transaction no longer fits a packet.
@@ -676,6 +677,18 @@ fn listing_rejects_a_hook_program_or_a_frozen_default() {
 }
 
 #[test]
+fn an_xstock_mint_without_a_multiplier_is_rejected() {
+    let mut env = Env::initialized();
+    let admin = env.admin.pubkey();
+
+    // An xStock without a ScaledUiAmount extension would be listable but unpriceable: an XStock
+    // with no multiplier is not an xStock. Listing is the one moment we can reject it cheaply.
+    let no_multiplier = env.create_mint(MintKind::CngnLike, XSTOCK_DECIMALS);
+    let listing = list_collateral_ix(&admin, &no_multiplier, &TOKEN_2022, xstock_collateral_params(&no_multiplier), CollateralKind::XStock);
+    assert_hodl_error(send(&mut env.svm, &[listing], &[&env.admin]), HodlError::UnsupportedMintExtension);
+}
+
+#[test]
 fn an_issuer_pause_blocks_transfers_of_that_asset() {
     let mut env = Env::initialized();
     let stock = env.list_xstock_collateral(200);
@@ -809,8 +822,8 @@ Replace `programs/hodl_loans/src/token/extensions.rs`:
 use anchor_lang::prelude::*;
 use anchor_spl::token_2022::spl_token_2022::{
     extension::{
-        default_account_state::DefaultAccountState, transfer_hook::TransferHook,
-        BaseStateWithExtensions, ExtensionType, StateWithExtensions,
+        default_account_state::DefaultAccountState, scaled_ui_amount::ScaledUiAmountConfig,
+        transfer_hook::TransferHook, BaseStateWithExtensions, ExtensionType, StateWithExtensions,
     },
     state::{AccountState, Mint as MintState},
 };
@@ -874,12 +887,18 @@ pub fn require_collateral_mint(mint: &AccountInfo, kind: CollateralKind) -> Resu
     }
 }
 
-/// An `XStock` mint's allowed extensions, plus the two settings whose *values* matter:
+/// An `XStock` mint's allowed extensions, plus the three settings whose *values* matter:
+/// a ScaledUiAmount extension must be present (to price the collateral at valuation time),
 /// a transfer hook must name no program, and accounts must not be frozen by default.
 fn require_xstock_mint(mint: &AccountInfo) -> Result<()> {
     require_allowed_extensions(mint, XSTOCK_COLLATERAL_EXTENSIONS)?;
     let data = mint.try_borrow_data()?;
     let state = StateWithExtensions::<MintState>::unpack(&data)
+        .map_err(|_| HodlError::UnsupportedMintExtension)?;
+    // An XStock with no multiplier would be listable but unpriceable: reading it at
+    // valuation time would fail. Listing is the one moment we can reject it cheaply.
+    let _config = state
+        .get_extension::<ScaledUiAmountConfig>()
         .map_err(|_| HodlError::UnsupportedMintExtension)?;
     if let Ok(hook) = state.get_extension::<TransferHook>() {
         // A hook program would run issuer code inside every transfer of the collateral.
@@ -992,7 +1011,7 @@ In `programs/hodl_loans/src/instructions/liquidation/liquidate.rs`, the same imp
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 150 tests in all (`xstocks` is new with 7, `withdraw` is now 6).
+Expected: every binary reports `ok`, 151 tests in all (`xstocks` is new with 8, `withdraw` is now 6).
 
 - [ ] **Step 5: Commit**
 
@@ -1142,7 +1161,7 @@ fn scale_multiplier(raw: f64) -> Result<u128> {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 152 tests in all (the unit suite is now 40).
+Expected: every binary reports `ok`, 153 tests in all (the unit suite is now 40).
 
 - [ ] **Step 5: Commit**
 
@@ -1613,7 +1632,7 @@ pub fn load_health(
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 156 tests in all (`xstocks` is now 9, `budget` 2, the unit suite 41).
+Expected: every binary reports `ok`, 157 tests in all (`xstocks` is now 10, `budget` 2, the unit suite 41).
 
 - [ ] **Step 5: Commit**
 
@@ -1830,10 +1849,10 @@ and pass it to `seize_for_repayment`, between the collateral decimals and the bo
 - [ ] **Step 4: Run the tests to verify they pass, then the full suite and lints**
 
 Run: `./scripts/test.sh --test xstocks`
-Expected: 10 tests, all `ok`.
+Expected: 11 tests, all `ok`.
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 157 tests in all — 41 unit and 116 LiteSVM.
+Expected: every binary reports `ok`, 158 tests in all — 41 unit and 117 LiteSVM.
 
 Run: `cargo clippy -p hodl_loans --all-targets -- -D warnings`
 Expected: no warnings.
@@ -1849,7 +1868,7 @@ git commit -m "feat: seize xStock collateral at the display price"
 
 ## Done when
 
-- `./scripts/test.sh` reports 157 passing tests and `cargo clippy -p hodl_loans --all-targets -- -D warnings` is clean.
+- `./scripts/test.sh` reports 158 passing tests and `cargo clippy -p hodl_loans --all-targets -- -D warnings` is clean.
 - A live-shaped xStock mint lists only as `XStock`; a hook program or a frozen default is rejected at listing and again at every transfer.
 - A position's borrowing power follows the mint's effective multiplier, including one scheduled for a future timestamp.
 - A liquidator seizing an xStock receives raw units worth the display value it paid for, at any multiplier.
