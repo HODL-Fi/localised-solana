@@ -10,6 +10,8 @@ What the Plan 4 reviews raised and deliberately left for later. The whole-branch
 
 ## Plan 5 (promo)
 
+> **Re-deferred 2026-09-18:** Plan 5 did not take the multiplier ceiling. It is a `CollateralAsset` change rather than a promo one, and promo's own caps (`promo_cap_bps`, `max_promo_per_position`) turned out to share none of its machinery. It moves to Plan 6.
+
 - **A per-asset, admin-settable multiplier ceiling**, alongside `deposit_cap`. This is the shape that bounds the scaled-UI authority without the liveness cost of a tighter global cap: a governance action would be required before an asset's valuation could move by more than the admin sanctioned. `CollateralAsset` has reserved padding for the field. Spec §14 defers it explicitly.
 - Promo forfeiture on liquidation and write-off (spec §11 step 3) and promo in the health check, as already recorded in the Plan 2 and Plan 3 follow-ups.
 

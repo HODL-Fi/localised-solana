@@ -426,10 +426,12 @@ The collateral stays in the position: a write-off clears the debt, it does not s
 
 ### Funding and campaigns (admin)
 
+- **`create_promo_vault`:** creates the `PromoVault` and its cNGN token account for a market. Separate from `create_market` so a market can run without promo, and explicit rather than `init_if_needed` inside funding, so the question of re-initializing an account that holds funds never arises.
 - **`fund_promo_vault(amount)`:** transfer cNGN in; `cash += amount`.
 - **`withdraw_promo_vault(amount)`:** requires `amount ≤ cash − outstanding − unissued`; sends to the treasury.
 - **`create_campaign(campaign_id, budget, redeem_until)`:** requires `cash − outstanding − unissued ≥ budget`; `unissued += budget`.
-- **`close_campaign(campaign_id)`:** `unissued −= budget − granted`; `active = false`.
+- **`close_campaign(campaign_id)`:** `unissued −= budget − granted`; `active = false`. The account stays, so a campaign's `granted` total remains readable and redeemed vouchers keep a campaign to point at.
+- **`sweep_promo_excess`:** moves `vault balance − cash` to the treasury, as §9 does for the market vault and §13 for a collateral vault. Without it a direct transfer into the promo vault's token account is stranded. It is the third copy of the same body, and the three share one helper.
 
 ### Voucher
 
@@ -451,7 +453,9 @@ The voucher message is the Borsh serialization of:
    - `granted + amount ≤ budget`;
    - `promo_balance + amount ≤ max_promo_per_position`.
 4. Create `VoucherReceipt` for `(campaign, nonce)`. It already existing fails the instruction, which prevents replay.
-5. Update: `granted += amount`; `unissued −= amount`; `outstanding += amount`; `promo_balance += amount`; `promo_last_activity_at = now`. Emit `PromoRedeemed`.
+5. Update: `granted += amount`; `unissued −= amount`; `outstanding += amount`; `promo_balance += amount`; `promo_last_activity_at = now`; `position.market = market`. Emit `PromoRedeemed`.
+
+Redeeming binds the position to the market exactly as its first loan does: the promo is backed by that market's vault and counted against its cap, and `expire_promo` would otherwise have no way to tell which vault to credit for a position that has never borrowed.
 
 Per-referral rules (one voucher per invited friend, and so on) are enforced by the backend before signing.
 
@@ -472,7 +476,7 @@ On the first liquidation of a position with promo (§11 step 3), and on write-of
 ### Other promo instructions
 
 - **`revoke_promo(position)`** (admin): requires no active loans; releases the promo the same way as expiry. Emit `PromoRevoked`.
-- **`close_position`:** releases any promo the same way.
+- **`close_position`:** releases any promo the same way, and emits `PromoReleased`. The market and promo vault accounts are required when the position still holds promo, so closing it cannot strand the backing.
 - **`close_voucher_receipt`** (anyone): allowed once `now > voucher_expiry`; refunds rent to `rent_payer`.
 
 ### Why cheating loses
@@ -501,7 +505,7 @@ At maximum borrowing, debt ≤ own value × (LTV + promo_cap) ≤ own value × t
 | `harvest_reserve(amount)` | Admin | `amount ≤ protocol_reserve` (else `InsufficientCash`); `cash` and `protocol_reserve` both decrease |
 | `sweep_excess` | Admin | §9 |
 | `write_off_loan` | Admin | §11 |
-| `fund_promo_vault`, `withdraw_promo_vault`, `create_campaign`, `close_campaign`, `revoke_promo` | Admin | §12 |
+| `create_promo_vault`, `fund_promo_vault`, `withdraw_promo_vault`, `sweep_promo_excess`, `create_campaign`, `close_campaign`, `revoke_promo` | Admin | §12 |
 
 **Users:**
 
@@ -557,6 +561,8 @@ The asymmetry is the point. **A check that blocks an exit can only ever trap col
 
 ## 15. Transactions
 
+- Every instruction that runs a health check also takes the `Config` account, because `promo_cap_bps` lives there (§12). `take_loan` additionally takes the market's promo vault, optionally — it is required only when the position holds promo, since step 3 may expire it — and `liquidate` and `write_off_loan` take the promo vault and its token account, because forfeiture moves cNGN out of it. `write_off_loan` therefore also takes the market mint, the market vault and the token program, which it never needed before.
+- **Box every account in a large instruction, `Config` included.** The SBF stack frame is 4 KB. An unboxed `Config` was enough to make `liquidate` fail during account construction, before the handler ran.
 - A health check with 8 collateral slots passes 16 price-related accounts (24 if every slot is an `XStock`, which takes three each) plus fixed accounts. Clients and liquidators must use versioned transactions with address lookup tables: measured in LiteSVM, a sponsored legacy `take_loan` fits about 6 `Standard` slots, and an all-xStock position at 8 slots exceeds the 1,232-byte packet limit. Compute is not the binding constraint — that same transaction spends well under the 200,000 default. **The figure lives in `tests/budget.rs`, not here:** a spec cannot be kept honest by a test run, but a test can, and quoting a number here only produces a third copy to go stale. That file records the measurement beside the assertion that guards it, including that the fixture mint is smaller than a live xStock, so a mainnet `take_loan` reads somewhat higher.
 - Pyth price updates and Switchboard feed updates must be posted in the same transaction or recently enough to meet the age limits. This is the caller's job.
 - The program calls no other program except the token programs. Pyth and Switchboard data is read from accounts, so there is no re-entrancy path.
@@ -570,7 +576,7 @@ The asymmetry is the point. **A check that blocks an exit can only ever trap col
 - **Lenders:** `LiquidityDeposited`, `LiquidityWithdrawn`.
 - **Positions:** `PositionOpened`, `PositionClosed`, `CollateralDeposited`, `CollateralWithdrawn`.
 - **Loans:** `LoanOpened`, `LoanRepaid`, `LoanPartiallyRepaid`, `LoanLiquidated`, `LoanPartiallyLiquidated`, `LoanWrittenOff`.
-- **Promo:** `PromoRedeemed`, `PromoForfeited`, `PromoExpired`, `PromoRevoked`, `CampaignCreated`, `CampaignClosed`, `PromoVaultFunded`, `PromoVaultWithdrawn`.
+- **Promo:** `PromoRedeemed`, `PromoForfeited`, `PromoExpired`, `PromoRevoked`, `PromoReleased` (promo returned because the position itself is closing), `CampaignCreated`, `CampaignClosed`, `PromoVaultCreated`, `PromoVaultFunded`, `PromoVaultWithdrawn`.
 - **Admin:** one event per admin instruction, carrying the old and new value.
 
 Loan events carry position, owner, loan ID, amounts and the resulting principal, so the backend can rebuild loan history after slots are cleared.

@@ -19,6 +19,8 @@ What the Plan 2 reviews raised and deliberately left for later. The whole-branch
 
 ## Plan 5 (promo)
 
+> **Resolved 2026-09-18 by Plan 5** (`docs/superpowers/plans/2026-09-17-plan-5-promo-balance.md`): all three items. Expiry runs inside `take_loan` (Task 6), promo is counted in the health check (Task 5), `close_position` releases it (Task 6), the three vault sweeps now share `sweep_to_treasury` (Task 1), and `the_promo_clock_restarts_only_when_the_last_loan_closes` covers the timestamp case.
+
 - Promo expiry inside `take_loan` (spec §10 step 3), promo counted in health, promo release in `close_position`.
 - `SweepMarketExcess` and `SweepCollateralExcess` are parallel near-duplicates; the promo vault sweep would be a third copy, so extract a shared helper then.
 - Test: promo timestamp unchanged while another loan is still active.
