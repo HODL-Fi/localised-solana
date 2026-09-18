@@ -433,9 +433,24 @@ impl Env {
     pub fn with_cngn_market() -> (Self, Pubkey) {
         let mut env = Self::initialized();
         let mint = env.create_mint(MintKind::CngnLike, 6);
-        let instruction = create_market_ix(&env.admin.pubkey(), &mint, &TOKEN_2022, default_market_params());
+        let admin = env.admin.pubkey();
+        let instruction = create_market_ix(&admin, &mint, &TOKEN_2022, default_market_params());
         send(&mut env.svm, &[instruction], &[&env.admin]).expect("create market");
+        // Every market gets a promo vault, as a deployed one would: `take_loan` may expire promo
+        // (spec §10 step 3), so the account is part of its shape whether or not promo is funded.
+        send(&mut env.svm, &[create_promo_vault_ix(&admin, &mint)], &[&env.admin])
+            .expect("create promo vault");
         (env, mint)
+    }
+
+    /// A second market, with the promo vault every market needs: `take_loan`, `liquidate` and
+    /// `write_off_loan` all name it, so a market without one cannot be borrowed against.
+    pub fn create_market_with_promo(&mut self, mint: &Pubkey) {
+        let admin = self.admin.pubkey();
+        let create = create_market_ix(&admin, mint, &TOKEN_2022, default_market_params());
+        send(&mut self.svm, &[create], &[&self.admin]).expect("create market");
+        send(&mut self.svm, &[create_promo_vault_ix(&admin, mint)], &[&self.admin])
+            .expect("create promo vault");
     }
 
     pub fn market(&self, mint: &Pubkey) -> hodl_loans::Market {
@@ -1234,5 +1249,104 @@ impl Env {
         )
         .unwrap();
         send(&mut self.svm, &[instruction], &[&self.admin]).expect("update multiplier");
+    }
+}
+
+// ---- The promo vault (Task 1) ----
+
+pub fn promo_vault_pda(market_mint: &Pubkey) -> Pubkey {
+    pda(&[b"promo_vault", market_pda(market_mint).as_ref()])
+}
+
+pub fn promo_vault_token_pda(market_mint: &Pubkey) -> Pubkey {
+    pda(&[b"promo_vault_token", market_pda(market_mint).as_ref()])
+}
+
+pub fn create_promo_vault_ix(admin: &Pubkey, mint: &Pubkey) -> Instruction {
+    ix(
+        hodl_loans::instruction::CreatePromoVault {},
+        hodl_loans::accounts::CreatePromoVault {
+            admin: *admin,
+            config: config_pda(),
+            market: market_pda(mint),
+            mint: *mint,
+            promo_vault: promo_vault_pda(mint),
+            vault: promo_vault_token_pda(mint),
+            token_program: TOKEN_2022,
+            system_program: system_program::ID,
+        },
+    )
+}
+
+pub fn fund_promo_vault_ix(admin: &Pubkey, mint: &Pubkey, source: &Pubkey, amount: u64) -> Instruction {
+    ix(
+        hodl_loans::instruction::FundPromoVault { amount },
+        hodl_loans::accounts::FundPromoVault {
+            admin: *admin,
+            config: config_pda(),
+            market: market_pda(mint),
+            mint: *mint,
+            promo_vault: promo_vault_pda(mint),
+            vault: promo_vault_token_pda(mint),
+            source: *source,
+            token_program: TOKEN_2022,
+        },
+    )
+}
+
+pub fn withdraw_promo_vault_ix(admin: &Pubkey, mint: &Pubkey, destination: &Pubkey, amount: u64) -> Instruction {
+    ix(
+        hodl_loans::instruction::WithdrawPromoVault { amount },
+        hodl_loans::accounts::WithdrawPromoVault {
+            admin: *admin,
+            config: config_pda(),
+            market: market_pda(mint),
+            mint: *mint,
+            promo_vault: promo_vault_pda(mint),
+            vault: promo_vault_token_pda(mint),
+            destination: *destination,
+            token_program: TOKEN_2022,
+        },
+    )
+}
+
+pub fn sweep_promo_excess_ix(admin: &Pubkey, mint: &Pubkey, destination: &Pubkey) -> Instruction {
+    ix(
+        hodl_loans::instruction::SweepPromoExcess {},
+        hodl_loans::accounts::SweepPromoExcess {
+            admin: *admin,
+            config: config_pda(),
+            market: market_pda(mint),
+            mint: *mint,
+            promo_vault: promo_vault_pda(mint),
+            vault: promo_vault_token_pda(mint),
+            destination: *destination,
+            token_program: TOKEN_2022,
+        },
+    )
+}
+
+impl Env {
+    /// A cNGN market whose promo vault holds `funded` cNGN.
+    pub fn with_promo_vault(funded: u64) -> (Self, Pubkey) {
+        let (mut env, cngn) = Self::with_cngn_market();
+        let admin = env.admin.pubkey();
+        if funded > 0 {
+            let source = env.create_token_account(&cngn, &admin);
+            env.mint_to(&cngn, &source, funded);
+            let instruction = fund_promo_vault_ix(&admin, &cngn, &source, funded);
+            send(&mut env.svm, &[instruction], &[&env.admin]).expect("fund promo vault");
+        }
+        (env, cngn)
+    }
+
+    pub fn promo_vault(&self, market_mint: &Pubkey) -> hodl_loans::PromoVault {
+        self.fetch(&promo_vault_pda(market_mint))
+    }
+
+    /// A treasury-owned cNGN account, the only destination the sweeps and withdrawals accept.
+    pub fn treasury_token(&mut self, mint: &Pubkey) -> Pubkey {
+        let treasury = self.treasury.pubkey();
+        self.create_token_account(mint, &treasury)
     }
 }

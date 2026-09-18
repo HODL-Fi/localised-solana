@@ -72,6 +72,14 @@ pub const COLLATERAL_SEED: &[u8] = b"collateral";
 pub const COLLATERAL_VAULT_SEED: &[u8] = b"collateral_vault";
 #[constant]
 pub const POSITION_SEED: &[u8] = b"position";
+#[constant]
+pub const PROMO_VAULT_SEED: &[u8] = b"promo_vault";
+#[constant]
+pub const PROMO_VAULT_TOKEN_SEED: &[u8] = b"promo_vault_token";
+#[constant]
+pub const CAMPAIGN_SEED: &[u8] = b"campaign";
+#[constant]
+pub const VOUCHER_SEED: &[u8] = b"voucher";
 
 #[cfg(test)]
 mod tests {
@@ -88,6 +96,10 @@ mod tests {
             COLLATERAL_SEED,
             COLLATERAL_VAULT_SEED,
             POSITION_SEED,
+            PROMO_VAULT_SEED,
+            PROMO_VAULT_TOKEN_SEED,
+            CAMPAIGN_SEED,
+            VOUCHER_SEED,
         ];
         for (i, a) in seeds.iter().enumerate() {
             for b in &seeds[i + 1..] {

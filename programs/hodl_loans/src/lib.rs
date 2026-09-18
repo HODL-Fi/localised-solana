@@ -102,6 +102,22 @@ pub mod hodl_loans {
         instructions::handle_sweep_collateral_excess(ctx)
     }
 
+    pub fn create_promo_vault(ctx: Context<CreatePromoVault>) -> Result<()> {
+        instructions::handle_create_promo_vault(ctx)
+    }
+
+    pub fn fund_promo_vault(ctx: Context<FundPromoVault>, amount: u64) -> Result<()> {
+        instructions::handle_fund_promo_vault(ctx, amount)
+    }
+
+    pub fn withdraw_promo_vault(ctx: Context<WithdrawPromoVault>, amount: u64) -> Result<()> {
+        instructions::handle_withdraw_promo_vault(ctx, amount)
+    }
+
+    pub fn sweep_promo_excess(ctx: Context<SweepPromoExcess>) -> Result<()> {
+        instructions::handle_sweep_promo_excess(ctx)
+    }
+
     pub fn harvest_reserve(ctx: Context<HarvestReserve>, amount: u64) -> Result<()> {
         instructions::handle_harvest_reserve(ctx, amount)
     }

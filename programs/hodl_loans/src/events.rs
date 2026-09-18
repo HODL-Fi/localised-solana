@@ -246,3 +246,24 @@ pub struct LoanWrittenOff {
     pub covered_by_reserve: u64,
     pub total_bad_debt: u128,
 }
+
+#[event]
+pub struct PromoVaultCreated {
+    pub market: Pubkey,
+    pub promo_vault: Pubkey,
+    pub vault: Pubkey,
+}
+
+#[event]
+pub struct PromoVaultFunded {
+    pub market: Pubkey,
+    pub amount: u64,
+    pub cash: u64,
+}
+
+#[event]
+pub struct PromoVaultWithdrawn {
+    pub market: Pubkey,
+    pub amount: u64,
+    pub cash: u64,
+}
