@@ -118,6 +118,19 @@ pub mod hodl_loans {
         instructions::handle_sweep_promo_excess(ctx)
     }
 
+    pub fn create_campaign(
+        ctx: Context<CreateCampaign>,
+        campaign_id: u64,
+        budget: u64,
+        redeem_until: i64,
+    ) -> Result<()> {
+        instructions::handle_create_campaign(ctx, campaign_id, budget, redeem_until)
+    }
+
+    pub fn close_campaign(ctx: Context<CloseCampaign>) -> Result<()> {
+        instructions::handle_close_campaign(ctx)
+    }
+
     pub fn harvest_reserve(ctx: Context<HarvestReserve>, amount: u64) -> Result<()> {
         instructions::handle_harvest_reserve(ctx, amount)
     }

@@ -1350,3 +1350,56 @@ impl Env {
         self.create_token_account(mint, &treasury)
     }
 }
+
+// ---- Campaigns (Task 2) ----
+
+pub fn campaign_pda(market_mint: &Pubkey, campaign_id: u64) -> Pubkey {
+    pda(&[b"campaign", market_pda(market_mint).as_ref(), &campaign_id.to_le_bytes()])
+}
+
+pub fn create_campaign_ix(
+    admin: &Pubkey,
+    mint: &Pubkey,
+    campaign_id: u64,
+    budget: u64,
+    redeem_until: i64,
+) -> Instruction {
+    ix(
+        hodl_loans::instruction::CreateCampaign { campaign_id, budget, redeem_until },
+        hodl_loans::accounts::CreateCampaign {
+            admin: *admin,
+            config: config_pda(),
+            market: market_pda(mint),
+            promo_vault: promo_vault_pda(mint),
+            campaign: campaign_pda(mint, campaign_id),
+            system_program: system_program::ID,
+        },
+    )
+}
+
+pub fn close_campaign_ix(admin: &Pubkey, mint: &Pubkey, campaign_id: u64) -> Instruction {
+    ix(
+        hodl_loans::instruction::CloseCampaign {},
+        hodl_loans::accounts::CloseCampaign {
+            admin: *admin,
+            config: config_pda(),
+            market: market_pda(mint),
+            promo_vault: promo_vault_pda(mint),
+            campaign: campaign_pda(mint, campaign_id),
+        },
+    )
+}
+
+impl Env {
+    pub fn campaign(&self, market_mint: &Pubkey, campaign_id: u64) -> hodl_loans::Campaign {
+        self.fetch(&campaign_pda(market_mint, campaign_id))
+    }
+
+    /// Creates campaign `id` with `budget`, redeemable for a year.
+    pub fn create_campaign(&mut self, mint: &Pubkey, campaign_id: u64, budget: u64) {
+        let admin = self.admin.pubkey();
+        let until = self.now() + 365 * 86_400;
+        let instruction = create_campaign_ix(&admin, mint, campaign_id, budget, until);
+        send(&mut self.svm, &[instruction], &[&self.admin]).expect("create campaign");
+    }
+}

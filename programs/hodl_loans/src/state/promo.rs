@@ -46,3 +46,18 @@ impl PromoVault {
         Ok(())
     }
 }
+
+/// Spec §12. A budget the promo signer may issue vouchers against, until `redeem_until`.
+#[account]
+#[derive(InitSpace)]
+pub struct Campaign {
+    pub version: u8,
+    pub bump: u8,
+    pub market: Pubkey,
+    pub campaign_id: u64,
+    pub budget: u64,
+    pub granted: u64,
+    pub redeem_until: i64,
+    pub active: bool,
+    pub reserved: [u8; 32],
+}

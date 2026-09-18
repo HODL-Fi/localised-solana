@@ -267,3 +267,22 @@ pub struct PromoVaultWithdrawn {
     pub amount: u64,
     pub cash: u64,
 }
+
+#[event]
+pub struct CampaignCreated {
+    pub market: Pubkey,
+    pub campaign: Pubkey,
+    pub campaign_id: u64,
+    pub budget: u64,
+    pub redeem_until: i64,
+}
+
+#[event]
+pub struct CampaignClosed {
+    pub market: Pubkey,
+    pub campaign: Pubkey,
+    pub campaign_id: u64,
+    pub granted: u64,
+    /// The unspent budget handed back to the vault's free cNGN.
+    pub returned: u64,
+}
