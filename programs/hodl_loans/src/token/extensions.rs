@@ -94,12 +94,19 @@ pub fn require_collateral_mint_on_entry(mint: &AccountInfo, kind: CollateralKind
 /// - **`ScaledUiAmount` presence** is an entry clause: it makes the asset priceable. A
 ///   withdrawal with no active loans reads no price at all, so requiring it out here would
 ///   block an exit to protect a valuation nobody is doing.
-/// - **The allowed-extension set** is nearly all fixed at initialization: a fixed-length
-///   Token-2022 mint extension has to be initialized before `initialize_mint`. The exceptions
-///   are the variable-length TLV entries an issuer can realloc in later — and those are
-///   precisely the case where re-checking traps without protecting. `TokenMetadata` is already
-///   on both allowlists, so it changes nothing; a token-group entry is on neither, so an
-///   issuer adding one would seal every vault holding the asset over a label. Only the
+/// - **The allowed-extension set** is settled before the mint exists for every entry but
+///   three: those extensions are written by `initialize_*` instructions that run on an
+///   *uninitialized* mint. The exceptions are `TokenMetadata`, `TokenGroup` and
+///   `TokenGroupMember`, each of which is written into a **live** mint, reallocating it.
+///   Length is not what separates them: `ExtensionType::sized()` is `false` for
+///   `TokenMetadata` alone, while the two group entries are fixed-length `Pod` types added
+///   through `alloc_and_serialize`, whose documented job is to pack a fixed-length extension
+///   and realloc the account to fit.
+///
+///   Those same three are exactly the case where re-checking on exit would trap without
+///   protecting, and none of them is dangerous: `TokenMetadata` is on both allowlists, so it
+///   changes nothing, and the two group entries are on neither, so an issuer holding the mint
+///   authority could seal every vault holding the asset by attaching a group label. Only the
 ///   *values* above are worth re-reading on the way out.
 pub fn require_collateral_mint_on_exit(mint: &AccountInfo) -> Result<()> {
     if *mint.owner != anchor_spl::token_2022::ID {
