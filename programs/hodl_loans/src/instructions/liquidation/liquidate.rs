@@ -95,6 +95,7 @@ pub fn handle_liquidate<'info>(ctx: Context<'info, Liquidate<'info>>, loan_id: u
         // `load_valuation` returns one value per used slot, in slot order.
         let priced = position.collateral[..slot_index].iter().filter(|s| s.amount > 0).count();
         let collateral_price = valuation.collateral[priced].price.price;
+        let multiplier = valuation.collateral[priced].multiplier;
 
         let loan = position.loans[loan_index];
         let balance = loan_balance(&loan.terms(), now)?.total()?;
@@ -105,6 +106,7 @@ pub fn handle_liquidate<'info>(ctx: Context<'info, Liquidate<'info>>, loan_id: u
             market.decimals,
             collateral_price,
             ctx.accounts.collateral.decimals,
+            multiplier,
             ctx.accounts.collateral.liquidation_bonus_bps,
             position.collateral[slot_index].amount,
         )?;

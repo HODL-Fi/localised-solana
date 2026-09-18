@@ -265,3 +265,30 @@ fn an_xstock_slot_rejects_the_two_account_standard_shape() {
     let result = send(&mut env.svm, &[ixn], &[&env.admin, &setup.borrower.key]);
     assert_hodl_error(result, HodlError::PriceAccountMismatch);
 }
+
+#[test]
+fn liquidating_an_xstock_seizes_at_the_display_price() {
+    let (mut env, setup) = Env::loan_ready();
+    let stock = env.list_xstock_collateral(200);
+    let borrower = env.new_borrower();
+    env.deposit_collateral(&borrower, &stock, 10 * ONE_XSTOCK);
+    let borrower_cngn = env.create_token_account(&setup.cngn, &borrower.pubkey());
+    let setup = LoanSetup { borrower, borrower_cngn, ..setup };
+
+    // $2,000 of collateral backs 1,500,000 cNGN ($937.50 at the plain NGN price); a crash to
+    // $80 a share puts the debt over the 75% line ($600).
+    env.take_loan(&setup.borrower, &setup, 1_500_000 * ONE_CNGN, 365 * DAY).unwrap();
+    env.set_pyth_price(&stock, 80 * ONE_DOLLAR, 0);
+
+    let liquidator = env.new_liquidator(&setup.cngn, 10_000_000 * ONE_CNGN);
+    let seized_to = env.create_token_account(&stock, &liquidator.pubkey());
+    // 160,000 cNGN is $100; with the 10% bonus that seizes $110 of stock at $80 a share.
+    env.liquidate(&liquidator, &setup, &stock, &seized_to, 0, 160_000 * ONE_CNGN).unwrap();
+    assert_eq!(env.token_balance(&seized_to), 137_500_000);
+
+    // A 0.5 multiplier halves what a raw unit is worth, so the same $110 costs twice the units.
+    let now = env.now();
+    env.set_multiplier(&stock, 0.5, now);
+    env.liquidate(&liquidator, &setup, &stock, &seized_to, 0, 160_000 * ONE_CNGN).unwrap();
+    assert_eq!(env.token_balance(&seized_to), 137_500_000 + 275_000_000);
+}
