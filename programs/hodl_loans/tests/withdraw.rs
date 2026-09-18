@@ -67,24 +67,24 @@ fn with_loans_the_position_must_stay_healthy() {
     let key = &setup.borrower.key;
 
     // The market and prices are required while loans are active.
-    let no_market = withdraw_collateral_ix(&owner, &usdc, &SPL_TOKEN, &token, None, ONE_USDC, price_triples(&[usdc]));
+    let no_market = withdraw_collateral_ix(&owner, &usdc, &SPL_TOKEN, &token, None, ONE_USDC, price_pairs(&[usdc]));
     assert_hodl_error(env.sponsored(no_market, key), HodlError::PriceAccountMismatch);
     assert_hodl_error(env.sponsored(withdraw(ONE_USDC, vec![]), key), HodlError::PriceAccountMismatch);
 
     // 447 USDC × 70% = $312.90 covers the debt; 446 USDC ($312.20) does not.
-    env.sponsored(withdraw(553 * ONE_USDC, price_triples(&[usdc])), key).unwrap();
-    assert_hodl_error(env.sponsored(withdraw(ONE_USDC, price_triples(&[usdc])), key), HodlError::Unhealthy);
+    env.sponsored(withdraw(553 * ONE_USDC, price_pairs(&[usdc])), key).unwrap();
+    assert_hodl_error(env.sponsored(withdraw(ONE_USDC, price_pairs(&[usdc])), key), HodlError::Unhealthy);
     // Withdrawing everything leaves no used slot to price, and no collateral value.
     assert_hodl_error(env.sponsored(withdraw(447 * ONE_USDC, vec![]), key), HodlError::Unhealthy);
 
     // Stale prices block withdrawals while loans are active.
     env.warp_seconds(61);
     env.set_ngn_price(NGN_USD, NGN_SPREAD);
-    assert_hodl_error(env.sponsored(withdraw(1, price_triples(&[usdc])), key), HodlError::StalePrice);
+    assert_hodl_error(env.sponsored(withdraw(1, price_pairs(&[usdc])), key), HodlError::StalePrice);
 }
 
 #[test]
-fn triples_cover_the_slots_left_after_withdrawal() {
+fn pairs_cover_the_slots_left_after_withdrawal() {
     let (mut env, setup) = Env::loan_ready();
     let owner = setup.borrower.pubkey();
     let sol = env.list_spl_collateral(9);
@@ -95,9 +95,9 @@ fn triples_cover_the_slots_left_after_withdrawal() {
     let key = &setup.borrower.key;
 
     // Emptying the SOL slot leaves only USDC to price.
-    let with_sol = withdraw_collateral_ix(&owner, &sol, &SPL_TOKEN, &token, Some(&setup.cngn), 2_000_000_000, price_triples(&[setup.usdc, sol]));
+    let with_sol = withdraw_collateral_ix(&owner, &sol, &SPL_TOKEN, &token, Some(&setup.cngn), 2_000_000_000, price_pairs(&[setup.usdc, sol]));
     assert_hodl_error(env.sponsored(with_sol, key), HodlError::PriceAccountMismatch);
-    let usdc_only = withdraw_collateral_ix(&owner, &sol, &SPL_TOKEN, &token, Some(&setup.cngn), 2_000_000_000, price_triples(&[setup.usdc]));
+    let usdc_only = withdraw_collateral_ix(&owner, &sol, &SPL_TOKEN, &token, Some(&setup.cngn), 2_000_000_000, price_pairs(&[setup.usdc]));
     env.sponsored(usdc_only, key).unwrap();
     assert_eq!(env.token_balance(&token), 2_000_000_000);
     assert_eq!(env.collateral(&sol).total_deposited, 0);
@@ -113,6 +113,6 @@ fn withdrawal_checks_the_borrowed_market() {
     send(&mut env.svm, &[create], &[&env.admin]).unwrap();
 
     let token = env.create_token_account(&setup.usdc, &owner);
-    let wrong_market = withdraw_collateral_ix(&owner, &setup.usdc, &SPL_TOKEN, &token, Some(&other), ONE_USDC, price_triples(&[setup.usdc]));
+    let wrong_market = withdraw_collateral_ix(&owner, &setup.usdc, &SPL_TOKEN, &token, Some(&other), ONE_USDC, price_pairs(&[setup.usdc]));
     assert_hodl_error(env.sponsored(wrong_market, &setup.borrower.key), HodlError::MarketMismatch);
 }

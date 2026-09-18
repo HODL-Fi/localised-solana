@@ -91,6 +91,7 @@ pub fn handle_list_collateral(ctx: Context<ListCollateral>, params: CollateralPa
         decimals: ctx.accounts.mint.decimals,
         kind: CollateralKind::Standard,
         pyth_feed_id: [0; 32],
+        price_account: Pubkey::default(),
         max_price_age_seconds: 0,
         max_conf_bps: 0,
         ltv_bps: 0,
@@ -99,7 +100,7 @@ pub fn handle_list_collateral(ctx: Context<ListCollateral>, params: CollateralPa
         deposit_cap: 0,
         total_deposited: 0,
         paused: false,
-        reserved: [0; 128],
+        reserved: [0; 96],
     };
     asset.apply_params(&params);
     ctx.accounts.collateral.set_inner(asset);

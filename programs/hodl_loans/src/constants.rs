@@ -23,6 +23,11 @@ pub const USD_SCALE: u128 = 1_000_000_000_000;
 /// Decimal exponent of `USD_SCALE`.
 pub const USD_DECIMALS: i32 = 12;
 
+/// Longest price age an admin may configure for a collateral asset (spec §8).
+/// A caller can pick any verified Pyth update inside this window, so the window is the
+/// price-selection surface for assets without a pinned price account.
+pub const MAX_PRICE_AGE_SECONDS: u64 = 60;
+
 #[constant]
 pub const CONFIG_SEED: &[u8] = b"config";
 #[constant]

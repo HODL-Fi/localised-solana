@@ -116,11 +116,7 @@ fn price_accounts_must_match_the_positions_slots() {
     env.set_pyth_price(&usdt, ONE_DOLLAR, 0);
     let good = env.price_accounts(&owner);
     let take = |prices: Vec<AccountMeta>| take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 1_000 * ONE_CNGN, 30 * DAY, prices);
-    let usdt_triple = vec![
-        AccountMeta::new_readonly(collateral_pda(&usdt), false),
-        AccountMeta::new_readonly(pyth_account(&usdt), false),
-        AccountMeta::new_readonly(usdt, false),
-    ];
+    let usdt_pair = price_pairs(&[usdt]);
     let replace = |i: usize, key| {
         let mut prices = good.clone();
         prices[i] = AccountMeta::new_readonly(key, false);
@@ -129,10 +125,9 @@ fn price_accounts_must_match_the_positions_slots() {
 
     let cases = vec![
         ("missing", vec![]),
-        ("extra triple", [good.clone(), usdt_triple.clone()].concat()),
-        ("another asset", usdt_triple.clone()),
+        ("extra pair", [good.clone(), usdt_pair.clone()].concat()),
+        ("another asset", usdt_pair.clone()),
         ("another asset's price", replace(1, pyth_account(&usdt))),
-        ("another mint", replace(2, usdt)),
         ("config instead of asset", replace(0, config_pda())),
     ];
     for (name, prices) in cases {
@@ -239,4 +234,37 @@ fn per_second_accrual_keeps_its_remainder() {
     }
     // floor(1,000,000,000 × 1,500 × 9,000 × 10 / (10,000² × 31,536,000)) = 42, not 10 × 4.
     assert_eq!(env.market(&setup.cngn).accrued_interest, 42);
+}
+
+#[test]
+fn a_pinned_price_account_is_the_only_one_accepted() {
+    let (mut env, setup) = Env::loan_ready();
+    let owner = setup.borrower.pubkey();
+    let usdc = setup.usdc;
+    assert_eq!(env.collateral(&usdc).price_account, pyth_account(&usdc));
+
+    // A second, equally valid update for the same feed, at another address, saying USDC is $2.
+    let alternative = Keypair::new().pubkey();
+    let now = env.now();
+    let data = price_update_data(&usdc, 2 * ONE_DOLLAR, 0, now, VerificationLevel::Full);
+    env.set_account_data(&alternative, &pyth_solana_receiver_sdk::ID, data);
+    let prices = vec![
+        AccountMeta::new_readonly(collateral_pda(&usdc), false),
+        AccountMeta::new_readonly(alternative, false),
+    ];
+    let take = |prices: Vec<AccountMeta>| {
+        take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 2_000_000 * ONE_CNGN, 30 * DAY, prices)
+    };
+    let pinned = send(&mut env.svm, &[take(prices.clone())], &[&env.admin, &setup.borrower.key]);
+    assert_hodl_error(pinned, HodlError::PriceAccountMismatch);
+
+    // Unpinning accepts it, and 1,000 USDC at the chosen $2 backs a loan the real price would not.
+    let unpinned = hodl_loans::CollateralParams {
+        price_account: anchor_lang::prelude::Pubkey::default(),
+        ..default_collateral_params(&usdc)
+    };
+    let update = update_collateral_params_ix(&env.admin.pubkey(), &usdc, unpinned);
+    send(&mut env.svm, &[update], &[&env.admin]).unwrap();
+    send(&mut env.svm, &[take(prices)], &[&env.admin, &setup.borrower.key]).unwrap();
+    assert_eq!(env.token_balance(&setup.borrower_cngn), 2_000_000 * ONE_CNGN);
 }

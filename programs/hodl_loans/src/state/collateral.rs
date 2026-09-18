@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-use crate::constants::{BPS, MAX_BPS};
+use crate::constants::{BPS, MAX_BPS, MAX_PRICE_AGE_SECONDS};
 use crate::errors::HodlError;
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, Debug, InitSpace)]
@@ -23,6 +23,11 @@ pub struct CollateralAsset {
     pub decimals: u8,
     pub kind: CollateralKind,
     pub pyth_feed_id: [u8; 32],
+    /// Pyth price account this asset is pinned to. `Pubkey::default()` accepts any verified
+    /// update for `pyth_feed_id` inside `max_price_age_seconds`, so the caller may pick the
+    /// most favourable update in that window; pinning removes that choice.
+    /// Taken from the reserved padding, so the account size is unchanged.
+    pub price_account: Pubkey,
     pub max_price_age_seconds: u64,
     pub max_conf_bps: u16,
     pub ltv_bps: u16,
@@ -33,13 +38,15 @@ pub struct CollateralAsset {
     pub total_deposited: u64,
     /// Blocks new deposits of this asset only.
     pub paused: bool,
-    pub reserved: [u8; 128],
+    pub reserved: [u8; 96],
 }
 
 /// Admin-settable collateral parameters, used by `list_collateral` and `update_collateral_params`.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, Debug)]
 pub struct CollateralParams {
     pub pyth_feed_id: [u8; 32],
+    /// `Pubkey::default()` leaves the asset unpinned (see `CollateralAsset::price_account`).
+    pub price_account: Pubkey,
     pub max_price_age_seconds: u64,
     pub max_conf_bps: u16,
     pub ltv_bps: u16,
@@ -52,7 +59,10 @@ impl CollateralParams {
     /// Spec §8 collateral rules, checked against the current `Config::promo_cap_bps`.
     pub fn validate(&self, promo_cap_bps: u16) -> Result<()> {
         require!(self.pyth_feed_id != [0u8; 32], HodlError::InvalidParameters);
-        require!(self.max_price_age_seconds > 0, HodlError::InvalidParameters);
+        require!(
+            self.max_price_age_seconds > 0 && self.max_price_age_seconds <= MAX_PRICE_AGE_SECONDS,
+            HodlError::InvalidParameters
+        );
         require!(self.max_conf_bps <= MAX_BPS, HodlError::InvalidParameters);
         require!(self.ltv_bps >= 1_000, HodlError::InvalidParameters);
         require!(
@@ -71,6 +81,7 @@ impl CollateralAsset {
     pub fn params(&self) -> CollateralParams {
         CollateralParams {
             pyth_feed_id: self.pyth_feed_id,
+            price_account: self.price_account,
             max_price_age_seconds: self.max_price_age_seconds,
             max_conf_bps: self.max_conf_bps,
             ltv_bps: self.ltv_bps,
@@ -82,6 +93,7 @@ impl CollateralAsset {
 
     pub fn apply_params(&mut self, p: &CollateralParams) {
         self.pyth_feed_id = p.pyth_feed_id;
+        self.price_account = p.price_account;
         self.max_price_age_seconds = p.max_price_age_seconds;
         self.max_conf_bps = p.max_conf_bps;
         self.ltv_bps = p.ltv_bps;
@@ -98,6 +110,7 @@ mod tests {
     fn sol() -> CollateralParams {
         CollateralParams {
             pyth_feed_id: [1; 32],
+            price_account: Pubkey::default(),
             max_price_age_seconds: 60,
             max_conf_bps: 200,
             ltv_bps: 7_000,
@@ -120,6 +133,8 @@ mod tests {
         let cases = [
             CollateralParams { pyth_feed_id: [0; 32], ..sol() },
             CollateralParams { max_price_age_seconds: 0, ..sol() },
+            // Above the 60-second cap, which bounds how far a caller may shop for a price.
+            CollateralParams { max_price_age_seconds: 61, ..sol() },
             CollateralParams { max_conf_bps: 10_001, ..sol() },
             CollateralParams { ltv_bps: 999, liquidation_threshold_bps: 2_999, ..sol() },
             // 80% LTV + 20% promo cap exceeds a 90% threshold.

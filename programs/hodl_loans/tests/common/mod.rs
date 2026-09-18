@@ -504,10 +504,12 @@ pub fn feed_id(mint: &Pubkey) -> [u8; 32] {
     mint.to_bytes()
 }
 
-/// Spec §8 launch values for a stablecoin: LTV 70%, threshold 90%, bonus 5%.
+/// Spec §8 launch values for a stablecoin: LTV 70%, threshold 90%, bonus 5%,
+/// pinned to the mint's test price account.
 pub fn default_collateral_params(mint: &Pubkey) -> hodl_loans::CollateralParams {
     hodl_loans::CollateralParams {
         pyth_feed_id: feed_id(mint),
+        price_account: pyth_account(mint),
         max_price_age_seconds: 60,
         max_conf_bps: 200,
         ltv_bps: 7_000,
@@ -784,21 +786,11 @@ impl Env {
         self.set_account_data(&ngn_feed(), &switchboard_on_demand::ON_DEMAND_MAINNET_PID, pull_feed_data(value, std_dev, slot, 5));
     }
 
-    /// One `(CollateralAsset, PriceUpdateV2, mint)` triple per used collateral slot, in slot order.
+    /// One `(CollateralAsset, PriceUpdateV2)` pair per used collateral slot, in slot order.
     pub fn price_accounts(&self, owner: &Pubkey) -> Vec<AccountMeta> {
         let position = self.position(owner);
-        position
-            .collateral
-            .iter()
-            .filter(|slot| slot.amount > 0)
-            .flat_map(|slot| {
-                [
-                    AccountMeta::new_readonly(collateral_pda(&slot.mint), false),
-                    AccountMeta::new_readonly(pyth_account(&slot.mint), false),
-                    AccountMeta::new_readonly(slot.mint, false),
-                ]
-            })
-            .collect()
+        let mints: Vec<Pubkey> = position.collateral.iter().filter(|s| s.amount > 0).map(|s| s.mint).collect();
+        price_pairs(&mints)
     }
 
     pub fn take_loan(&mut self, borrower: &Borrower, setup: &LoanSetup, amount: u64, tenure_seconds: i64) -> TxResult {
@@ -901,15 +893,14 @@ pub fn withdraw_collateral_ix(
     instruction
 }
 
-/// One `(CollateralAsset, PriceUpdateV2, mint)` triple per listed mint, in the order given.
-pub fn price_triples(mints: &[Pubkey]) -> Vec<AccountMeta> {
+/// One `(CollateralAsset, PriceUpdateV2)` pair per listed mint, in the order given.
+pub fn price_pairs(mints: &[Pubkey]) -> Vec<AccountMeta> {
     mints
         .iter()
         .flat_map(|mint| {
             [
                 AccountMeta::new_readonly(collateral_pda(mint), false),
                 AccountMeta::new_readonly(pyth_account(mint), false),
-                AccountMeta::new_readonly(*mint, false),
             ]
         })
         .collect()
