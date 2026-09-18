@@ -7,6 +7,10 @@ use solana_signer::Signer;
 use spl_token_2022_interface::state::AccountState;
 
 const DAY: i64 = 86_400;
+/// 10 shares of a $200 stock at 50% LTV back $1,000, which is 1,598,401 cNGN at the ask.
+const CEILING: u64 = 1_598_401 * ONE_CNGN;
+/// The same position once a 1.5 multiplier makes the balance 15 shares.
+const CEILING_AT_1_5: u64 = 2_397_602 * ONE_CNGN;
 
 #[test]
 fn a_live_shaped_xstock_lists_as_xstock_only() {
@@ -180,4 +184,43 @@ fn the_permanent_delegate_can_empty_the_vault() {
     env.sponsored(withdraw, &borrower.key).unwrap();
     let withdraw = withdraw_collateral_ix(&borrower.pubkey(), &stock, &TOKEN_2022, &token, None, ONE_XSTOCK, vec![]);
     assert!(env.sponsored(withdraw, &borrower.key).is_err());
+}
+
+#[test]
+fn the_multiplier_scales_borrowing_power() {
+    let (mut env, setup) = Env::loan_ready();
+    let stock = env.list_xstock_collateral(200);
+    let borrower = env.new_borrower();
+    env.deposit_collateral(&borrower, &stock, 10 * ONE_XSTOCK);
+    let borrower_cngn = env.create_token_account(&setup.cngn, &borrower.pubkey());
+    let setup = LoanSetup { borrower, borrower_cngn, ..setup };
+
+    assert_hodl_error(env.take_loan(&setup.borrower, &setup, CEILING + ONE_CNGN, 30 * DAY), HodlError::Unhealthy);
+
+    // A dividend reinvestment lifts the multiplier to 1.5: the same balance is 15 shares.
+    let now = env.now();
+    env.set_multiplier(&stock, 1.5, now);
+    assert_hodl_error(env.take_loan(&setup.borrower, &setup, CEILING_AT_1_5 + ONE_CNGN, 30 * DAY), HodlError::Unhealthy);
+    env.take_loan(&setup.borrower, &setup, CEILING_AT_1_5, 30 * DAY).unwrap();
+    assert_eq!(env.token_balance(&setup.borrower_cngn), CEILING_AT_1_5);
+}
+
+#[test]
+fn a_scheduled_multiplier_takes_effect_on_its_timestamp() {
+    let (mut env, setup) = Env::loan_ready();
+    let stock = env.list_xstock_collateral(200);
+    let borrower = env.new_borrower();
+    env.deposit_collateral(&borrower, &stock, 10 * ONE_XSTOCK);
+    let borrower_cngn = env.create_token_account(&setup.cngn, &borrower.pubkey());
+    let setup = LoanSetup { borrower, borrower_cngn, ..setup };
+
+    // Scheduled for tomorrow: today's borrowing power is still the old multiplier's.
+    let effective_at = env.now() + DAY;
+    env.set_multiplier(&stock, 1.5, effective_at);
+    assert_hodl_error(env.take_loan(&setup.borrower, &setup, CEILING + ONE_CNGN, 30 * DAY), HodlError::Unhealthy);
+
+    env.warp_seconds(DAY);
+    env.set_pyth_price(&stock, 200 * ONE_DOLLAR, 0);
+    env.set_ngn_price(NGN_USD, NGN_SPREAD);
+    env.take_loan(&setup.borrower, &setup, CEILING_AT_1_5, 30 * DAY).unwrap();
 }

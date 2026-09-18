@@ -1,6 +1,7 @@
 mod common;
 
 use common::*;
+use solana_signer::Signer;
 
 const DAY: i64 = 86_400;
 
@@ -75,4 +76,38 @@ fn full_position_stays_under_the_default_compute_budget() {
     let rp = repay_loan_ix(&owner, &owner, &setup.cngn, &setup.borrower_cngn, 0, u64::MAX);
     let cu = send_cu(&mut env.svm, &[rp], &[&env.admin, &setup.borrower.key]).unwrap();
     assert!(cu < 25_000, "repay_loan at 10 loan slots used {cu} CU");
+}
+
+#[test]
+fn an_all_xstock_position_stays_under_the_default_compute_budget() {
+    let (mut env, setup) = Env::loan_ready();
+    let borrower = env.new_borrower();
+    let owner = borrower.pubkey();
+    let borrower_cngn = env.create_token_account(&setup.cngn, &owner);
+    let setup = LoanSetup { borrower, borrower_cngn, ..setup };
+
+    // All 8 collateral slots hold an xStock priced at $200 a share, so 8 shares is $1,600.
+    for _ in 0..8 {
+        let mint = env.list_xstock_collateral(200);
+        env.deposit_collateral(&setup.borrower, &mint, 8 * ONE_XSTOCK);
+    }
+    assert_eq!(env.price_accounts(&owner).len(), 24);
+
+    for i in 0..9 {
+        let prices = env.price_accounts(&owner);
+        let ixn = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 1_000 * ONE_CNGN, 30 * DAY, prices);
+        send_cu(&mut env.svm, &[ixn], &[&env.admin, &setup.borrower.key]).unwrap_or_else(|e| panic!("take_loan #{i} failed: {e}"));
+    }
+
+    let prices = env.price_accounts(&owner);
+    let ixn = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 1_000 * ONE_CNGN, 30 * DAY, prices);
+    let cu = send_cu(&mut env.svm, &[ixn], &[&env.admin, &setup.borrower.key]).unwrap();
+    assert!(cu < 100_000, "take_loan at 8 xStock slots / 9 existing loans used {cu} CU");
+
+    // Compute is not the binding limit here: at three accounts a slot the transaction no longer
+    // fits in a packet, so such a position needs a v0 transaction with an address lookup table.
+    let prices = env.price_accounts(&owner);
+    let ixn = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 1_000 * ONE_CNGN, 30 * DAY, prices);
+    let size = legacy_tx_size(&ixn, &env.admin.pubkey(), 2);
+    assert!(size > PACKET_DATA_SIZE, "8 xStock slots now fit a legacy transaction ({size} bytes)");
 }

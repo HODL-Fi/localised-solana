@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-use crate::constants::BPS;
+use crate::constants::{BPS, MULTIPLIER_SCALE};
 use crate::math::checked::{add, mul_div_floor};
 use crate::math::price::{token_value, token_value_ceil, UsdPrice};
 
@@ -9,9 +9,20 @@ use crate::math::price::{token_value, token_value_ceil, UsdPrice};
 pub struct CollateralValue {
     pub amount: u64,
     pub decimals: u8,
+    /// The mint's scaled-UI multiplier at `MULTIPLIER_SCALE` (always `MULTIPLIER_ONE` for a
+    /// `Standard` asset). Pyth quotes an xStock per display token, so the raw balance is
+    /// scaled by it before pricing.
+    pub multiplier: u128,
     pub price: UsdPrice,
     pub ltv_bps: u16,
     pub liquidation_threshold_bps: u16,
+}
+
+impl CollateralValue {
+    /// The balance Pyth's price applies to: raw amount × multiplier, rounded down.
+    pub fn display_amount(&self) -> Result<u128> {
+        mul_div_floor(self.amount as u128, self.multiplier, MULTIPLIER_SCALE)
+    }
 }
 
 /// Spec §8 health values, all at `USD_SCALE`.
@@ -42,7 +53,7 @@ pub fn compute_health(
 ) -> Result<Health> {
     let mut health = Health::default();
     for c in collateral {
-        let value = token_value(c.amount as u128, c.decimals, c.price.lower())?;
+        let value = token_value(c.display_amount()?, c.decimals, c.price.lower())?;
         health.own_value = add(health.own_value, value)?;
         health.borrow_limit = add(health.borrow_limit, mul_div_floor(value, c.ltv_bps as u128, BPS)?)?;
         health.liquidation_line = add(
@@ -72,6 +83,7 @@ mod tests {
             CollateralValue {
                 amount: 10_000_000_000,
                 decimals: 9,
+                multiplier: MULTIPLIER_SCALE,
                 price: UsdPrice { price: 150 * USD, conf: USD },
                 ltv_bps: 7_000,
                 liquidation_threshold_bps: 9_000,
@@ -80,6 +92,7 @@ mod tests {
             CollateralValue {
                 amount: 500_000_000,
                 decimals: 6,
+                multiplier: MULTIPLIER_SCALE,
                 price: UsdPrice { price: USD, conf: 0 },
                 ltv_bps: 7_000,
                 liquidation_threshold_bps: 9_000,
@@ -100,6 +113,7 @@ mod tests {
         let collateral = [CollateralValue {
             amount: 1_000_000_000,
             decimals: 6,
+            multiplier: MULTIPLIER_SCALE,
             price: UsdPrice { price: USD, conf: 0 },
             ltv_bps: 7_000,
             liquidation_threshold_bps: 9_000,
@@ -113,6 +127,26 @@ mod tests {
         let over = compute_health(&collateral, 1_120_000_000_000, 6, wide).unwrap();
         assert_eq!(over.debt, 707 * USD);
         assert!(!over.is_healthy());
+    }
+
+    #[test]
+    fn an_xstock_multiplier_scales_the_balance_before_pricing() {
+        // 100 raw AAPLX (8 decimals) at a 1.5 multiplier is 150 display tokens at $200 = $30,000.
+        let split = [CollateralValue {
+            amount: 10_000_000_000,
+            decimals: 8,
+            multiplier: 1_500_000_000_000,
+            price: UsdPrice { price: 200 * USD, conf: 0 },
+            ltv_bps: 5_000,
+            liquidation_threshold_bps: 7_500,
+        }];
+        let h = compute_health(&split, 0, 6, ngn()).unwrap();
+        assert_eq!(h.own_value, 30_000 * USD);
+        assert_eq!(h.borrow_limit, 15_000 * USD);
+        assert_eq!(h.liquidation_line, 22_500 * USD);
+        // The same holding at multiplier 1 is worth the raw balance.
+        let plain = [CollateralValue { multiplier: MULTIPLIER_SCALE, ..split[0] }];
+        assert_eq!(compute_health(&plain, 0, 6, ngn()).unwrap().own_value, 20_000 * USD);
     }
 
     #[test]

@@ -7,10 +7,15 @@ use crate::math::price::UsdPrice;
 use crate::math::loan::loan_balance;
 use crate::oracle::pyth::read_pyth_price;
 use crate::oracle::switchboard::read_ngn_price;
-use crate::state::{CollateralAsset, Market, Position};
+use crate::constants::MULTIPLIER_ONE;
+use crate::state::{CollateralAsset, CollateralKind, Market, Position};
+use crate::token::scaled_ui::read_multiplier;
 
-/// Accounts per used collateral slot in `remaining_accounts`: `(CollateralAsset, PriceUpdateV2)`.
+/// Accounts per used collateral slot in `remaining_accounts`: `(CollateralAsset, PriceUpdateV2)`
+/// for a `Standard` asset, and `(CollateralAsset, PriceUpdateV2, mint)` for an `XStock`, whose
+/// scaled-UI multiplier lives on the mint.
 pub const ACCOUNTS_PER_COLLATERAL: usize = 2;
+pub const ACCOUNTS_PER_XSTOCK: usize = 3;
 
 /// Value every used collateral slot, in slot order, from `remaining` pairs.
 ///
@@ -25,13 +30,11 @@ pub fn load_collateral_values(
     clock: &Clock,
 ) -> Result<Vec<CollateralValue>> {
     let used: Vec<_> = position.collateral.iter().filter(|s| s.amount > 0).collect();
-    require!(
-        remaining.len() == used.len() * ACCOUNTS_PER_COLLATERAL,
-        HodlError::PriceAccountMismatch
-    );
     let mut values = Vec::with_capacity(used.len());
-    for (slot, accounts) in used.iter().zip(remaining.chunks(ACCOUNTS_PER_COLLATERAL)) {
-        let (asset_info, price_info) = (&accounts[0], &accounts[1]);
+    let mut cursor = 0usize;
+    for slot in used.iter() {
+        let asset_info = remaining.get(cursor).ok_or(HodlError::PriceAccountMismatch)?;
+        let price_info = remaining.get(cursor + 1).ok_or(HodlError::PriceAccountMismatch)?;
         require_keys_eq!(*asset_info.owner, *program_id, HodlError::PriceAccountMismatch);
         let asset = {
             let data = asset_info.try_borrow_data()?;
@@ -48,14 +51,28 @@ pub fn load_collateral_values(
             asset.max_conf_bps,
             clock,
         )?;
+        // An xStock passes its mint too: the multiplier its issuer applies to balances lives
+        // there, and Pyth prices the display token, not the raw unit.
+        let multiplier = if asset.kind == CollateralKind::Standard {
+            cursor += ACCOUNTS_PER_COLLATERAL;
+            MULTIPLIER_ONE
+        } else {
+            let mint_info = remaining.get(cursor + 2).ok_or(HodlError::PriceAccountMismatch)?;
+            require_keys_eq!(mint_info.key(), slot.mint, HodlError::PriceAccountMismatch);
+            cursor += ACCOUNTS_PER_XSTOCK;
+            read_multiplier(mint_info, asset.kind, clock.unix_timestamp)?
+        };
         values.push(CollateralValue {
             amount: slot.amount,
             decimals: asset.decimals,
+            multiplier,
             price,
             ltv_bps: asset.ltv_bps,
             liquidation_threshold_bps: asset.liquidation_threshold_bps,
         });
     }
+    // Every account supplied must have been consumed: an extra one is a mismatch.
+    require!(cursor == remaining.len(), HodlError::PriceAccountMismatch);
     Ok(values)
 }
 

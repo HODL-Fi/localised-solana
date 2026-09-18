@@ -843,11 +843,26 @@ impl Env {
         self.set_account_data(&ngn_feed(), &switchboard_on_demand::ON_DEMAND_MAINNET_PID, pull_feed_data(value, std_dev, slot, 5));
     }
 
-    /// One `(CollateralAsset, PriceUpdateV2)` pair per used collateral slot, in slot order.
+    /// The health accounts for every used collateral slot, in slot order: a pair per
+    /// `Standard` asset, and the mint as well for an `XStock`.
     pub fn price_accounts(&self, owner: &Pubkey) -> Vec<AccountMeta> {
         let position = self.position(owner);
-        let mints: Vec<Pubkey> = position.collateral.iter().filter(|s| s.amount > 0).map(|s| s.mint).collect();
-        price_pairs(&mints)
+        position
+            .collateral
+            .iter()
+            .filter(|slot| slot.amount > 0)
+            .flat_map(|slot| self.collateral_accounts(&slot.mint))
+            .collect()
+    }
+
+    /// One listed asset's health accounts: `(CollateralAsset, PriceUpdateV2)`, plus the mint
+    /// when the asset is an `XStock` (its multiplier lives there).
+    pub fn collateral_accounts(&self, mint: &Pubkey) -> Vec<AccountMeta> {
+        let mut metas = price_pairs(&[*mint]);
+        if self.collateral(mint).kind == hodl_loans::CollateralKind::XStock {
+            metas.push(AccountMeta::new_readonly(*mint, false));
+        }
+        metas
     }
 
     pub fn take_loan(&mut self, borrower: &Borrower, setup: &LoanSetup, amount: u64, tenure_seconds: i64) -> TxResult {
@@ -1195,5 +1210,28 @@ impl Env {
         )
         .unwrap();
         send(&mut self.svm, &[instruction], &[&self.admin]).expect("delegate burn");
+    }
+}
+
+// ---- The xStock multiplier (Task 3) ----
+
+/// Serialized size of a legacy transaction carrying `instruction`, signed `signers` times.
+/// Solana's packet limit is 1,232 bytes; above it the client needs a v0 transaction with an
+/// address lookup table.
+pub fn legacy_tx_size(instruction: &Instruction, payer: &Pubkey, signers: usize) -> usize {
+    1 + 64 * signers + Message::new(std::slice::from_ref(instruction), Some(payer)).serialize().len()
+}
+
+pub const PACKET_DATA_SIZE: usize = 1_232;
+
+impl Env {
+    /// Schedules the issuer's next multiplier. `effective_at` in the past takes effect at once.
+    pub fn set_multiplier(&mut self, mint: &Pubkey, multiplier: f64, effective_at: i64) {
+        let authority = self.admin.pubkey();
+        let instruction = scaled_ui_amount::instruction::update_multiplier(
+            &TOKEN_2022, mint, &authority, &[], multiplier, effective_at,
+        )
+        .unwrap();
+        send(&mut self.svm, &[instruction], &[&self.admin]).expect("update multiplier");
     }
 }
