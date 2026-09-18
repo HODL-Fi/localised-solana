@@ -83,6 +83,9 @@ pub const VOUCHER_SEED: &[u8] = b"voucher";
 
 /// Domain separator in the voucher message (spec §12). It binds a signature to this program's
 /// voucher format, so a `promo_signer` key reused elsewhere cannot produce a valid voucher.
+/// Published in the IDL so the off-chain promo signer reads it rather than hardcoding a copy
+/// that could drift from the program's.
+#[constant]
 pub const VOUCHER_DOMAIN: &str = "hodl_loans:promo_voucher:v1";
 
 #[cfg(test)]
