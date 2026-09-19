@@ -69,14 +69,15 @@ impl CollateralParams {
             self.ltv_bps as u32 + promo_cap_bps as u32 <= self.liquidation_threshold_bps as u32,
             HodlError::InvalidParameters
         );
-        // This checks LT alone, but Task 5 lifts the *effective* liquidation line to
+        // This checks LT alone, but counting promo lifts the *effective* liquidation line to
         // LT×V + promo_counted, and promo_counted can reach promo_cap_bps×V — at the shipped
         // config (LT 90%, cap 20%, bonus 0) the effective line is 110% of collateral value, past
-        // what this formula describes. That is intentional: `forfeit_promo` returns the
-        // position's full, uncapped promo balance to the market vault on liquidation, and the
-        // line was only lifted by the capped value, so recovery ≥ lift. Do not tighten this to
-        // `(LT + promo_cap_bps)`. Anyone raising `liquidation_bonus_bps` must still reason about
-        // `LT + promo_cap_bps` fitting inside 100%, not `LT` alone.
+        // what this formula describes. That is intentional, and what covers the excess is promo
+        // forfeiture: seizure returns the position's full, *uncapped* promo balance to the
+        // market vault, while the line was lifted only by the *capped* value, so recovery ≥ lift.
+        // Do not tighten this to `(LT + promo_cap_bps)` — that would reject the shipped config.
+        // Anyone raising `liquidation_bonus_bps` must reason about `LT + promo_cap_bps` fitting
+        // inside 100%, not `LT` alone.
         require!(
             self.liquidation_threshold_bps as u128 * (BPS + self.liquidation_bonus_bps as u128) <= BPS * BPS,
             HodlError::InvalidParameters
