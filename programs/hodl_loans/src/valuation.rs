@@ -111,6 +111,8 @@ pub struct ValuationRequest<'a, 'info> {
     pub clock: &'a Clock,
 }
 
+/// Spec §8 valuation of a position: loads each used collateral's price, reads the NGN price,
+/// totals debt (plus any `extra_debt` about to be borrowed), and computes health from all three.
 pub fn load_valuation(position: &Position, request: &ValuationRequest) -> Result<Valuation> {
     let ValuationRequest { program_id, market, ngn_feed, remaining, extra_debt, promo_cap_bps, clock } = *request;
     let collateral = load_collateral_values(program_id, position, remaining, clock)?;

@@ -58,6 +58,7 @@ pub fn handle_withdraw_collateral<'info>(ctx: Context<'info, WithdrawCollateral<
             };
             require_keys_eq!(position.market, market.key(), HodlError::MarketMismatch);
             let ngn_feed = ngn_feed.to_account_info();
+            let clock = Clock::get()?;
             let health = load_health(
                 &position,
                 &ValuationRequest {
@@ -67,7 +68,7 @@ pub fn handle_withdraw_collateral<'info>(ctx: Context<'info, WithdrawCollateral<
                     remaining: ctx.remaining_accounts,
                     extra_debt: 0,
                     promo_cap_bps: ctx.accounts.config.promo_cap_bps,
-                    clock: &Clock::get()?,
+                    clock: &clock,
                 },
             )?;
             require!(health.is_healthy(), HodlError::Unhealthy);
