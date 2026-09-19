@@ -2852,16 +2852,30 @@ fn closing_a_position_hands_its_promo_back() {
     let (mut env, setup) = Env::promo_ready();
     let borrower = env.new_borrower();
     let owner = borrower.pubkey();
+    // Redemption only moves GRANT from `unissued` (promised to the campaign) to `outstanding`
+    // (promised to the position) — `free()` does not move yet.
+    let free_before = env.promo_vault(&setup.cngn).free().unwrap();
     env.redeem_promo(&borrower, &setup.cngn, 1, GRANT, 7).unwrap();
     assert_eq!(env.promo_vault(&setup.cngn).outstanding, GRANT);
+    assert_eq!(env.promo_vault(&setup.cngn).free().unwrap(), free_before);
 
     // Closing without naming the vault would strand the promo, so it is refused.
     let bare = close_position_ix(&owner, &env.admin.pubkey());
     assert_hodl_error(env.sponsored(bare, &borrower.key), HodlError::MarketMismatch);
+    // The position, and the vault's committed promo, are both still there: the refusal did not
+    // silently drop the promo along with the close.
+    assert_eq!(env.promo_vault(&setup.cngn).outstanding, GRANT);
 
     let close = close_position_with_promo_ix(&owner, &env.admin.pubkey(), &setup.cngn);
     env.sponsored(close, &borrower.key).unwrap();
-    assert_eq!(env.promo_vault(&setup.cngn).outstanding, 0);
+    // The position is gone, so `position.promo_balance == 0` alone would prove nothing — the
+    // vault side is what confirms the promo actually came back rather than being stranded.
+    // Release does not credit the campaign back (its `granted` stays permanently spent), so the
+    // GRANT becomes genuinely free vault cash — `free()` ends up `free_before + GRANT`, not
+    // merely back at `free_before`.
+    let vault = env.promo_vault(&setup.cngn);
+    assert_eq!(vault.outstanding, 0);
+    assert_eq!(vault.free().unwrap(), free_before + GRANT);
     assert!(env.svm.get_account(&position_pda(&owner)).is_none_or(|a| a.lamports == 0));
 }
 
@@ -2902,14 +2916,11 @@ Create `programs/hodl_loans/src/instructions/promos/lifecycle.rs` with the relea
 
 ```rust
 use anchor_lang::prelude::*;
-use anchor_spl::token_interface::{Mint, TokenAccount};
 
 use crate::constants::{CONFIG_SEED, POSITION_SEED, PROMO_VAULT_SEED};
 use crate::errors::HodlError;
-use crate::events::{PromoExpired, PromoForfeited, PromoRevoked};
-use crate::math::checked::sub;
+use crate::events::{PromoExpired, PromoRevoked};
 use crate::state::{Config, Market, Position, PromoVault};
-use crate::token::transfer::transfer_from_vault;
 
 /// The one way promo leaves a position: expiry, revocation, forfeiture on liquidation or
 /// write-off, and `close_position` all end here. The cNGN itself does not move — it stops being
@@ -2934,6 +2945,7 @@ fn release_from_idle_position(
     release_promo(position, promo_vault)
 }
 
+#[derive(Accounts)]
 pub struct ExpirePromo<'info> {
     pub market: Box<Account<'info, Market>>,
     #[account(
@@ -2969,6 +2981,7 @@ pub fn handle_expire_promo(ctx: Context<ExpirePromo>) -> Result<()> {
     Ok(())
 }
 
+#[derive(Accounts)]
 pub struct RevokePromo<'info> {
     pub admin: Signer<'info>,
     #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ HodlError::Unauthorized)]
