@@ -107,7 +107,8 @@ pub struct Env {
 impl Env {
     /// Program loaded with `admin` as its upgrade authority. `Config` is not initialized.
     pub fn new() -> Self {
-        let mut svm = LiteSVM::new();
+        // `with_precompiles` loads the native Ed25519 program, which promo vouchers need.
+        let mut svm = LiteSVM::new().with_precompiles();
         let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/deploy/hodl_loans.so"));
         svm.add_program(hodl_loans::ID, bytes).unwrap();
         let env = Self {
@@ -1401,5 +1402,143 @@ impl Env {
         let until = self.now() + 365 * 86_400;
         let instruction = create_campaign_ix(&admin, mint, campaign_id, budget, until);
         send(&mut self.svm, &[instruction], &[&self.admin]).expect("create campaign");
+    }
+}
+
+// ---- Vouchers (Task 4) ----
+
+pub const ED25519_PROGRAM: Pubkey = hodl_loans::voucher::ED25519_PROGRAM_ID;
+pub fn instructions_sysvar() -> Pubkey {
+    solana_instructions_sysvar::ID
+}
+
+pub fn voucher_pda(campaign: &Pubkey, nonce: u64) -> Pubkey {
+    pda(&[b"voucher", campaign.as_ref(), &nonce.to_le_bytes()])
+}
+
+/// An Ed25519 program instruction proving `signer` signed `message`, in the layout the native
+/// program reads: two header bytes, one 14-byte descriptor, then the signature, key and message.
+/// Built by hand because no dependency here ships the SDK's builder.
+pub fn ed25519_verify_ix(signer: &Keypair, message: &[u8]) -> Instruction {
+    let signature_offset: u16 = 16;
+    let public_key_offset = signature_offset + 64;
+    let message_offset = public_key_offset + 32;
+    let mut data = vec![1u8, 0u8];
+    for value in [
+        signature_offset,
+        u16::MAX,
+        public_key_offset,
+        u16::MAX,
+        message_offset,
+        message.len() as u16,
+        u16::MAX,
+    ] {
+        data.extend_from_slice(&value.to_le_bytes());
+    }
+    data.extend_from_slice(signer.sign_message(message).as_ref());
+    data.extend_from_slice(signer.pubkey().as_ref());
+    data.extend_from_slice(message);
+    Instruction::new_with_bytes(ED25519_PROGRAM, &data, vec![])
+}
+
+pub fn redeem_promo_ix(
+    payer: &Pubkey,
+    owner: &Pubkey,
+    mint: &Pubkey,
+    campaign_id: u64,
+    amount: u64,
+    nonce: u64,
+    voucher_expiry: i64,
+) -> Instruction {
+    let campaign = campaign_pda(mint, campaign_id);
+    ix(
+        hodl_loans::instruction::RedeemPromo { amount, nonce, voucher_expiry },
+        hodl_loans::accounts::RedeemPromo {
+            payer: *payer,
+            owner: *owner,
+            access: access_pda(owner),
+            config: config_pda(),
+            market: market_pda(mint),
+            position: position_pda(owner),
+            promo_vault: promo_vault_pda(mint),
+            campaign,
+            voucher_receipt: voucher_pda(&campaign, nonce),
+            instructions_sysvar: instructions_sysvar(),
+            system_program: system_program::ID,
+        },
+    )
+}
+
+pub fn close_voucher_receipt_ix(rent_payer: &Pubkey, campaign: &Pubkey, nonce: u64) -> Instruction {
+    ix(
+        hodl_loans::instruction::CloseVoucherReceipt {},
+        hodl_loans::accounts::CloseVoucherReceipt {
+            rent_payer: *rent_payer,
+            voucher_receipt: voucher_pda(campaign, nonce),
+        },
+    )
+}
+
+impl Env {
+    /// The message the promo signer must sign for this voucher.
+    pub fn voucher_message(
+        &self,
+        mint: &Pubkey,
+        campaign_id: u64,
+        wallet: &Pubkey,
+        amount: u64,
+        nonce: u64,
+        voucher_expiry: i64,
+    ) -> Vec<u8> {
+        hodl_loans::voucher::PromoVoucher::new(
+            market_pda(mint),
+            campaign_id,
+            *wallet,
+            amount,
+            nonce,
+            voucher_expiry,
+        )
+        .message()
+        .unwrap()
+    }
+
+    /// Redeems a voucher: the Ed25519 proof first, then the redemption, in one transaction.
+    pub fn redeem_promo(
+        &mut self,
+        borrower: &Borrower,
+        mint: &Pubkey,
+        campaign_id: u64,
+        amount: u64,
+        nonce: u64,
+    ) -> TxResult {
+        let expiry = self.now() + 86_400;
+        self.redeem_voucher_signed_by(&self.promo_signer.insecure_clone(), borrower, mint, campaign_id, amount, nonce, expiry)
+    }
+
+    /// The same, with the signing key and expiry spelled out — for the cases where one of them
+    /// is meant to be wrong.
+    #[allow(clippy::too_many_arguments)]
+    pub fn redeem_voucher_signed_by(
+        &mut self,
+        signer: &Keypair,
+        borrower: &Borrower,
+        mint: &Pubkey,
+        campaign_id: u64,
+        amount: u64,
+        nonce: u64,
+        voucher_expiry: i64,
+    ) -> TxResult {
+        let owner = borrower.pubkey();
+        let message = self.voucher_message(mint, campaign_id, &owner, amount, nonce, voucher_expiry);
+        let admin = self.admin.pubkey();
+        let instructions = vec![
+            ed25519_verify_ix(signer, &message),
+            redeem_promo_ix(&admin, &owner, mint, campaign_id, amount, nonce, voucher_expiry),
+        ];
+        send(&mut self.svm, &instructions, &[&self.admin, &borrower.key])
+    }
+
+    pub fn voucher_receipt(&self, campaign: &Pubkey, nonce: u64) -> hodl_loans::VoucherReceipt {
+        self.fetch(&voucher_pda(campaign, nonce))
     }
 }

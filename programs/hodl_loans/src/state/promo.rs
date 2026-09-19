@@ -61,3 +61,18 @@ pub struct Campaign {
     pub active: bool,
     pub reserved: [u8; 32],
 }
+
+/// Spec §12. Proof that one voucher nonce has been redeemed. Its existence is what prevents a
+/// replay: `redeem_promo` creates it, so a second redemption of the same nonce cannot init.
+#[account]
+#[derive(InitSpace)]
+pub struct VoucherReceipt {
+    pub version: u8,
+    pub bump: u8,
+    pub campaign: Pubkey,
+    pub nonce: u64,
+    pub voucher_expiry: i64,
+    /// Refunded when the receipt is closed, which anyone may do once the voucher has expired.
+    pub rent_payer: Pubkey,
+    pub reserved: [u8; 32],
+}

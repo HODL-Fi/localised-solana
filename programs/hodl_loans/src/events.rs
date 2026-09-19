@@ -286,3 +286,14 @@ pub struct CampaignClosed {
     /// The unspent budget handed back to the vault's free cNGN.
     pub returned: u64,
 }
+
+#[event]
+pub struct PromoRedeemed {
+    pub market: Pubkey,
+    pub position: Pubkey,
+    pub owner: Pubkey,
+    pub campaign_id: u64,
+    pub nonce: u64,
+    pub amount: u64,
+    pub promo_balance: u64,
+}
