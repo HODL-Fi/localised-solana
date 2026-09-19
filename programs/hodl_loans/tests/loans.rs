@@ -214,8 +214,7 @@ fn a_position_borrows_from_one_market() {
     env.take_loan(&setup.borrower, &setup, 1_000 * ONE_CNGN, 30 * DAY).unwrap();
 
     let other = env.create_mint(MintKind::CngnLike, 6);
-    let create = create_market_ix(&env.admin.pubkey(), &other, &TOKEN_2022, default_market_params());
-    send(&mut env.svm, &[create], &[&env.admin]).unwrap();
+    env.create_market_with_promo(&other);
     let lender = env.new_lender(&other, POOL_CNGN);
     env.deposit(&lender, &other, POOL_CNGN).unwrap();
 

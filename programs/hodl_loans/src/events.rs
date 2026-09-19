@@ -297,3 +297,27 @@ pub struct PromoRedeemed {
     pub amount: u64,
     pub promo_balance: u64,
 }
+
+#[event]
+pub struct PromoExpired {
+    pub market: Pubkey,
+    pub position: Pubkey,
+    pub owner: Pubkey,
+    pub amount: u64,
+}
+
+#[event]
+pub struct PromoRevoked {
+    pub market: Pubkey,
+    pub position: Pubkey,
+    pub owner: Pubkey,
+    pub amount: u64,
+}
+
+#[event]
+pub struct PromoReleased {
+    pub market: Pubkey,
+    pub position: Pubkey,
+    pub owner: Pubkey,
+    pub amount: u64,
+}

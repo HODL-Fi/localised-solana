@@ -691,6 +691,49 @@ pub fn close_position_ix(owner: &Pubkey, rent_payer: &Pubkey) -> Instruction {
             access: access_pda(owner),
             position: position_pda(owner),
             rent_payer: *rent_payer,
+            market: None,
+            promo_vault: None,
+        },
+    )
+}
+
+// ---- Promo expiry and revocation (Task 6) ----
+
+pub fn expire_promo_ix(mint: &Pubkey, owner: &Pubkey) -> Instruction {
+    ix(
+        hodl_loans::instruction::ExpirePromo {},
+        hodl_loans::accounts::ExpirePromo {
+            market: market_pda(mint),
+            promo_vault: promo_vault_pda(mint),
+            position: position_pda(owner),
+        },
+    )
+}
+
+pub fn revoke_promo_ix(admin: &Pubkey, mint: &Pubkey, owner: &Pubkey) -> Instruction {
+    ix(
+        hodl_loans::instruction::RevokePromo {},
+        hodl_loans::accounts::RevokePromo {
+            admin: *admin,
+            config: config_pda(),
+            market: market_pda(mint),
+            promo_vault: promo_vault_pda(mint),
+            position: position_pda(owner),
+        },
+    )
+}
+
+/// `close_position`, naming the promo vault so a position still holding promo can hand it back.
+pub fn close_position_with_promo_ix(owner: &Pubkey, rent_payer: &Pubkey, mint: &Pubkey) -> Instruction {
+    ix(
+        hodl_loans::instruction::ClosePosition {},
+        hodl_loans::accounts::ClosePosition {
+            market: Some(market_pda(mint)),
+            promo_vault: Some(promo_vault_pda(mint)),
+            owner: *owner,
+            access: access_pda(owner),
+            position: position_pda(owner),
+            rent_payer: *rent_payer,
         },
     )
 }
@@ -822,6 +865,7 @@ pub fn take_loan_ix(owner: &Pubkey, mint: &Pubkey, owner_token: &Pubkey, amount:
             owner: *owner,
             access: access_pda(owner),
             config: config_pda(),
+            promo_vault: Some(promo_vault_pda(mint)),
             position: position_pda(owner),
             market: market_pda(mint),
             mint: *mint,

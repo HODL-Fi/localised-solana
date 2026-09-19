@@ -145,6 +145,14 @@ pub mod hodl_loans {
         instructions::handle_close_voucher_receipt(ctx)
     }
 
+    pub fn expire_promo(ctx: Context<ExpirePromo>) -> Result<()> {
+        instructions::handle_expire_promo(ctx)
+    }
+
+    pub fn revoke_promo(ctx: Context<RevokePromo>) -> Result<()> {
+        instructions::handle_revoke_promo(ctx)
+    }
+
     pub fn harvest_reserve(ctx: Context<HarvestReserve>, amount: u64) -> Result<()> {
         instructions::handle_harvest_reserve(ctx, amount)
     }
