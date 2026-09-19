@@ -311,11 +311,20 @@ fn promo_vault_rejections() {
     let again = create_promo_vault_ix(&admin, &cngn);
     assert!(send(&mut env.svm, &[again], &[&env.admin]).is_err());
 
-    // Every promo vault instruction is admin-only.
+    // Every promo vault instruction is admin-only. `create_promo_vault` needs a market that
+    // doesn't already have one, so `init` doesn't fail on "already in use" before the
+    // authorization check ever runs.
+    let other_mint = env.create_mint(MintKind::CngnLike, 6);
+    let create_market = create_market_ix(&admin, &other_mint, &TOKEN_2022, default_market_params());
+    send(&mut env.svm, &[create_market], &[&env.admin]).expect("create market");
+    let by_stranger = create_promo_vault_ix(&stranger.pubkey(), &other_mint);
+    assert_hodl_error(send(&mut env.svm, &[by_stranger], &[&stranger]), HodlError::Unauthorized);
     let source = env.create_token_account(&cngn, &stranger.pubkey());
     let by_stranger = fund_promo_vault_ix(&stranger.pubkey(), &cngn, &source, ONE_CNGN);
     assert_hodl_error(send(&mut env.svm, &[by_stranger], &[&stranger]), HodlError::Unauthorized);
     let by_stranger = withdraw_promo_vault_ix(&stranger.pubkey(), &cngn, &destination, ONE_CNGN);
+    assert_hodl_error(send(&mut env.svm, &[by_stranger], &[&stranger]), HodlError::Unauthorized);
+    let by_stranger = sweep_promo_excess_ix(&stranger.pubkey(), &cngn, &destination);
     assert_hodl_error(send(&mut env.svm, &[by_stranger], &[&stranger]), HodlError::Unauthorized);
 
     // Zero moves nothing.
@@ -387,7 +396,7 @@ Create `programs/hodl_loans/src/state/promo.rs` with the vault only — the camp
 use anchor_lang::prelude::*;
 
 use crate::errors::HodlError;
-use crate::math::checked::{add, sub};
+use crate::math::checked::{add, sub, to_u64};
 
 /// Spec §12. One per market: the cNGN behind every promo balance, and the accounting that keeps
 /// `outstanding + unissued ≤ cash` true at all times.
@@ -416,13 +425,13 @@ impl PromoVault {
     /// to the treasury both draw from here, so the §12 invariant holds by construction.
     pub fn free(&self) -> Result<u64> {
         let committed = add(self.outstanding as u128, self.unissued as u128)?;
-        Ok(sub(self.cash as u128, committed)? as u64)
+        to_u64(sub(self.cash as u128, committed)?)
     }
 
     /// Promo leaving a position, on expiry, revocation, forfeiture or `close_position`. The cNGN
     /// itself does not move on expiry or revocation — it becomes free HODL funds again.
     pub fn release(&mut self, amount: u64) -> Result<()> {
-        self.outstanding = sub(self.outstanding as u128, amount as u128)? as u64;
+        self.outstanding = to_u64(sub(self.outstanding as u128, amount as u128)?)?;
         Ok(())
     }
 
@@ -520,7 +529,7 @@ use crate::constants::{ACCOUNT_VERSION, CONFIG_SEED, MARKET_SEED, PROMO_VAULT_SE
 use crate::errors::HodlError;
 use crate::events::{PromoVaultCreated, PromoVaultFunded, PromoVaultWithdrawn};
 use crate::instructions::admin::sweep::sweep_to_treasury;
-use crate::math::checked::{add, sub};
+use crate::math::checked::{add, sub, to_u64};
 use crate::state::{Config, Market, PromoVault};
 use crate::token::transfer::{transfer_from_user, transfer_from_vault};
 
@@ -619,7 +628,7 @@ pub fn handle_fund_promo_vault(ctx: Context<FundPromoVault>, amount: u64) -> Res
     )?;
 
     let promo_vault = &mut ctx.accounts.promo_vault;
-    promo_vault.cash = add(promo_vault.cash as u128, amount as u128)? as u64;
+    promo_vault.cash = to_u64(add(promo_vault.cash as u128, amount as u128)?)?;
     emit!(PromoVaultFunded {
         market: ctx.accounts.market.key(),
         amount,
@@ -677,7 +686,7 @@ pub fn handle_withdraw_promo_vault(ctx: Context<WithdrawPromoVault>, amount: u64
     )?;
 
     let promo_vault = &mut ctx.accounts.promo_vault;
-    promo_vault.cash = sub(promo_vault.cash as u128, amount as u128)? as u64;
+    promo_vault.cash = to_u64(sub(promo_vault.cash as u128, amount as u128)?)?;
     promo_vault.require_invariant()?;
     emit!(PromoVaultWithdrawn {
         market: market_key,
@@ -940,6 +949,31 @@ fn campaign_rejections() {
 }
 
 #[test]
+fn closing_a_campaign_twice_is_rejected_even_with_a_second_campaign_still_open() {
+    // A single-campaign vault drains `unissued` to zero on its first close, so closing it again
+    // happens to fail on an underflow in `sub` — the right outcome, for the wrong reason. With a
+    // second campaign still holding its own budget in `unissued`, that underflow no longer fires:
+    // a second close would silently subtract campaign 1's `unspent` a second time, over-crediting
+    // the vault's `free()` at campaign 2's expense. This pins the `active` guard itself.
+    let (mut env, cngn) = Env::with_promo_vault(FUNDING);
+    let admin = env.admin.pubkey();
+
+    let budget_1 = 200_000 * ONE_CNGN;
+    let budget_2 = 300_000 * ONE_CNGN;
+    env.create_campaign(&cngn, 1, budget_1);
+    env.create_campaign(&cngn, 2, budget_2);
+
+    send(&mut env.svm, &[close_campaign_ix(&admin, &cngn, 1)], &[&env.admin]).unwrap();
+    assert!(!env.campaign(&cngn, 1).active);
+    assert!(env.campaign(&cngn, 2).active);
+    // Only campaign 1's reservation came back; campaign 2's is untouched.
+    assert_eq!(env.promo_vault(&cngn).unissued, budget_2);
+
+    let twice = close_campaign_ix(&admin, &cngn, 1);
+    assert_hodl_error(send(&mut env.svm, &[twice], &[&env.admin]), HodlError::CampaignInactive);
+}
+
+#[test]
 fn closing_a_campaign_returns_only_what_it_never_granted() {
     let (mut env, cngn) = Env::with_promo_vault(FUNDING);
     let admin = env.admin.pubkey();
@@ -999,7 +1033,7 @@ use anchor_lang::prelude::*;
 use crate::constants::{ACCOUNT_VERSION, CAMPAIGN_SEED, CONFIG_SEED, PROMO_VAULT_SEED};
 use crate::errors::HodlError;
 use crate::events::{CampaignClosed, CampaignCreated};
-use crate::math::checked::{add, sub};
+use crate::math::checked::{add, sub, to_u64};
 use crate::state::{Campaign, Config, Market, PromoVault};
 
 #[derive(Accounts)]
@@ -1042,7 +1076,7 @@ pub fn handle_create_campaign(
     require!(budget <= ctx.accounts.promo_vault.free()?, HodlError::PromoVaultInsufficient);
 
     let promo_vault = &mut ctx.accounts.promo_vault;
-    promo_vault.unissued = add(promo_vault.unissued as u128, budget as u128)? as u64;
+    promo_vault.unissued = to_u64(add(promo_vault.unissued as u128, budget as u128)?)?;
     promo_vault.require_invariant()?;
 
     ctx.accounts.campaign.set_inner(Campaign {
@@ -1096,7 +1130,7 @@ pub fn handle_close_campaign(ctx: Context<CloseCampaign>) -> Result<()> {
     let unspent = sub(ctx.accounts.campaign.budget as u128, ctx.accounts.campaign.granted as u128)?;
 
     let promo_vault = &mut ctx.accounts.promo_vault;
-    promo_vault.unissued = sub(promo_vault.unissued as u128, unspent)? as u64;
+    promo_vault.unissued = to_u64(sub(promo_vault.unissued as u128, unspent)?)?;
     promo_vault.require_invariant()?;
 
     let campaign = &mut ctx.accounts.campaign;
@@ -1106,7 +1140,7 @@ pub fn handle_close_campaign(ctx: Context<CloseCampaign>) -> Result<()> {
         campaign: campaign.key(),
         campaign_id: campaign.campaign_id,
         granted: campaign.granted,
-        returned: unspent as u64,
+        returned: to_u64(unspent)?,
     });
     Ok(())
 }
@@ -1193,6 +1227,9 @@ Add the domain separator to `programs/hodl_loans/src/constants.rs`, with the see
 ```rust
 /// Domain separator in the voucher message (spec §12). It binds a signature to this program's
 /// voucher format, so a `promo_signer` key reused elsewhere cannot produce a valid voucher.
+/// Published in the IDL so the off-chain promo signer reads it rather than hardcoding a copy
+/// that could drift from the program's.
+#[constant]
 pub const VOUCHER_DOMAIN: &str = "hodl_loans:promo_voucher:v1";
 ```
 
@@ -1446,7 +1483,7 @@ fn ed25519_instruction_covers(data: &[u8], signer: &Pubkey, message: &[u8]) -> b
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 180 tests in all (the unit suite is now 47). (One more than this plan originally said: the Task 2 fix round added a multi-campaign double-close test to pin `close_campaign`'s `active` guard, so every total from Task 3 onward is one higher than generated.)
+Expected: every binary reports `ok`, 180 tests in all (the unit suite is now 47). (Higher than this plan was first generated with, because review rounds added tests: +1 from Task 3 onward for the Task 2 multi-campaign double-close test pinning `close_campaign`'s `active` guard, and +1 more from Task 4 onward for the same-transaction voucher-replay test. The totals below already include both.)
 
 - [ ] **Step 5: Commit**
 
@@ -1688,6 +1725,34 @@ fn a_nonce_can_only_be_redeemed_once() {
 }
 
 #[test]
+fn one_ed25519_instruction_cannot_authorise_two_redemptions_in_one_transaction() {
+    let (mut env, cngn, borrower) = ready();
+    let owner = borrower.pubkey();
+    let admin = env.admin.pubkey();
+    let expiry = env.now() + 86_400;
+    let signer = env.promo_signer.insecure_clone();
+    let message = env.voucher_message(&cngn, 1, &owner, GRANT, 7, expiry);
+
+    // `require_ed25519_signature` only checks that SOME earlier instruction in the transaction
+    // verifies the signature — it does not mark that instruction as consumed. So one Ed25519
+    // instruction, by itself, would authorise both `redeem_promo` calls below if nothing else
+    // stopped it. What has to stop it is the `voucher_receipt` PDA: the first call creates it
+    // with `init`, so the second call's `init` of the same address cannot succeed.
+    let instructions = vec![
+        ed25519_verify_ix(&signer, &message),
+        redeem_promo_ix(&admin, &owner, &cngn, 1, GRANT, 7, expiry),
+        redeem_promo_ix(&admin, &owner, &cngn, 1, GRANT, 7, expiry),
+    ];
+    let result = send(&mut env.svm, &instructions, &[&env.admin, &borrower.key]);
+    assert!(result.is_err(), "a single transaction must not redeem the same voucher twice");
+
+    // The whole transaction reverts atomically: even the first, individually-valid redemption
+    // never lands.
+    assert_eq!(env.position(&owner).promo_balance, 0);
+    assert!(env.svm.get_account(&voucher_pda(&campaign_pda(&cngn, 1), 7)).is_none());
+}
+
+#[test]
 fn only_the_promo_signers_signature_counts() {
     let (mut env, cngn, borrower) = ready();
     let owner = borrower.pubkey();
@@ -1850,7 +1915,7 @@ use solana_instructions_sysvar::ID as INSTRUCTIONS_SYSVAR_ID;
 use crate::constants::{ACCESS_SEED, ACCOUNT_VERSION, CAMPAIGN_SEED, CONFIG_SEED, POSITION_SEED, PROMO_VAULT_SEED, VOUCHER_SEED};
 use crate::errors::HodlError;
 use crate::events::PromoRedeemed;
-use crate::math::checked::{add, sub};
+use crate::math::checked::{add, sub, to_u64};
 use crate::state::{Access, Campaign, Config, Market, Position, PromoVault, VoucherReceipt};
 use crate::voucher::{require_ed25519_signature, PromoVoucher};
 
@@ -1862,9 +1927,9 @@ pub struct RedeemPromo<'info> {
     pub payer: Signer<'info>,
     pub owner: Signer<'info>,
     #[account(seeds = [ACCESS_SEED, owner.key().as_ref()], bump = access.bump)]
-    pub access: Account<'info, Access>,
+    pub access: Box<Account<'info, Access>>,
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
-    pub config: Account<'info, Config>,
+    pub config: Box<Account<'info, Config>>,
     pub market: Box<Account<'info, Market>>,
     #[account(mut, seeds = [POSITION_SEED, owner.key().as_ref()], bump)]
     pub position: AccountLoader<'info, Position>,
@@ -1951,10 +2016,10 @@ pub fn handle_redeem_promo(
         );
     }
 
-    ctx.accounts.campaign.granted = granted as u64;
+    ctx.accounts.campaign.granted = to_u64(granted)?;
     let promo_vault = &mut ctx.accounts.promo_vault;
-    promo_vault.unissued = sub(promo_vault.unissued as u128, amount as u128)? as u64;
-    promo_vault.outstanding = add(promo_vault.outstanding as u128, amount as u128)? as u64;
+    promo_vault.unissued = to_u64(sub(promo_vault.unissued as u128, amount as u128)?)?;
+    promo_vault.outstanding = to_u64(add(promo_vault.outstanding as u128, amount as u128)?)?;
     promo_vault.require_invariant()?;
 
     ctx.accounts.voucher_receipt.set_inner(VoucherReceipt {
@@ -1972,7 +2037,7 @@ pub fn handle_redeem_promo(
     // position to that market exactly as a first loan would — and `expire_promo` needs to know
     // which vault to credit when the position has never borrowed.
     position.market = ctx.accounts.market.key();
-    position.promo_balance = add(position.promo_balance as u128, amount as u128)? as u64;
+    position.promo_balance = to_u64(add(position.promo_balance as u128, amount as u128)?)?;
     position.promo_last_activity_at = now;
     emit!(PromoRedeemed {
         market: ctx.accounts.market.key(),
@@ -2041,7 +2106,7 @@ and the entry points:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 188 tests in all (`promo_redeem` is new with 8).
+Expected: every binary reports `ok`, 189 tests in all (`promo_redeem` is new with 9).
 
 - [ ] **Step 5: Commit**
 
@@ -2585,7 +2650,7 @@ Finally, promo costs roughly 4,000 CU on every health check, which puts `withdra
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 192 tests in all (`promo_health` is new with 4).
+Expected: every binary reports `ok`, 193 tests in all (`promo_health` is new with 4).
 
 - [ ] **Step 5: Commit**
 
@@ -3092,7 +3157,7 @@ and the entry points:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 198 tests in all (`promo_lifecycle` is new with 6).
+Expected: every binary reports `ok`, 199 tests in all (`promo_lifecycle` is new with 6).
 
 - [ ] **Step 5: Commit**
 
@@ -3344,7 +3409,7 @@ pub fn forfeit_promo(
         &[seeds],
     )?;
 
-    accounts.promo_vault.cash = sub(accounts.promo_vault.cash as u128, amount as u128)? as u64;
+    accounts.promo_vault.cash = to_u64(sub(accounts.promo_vault.cash as u128, amount as u128)?)?;
     accounts.promo_vault.release(amount)?;
     accounts.promo_vault.require_invariant()?;
     position.promo_balance = 0;
@@ -3391,7 +3456,7 @@ and call it immediately after the liquidatable check:
                 token_program: ctx.accounts.token_program.key(),
             },
         )?;
-        market.cash = add(market.cash as u128, forfeited as u128)? as u64;
+        market.cash = to_u64(add(market.cash as u128, forfeited as u128)?)?;
 ```
 
 `position_key` already exists in `handle_liquidate`, declared just before the events at the end — hoist that declaration to the top of the handler rather than adding a second one.
@@ -3439,7 +3504,7 @@ Run: `./scripts/test.sh --test promo_forfeit`
 Expected: 5 tests, all `ok`.
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 203 tests in all (`promo_forfeit` is new with 5).
+Expected: every binary reports `ok`, 204 tests in all (`promo_forfeit` is new with 5).
 
 Run: `cargo clippy -p hodl_loans --all-targets -- -D warnings`
 Expected: no warnings.
@@ -3675,7 +3740,7 @@ Run: `./scripts/test.sh --test promo_cap`
 Expected: 3 tests, all `ok`.
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 206 tests in all — 47 unit and 159 LiteSVM.
+Expected: every binary reports `ok`, 207 tests in all — 47 unit and 160 LiteSVM.
 
 Run: `cargo clippy -p hodl_loans --all-targets -- -D warnings`
 Expected: no warnings.
