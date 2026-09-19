@@ -9,6 +9,9 @@ use crate::state::{Config, Market, Position, PromoVault};
 /// write-off, and `close_position` all end here. The cNGN itself does not move — it stops being
 /// promised to this position and becomes free vault funds again.
 pub fn release_promo(position: &mut Position, promo_vault: &mut PromoVault) -> Result<u64> {
+    // This is the chokepoint every caller funnels through, so it asserts its own invariant
+    // rather than trusting callers to have checked it first.
+    require_keys_eq!(position.market, promo_vault.market, HodlError::MarketMismatch);
     let amount = position.promo_balance;
     promo_vault.release(amount)?;
     position.promo_balance = 0;
@@ -17,14 +20,9 @@ pub fn release_promo(position: &mut Position, promo_vault: &mut PromoVault) -> R
 
 /// Shared by `expire_promo` and `revoke_promo`: promo only leaves a quiet position, so neither
 /// can be used to strip borrowing power out from under a live loan.
-fn release_from_idle_position(
-    position: &mut Position,
-    promo_vault: &mut PromoVault,
-    market_key: Pubkey,
-) -> Result<u64> {
+fn release_from_idle_position(position: &mut Position, promo_vault: &mut PromoVault) -> Result<u64> {
     require!(position.promo_balance > 0, HodlError::AmountTooSmall);
     require!(!position.has_active_loans(), HodlError::PositionNotEmpty);
-    require_keys_eq!(position.market, market_key, HodlError::MarketMismatch);
     release_promo(position, promo_vault)
 }
 
@@ -54,7 +52,7 @@ pub fn handle_expire_promo(ctx: Context<ExpirePromo>) -> Result<()> {
         now >= position.promo_last_activity_at.saturating_add(inactivity),
         HodlError::PromoNotExpired
     );
-    let amount = release_from_idle_position(&mut position, &mut ctx.accounts.promo_vault, market_key)?;
+    let amount = release_from_idle_position(&mut position, &mut ctx.accounts.promo_vault)?;
     emit!(PromoExpired {
         market: market_key,
         position: ctx.accounts.position.key(),
@@ -87,7 +85,7 @@ pub struct RevokePromo<'info> {
 pub fn handle_revoke_promo(ctx: Context<RevokePromo>) -> Result<()> {
     let market_key = ctx.accounts.market.key();
     let mut position = ctx.accounts.position.load_mut()?;
-    let amount = release_from_idle_position(&mut position, &mut ctx.accounts.promo_vault, market_key)?;
+    let amount = release_from_idle_position(&mut position, &mut ctx.accounts.promo_vault)?;
     emit!(PromoRevoked {
         market: market_key,
         position: ctx.accounts.position.key(),

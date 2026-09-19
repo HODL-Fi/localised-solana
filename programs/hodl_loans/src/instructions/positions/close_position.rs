@@ -43,7 +43,8 @@ pub fn handle_close_position(ctx: Context<ClosePosition>) -> Result<()> {
         let market = ctx.accounts.market.as_ref().ok_or(HodlError::MarketMismatch)?;
         let promo_vault = ctx.accounts.promo_vault.as_mut().ok_or(HodlError::MarketMismatch)?;
         require_keys_eq!(position.market, market.key(), HodlError::MarketMismatch);
-        require_keys_eq!(promo_vault.market, market.key(), HodlError::MarketMismatch);
+        // `promo_vault.market == market.key()` is now enforced inside `release_promo` itself
+        // (position.market == promo_vault.market, combined with the check above).
         let amount = release_promo(&mut position, promo_vault)?;
         emit!(PromoReleased {
             market: market.key(),
