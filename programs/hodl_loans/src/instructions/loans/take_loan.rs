@@ -97,7 +97,7 @@ pub fn handle_take_loan<'info>(
                 .accounts
                 .promo_vault
                 .as_mut()
-                .ok_or(HodlError::PromoVaultInsufficient)?;
+                .ok_or(HodlError::PromoAccountsRequired)?;
             let amount = release_promo(&mut position, promo_vault)?;
             emit!(PromoExpired {
                 market: market_key,

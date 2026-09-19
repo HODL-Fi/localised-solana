@@ -79,4 +79,6 @@ pub enum HodlError {
     MarketMismatch,
     #[msg("Not enough collateral in the position")]
     InsufficientCollateral,
+    #[msg("Position holds promo: the market and promo vault accounts are required")]
+    PromoAccountsRequired,
 }

@@ -119,7 +119,7 @@ fn closing_a_position_hands_its_promo_back() {
 
     // Closing without naming the vault would strand the promo, so it is refused.
     let bare = close_position_ix(&owner, &env.admin.pubkey());
-    assert_hodl_error(env.sponsored(bare, &borrower.key), HodlError::MarketMismatch);
+    assert_hodl_error(env.sponsored(bare, &borrower.key), HodlError::PromoAccountsRequired);
     // The position, and the vault's committed promo, are both still there: the refusal did not
     // silently drop the promo along with the close.
     assert_eq!(env.promo_vault(&setup.cngn).outstanding, GRANT);
