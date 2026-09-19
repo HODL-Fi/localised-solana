@@ -62,6 +62,7 @@ fn promo_will_not_expire_early_or_under_a_live_loan() {
 fn taking_a_loan_expires_stale_promo_before_pricing_the_position() {
     let (mut env, setup) = Env::promo_ready();
     let borrower = &setup.borrower;
+    let free_before = env.promo_vault(&setup.cngn).free().unwrap();
     env.redeem_promo(borrower, &setup.cngn, 1, GRANT, 7).unwrap();
     env.warp_seconds(INACTIVITY);
     env.set_pyth_price(&setup.usdc, ONE_DOLLAR, 0);
@@ -74,7 +75,11 @@ fn taking_a_loan_expires_stale_promo_before_pricing_the_position() {
 
     env.take_loan(borrower, &setup, OWN_CEILING, 30 * DAY).unwrap();
     assert_eq!(env.position(&borrower.pubkey()).promo_balance, 0);
-    assert_eq!(env.promo_vault(&setup.cngn).outstanding, 0);
+    let vault = env.promo_vault(&setup.cngn);
+    assert_eq!(vault.outstanding, 0);
+    // Release does not credit the campaign back — same conservation property as every other
+    // release path: `free()` rises by GRANT rather than merely returning to `free_before`.
+    assert_eq!(vault.free().unwrap(), free_before + GRANT);
 }
 
 #[test]
@@ -83,6 +88,7 @@ fn an_admin_can_revoke_promo_without_waiting() {
     let borrower = &setup.borrower;
     let owner = borrower.pubkey();
     let admin = env.admin.pubkey();
+    let free_before = env.promo_vault(&setup.cngn).free().unwrap();
     env.redeem_promo(borrower, &setup.cngn, 1, GRANT, 7).unwrap();
 
     let stranger = env.funded_keypair();
@@ -91,7 +97,10 @@ fn an_admin_can_revoke_promo_without_waiting() {
 
     send(&mut env.svm, &[revoke_promo_ix(&admin, &setup.cngn, &owner)], &[&env.admin]).unwrap();
     assert_eq!(env.position(&owner).promo_balance, 0);
-    assert_eq!(env.promo_vault(&setup.cngn).outstanding, 0);
+    let vault = env.promo_vault(&setup.cngn);
+    assert_eq!(vault.outstanding, 0);
+    // Same conservation property as every other release path: `free()` rises by GRANT.
+    assert_eq!(vault.free().unwrap(), free_before + GRANT);
 
     // Revocation is still barred while a loan is live, so it cannot force a liquidation.
     let other = env.new_borrower();
@@ -160,6 +169,25 @@ fn the_promo_clock_restarts_only_when_the_last_loan_closes() {
     env.mint_to(&setup.cngn, &setup.borrower_cngn, 1_000 * ONE_CNGN);
     env.repay(&setup, 1, 2_000 * ONE_CNGN).unwrap();
     assert_eq!(env.position(&owner).promo_last_activity_at, env.now());
+}
+
+#[test]
+fn expiring_an_already_released_promo_is_rejected() {
+    let (mut env, setup) = Env::promo_ready();
+    let borrower = &setup.borrower;
+    let owner = borrower.pubkey();
+    env.redeem_promo(borrower, &setup.cngn, 1, GRANT, 7).unwrap();
+    env.warp_seconds(INACTIVITY);
+    let stranger = env.funded_keypair();
+    send(&mut env.svm, &[expire_promo_ix(&setup.cngn, &owner)], &[&stranger]).unwrap();
+    assert_eq!(env.position(&owner).promo_balance, 0);
+    // Unlike the never-promoed position in `promo_will_not_expire_early_or_under_a_live_loan`,
+    // `position.market` is set here (redemption bound it) — the chokepoint still rejects on the
+    // amount check before it ever looks at the market.
+    assert_ne!(env.position(&owner).market, anchor_lang::prelude::Pubkey::default());
+
+    let again = expire_promo_ix(&setup.cngn, &owner);
+    assert_hodl_error(send(&mut env.svm, &[again], &[&stranger]), HodlError::AmountTooSmall);
 }
 
 #[test]
