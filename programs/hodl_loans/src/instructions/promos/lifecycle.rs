@@ -48,6 +48,9 @@ pub fn handle_expire_promo(ctx: Context<ExpirePromo>) -> Result<()> {
     let market_key = ctx.accounts.market.key();
     let inactivity = ctx.accounts.market.promo_inactivity_seconds;
     let mut position = ctx.accounts.position.load_mut()?;
+    // `saturating_add` can only push the deadline later (never wrap it earlier), so this fails
+    // safe on overflow — it depends on `MarketParams::validate` requiring `inactivity > 0`, so
+    // the two must not drift apart.
     require!(
         now >= position.promo_last_activity_at.saturating_add(inactivity),
         HodlError::PromoNotExpired

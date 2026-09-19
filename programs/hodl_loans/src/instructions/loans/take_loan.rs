@@ -89,6 +89,9 @@ pub fn handle_take_loan<'info>(
         let index = position.free_loan_index().ok_or(HodlError::NoFreeLoanSlot)?;
 
         // Spec §10 step 3: a quiet position's promo expires before it can support a new loan.
+        // `saturating_add` can only push the deadline later (never wrap it earlier), so this
+        // fails safe on overflow — it depends on `MarketParams::validate` requiring
+        // `promo_inactivity_seconds > 0`, so the two must not drift apart.
         if position.promo_balance > 0
             && !position.has_active_loans()
             && now >= position.promo_last_activity_at.saturating_add(market.promo_inactivity_seconds)

@@ -76,7 +76,9 @@ impl MarketParams {
         require!(self.ngn_max_stale_slots > 0, HodlError::InvalidParameters);
         require!(self.ngn_min_samples >= 1, HodlError::InvalidParameters);
         require!(self.ngn_max_spread_bps <= MAX_BPS, HodlError::InvalidParameters);
-        require!(self.promo_inactivity_seconds >= 0, HodlError::InvalidParameters);
+        // `0` would mean promo is expirable in the same slot as the redemption that granted it —
+        // the inverse of an admin's likely intent ("disabled / never expires").
+        require!(self.promo_inactivity_seconds > 0, HodlError::InvalidParameters);
         require!(self.bad_debt_dust_usd <= MAX_BAD_DEBT_DUST_USD, HodlError::InvalidParameters);
         Ok(())
     }
