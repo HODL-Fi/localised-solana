@@ -187,6 +187,32 @@ fn redemption_needs_an_active_whitelist() {
 }
 
 #[test]
+fn the_expiry_boundary_is_the_only_thing_separating_redeem_from_close() {
+    let (mut env, cngn, borrower) = ready();
+    let campaign = campaign_pda(&cngn, 1);
+    let admin = env.admin.pubkey();
+    let signer = env.promo_signer.insecure_clone();
+    let expiry = env.now() + 86_400;
+
+    env.redeem_voucher_signed_by(&signer, &borrower, &cngn, 1, GRANT, 7, expiry).unwrap();
+
+    // Warp to the exact expiry second. `redeem_promo` allows `now <= voucher_expiry` and
+    // `close_voucher_receipt` requires `now > voucher_expiry` (strict) — these must be exact
+    // complements, or the boundary second lets a single transaction replay the voucher via
+    // [redeem, close, redeem, close, ...].
+    env.warp_seconds(expiry - env.now());
+    assert_eq!(env.now(), expiry);
+
+    // Not yet closable at the boundary second.
+    let close = close_voucher_receipt_ix(&admin, &campaign, 7);
+    assert_hodl_error(send(&mut env.svm, &[close], &[&env.admin]), HodlError::PromoNotExpired);
+
+    // A fresh voucher at the same instant still redeems successfully.
+    env.redeem_voucher_signed_by(&signer, &borrower, &cngn, 1, GRANT, 8, expiry).unwrap();
+    assert_eq!(env.position(&borrower.pubkey()).promo_balance, 2 * GRANT);
+}
+
+#[test]
 fn a_receipt_is_closable_once_its_voucher_can_no_longer_be_used() {
     let (mut env, cngn, borrower) = ready();
     let campaign = campaign_pda(&cngn, 1);

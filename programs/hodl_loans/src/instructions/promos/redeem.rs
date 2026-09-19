@@ -152,6 +152,12 @@ pub struct CloseVoucherReceipt<'info> {
 /// Spec §12. Once a voucher can no longer be redeemed, its receipt has nothing left to prevent,
 /// so anyone may close it and return the rent to whoever paid it.
 pub fn handle_close_voucher_receipt(ctx: Context<CloseVoucherReceipt>) -> Result<()> {
+    // Must stay strict `>`: `redeem_promo` allows `now <= voucher_expiry`, so these two checks
+    // are exact complements. A `>=` here would let the boundary second (`now == voucher_expiry`)
+    // satisfy both guards at once, so a single transaction could loop
+    // [redeem, close, redeem, close, ...] and replay the same voucher repeatedly, since the
+    // Ed25519 instruction is never consumed and each close frees the receipt PDA for the next
+    // `init`.
     require!(
         Clock::get()?.unix_timestamp > ctx.accounts.voucher_receipt.voucher_expiry,
         HodlError::PromoNotExpired
