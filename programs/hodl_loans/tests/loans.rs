@@ -145,7 +145,9 @@ fn price_accounts_must_match_the_positions_slots() {
 
     // The NGN feed must be the market's.
     let mut instruction = take(good.clone());
-    instruction.accounts[7] = AccountMeta::new_readonly(pyth_account(&setup.usdc), false);
+    // Found by key rather than by index: the account list grows between plans.
+    let slot = instruction.accounts.iter().position(|a| a.pubkey == ngn_feed()).unwrap();
+    instruction.accounts[slot] = AccountMeta::new_readonly(pyth_account(&setup.usdc), false);
     assert_hodl_error(send(&mut env.svm, &[instruction], &[&env.admin, &setup.borrower.key]), HodlError::PriceAccountMismatch);
 
     send(&mut env.svm, &[take(good)], &[&env.admin, &setup.borrower.key]).unwrap();

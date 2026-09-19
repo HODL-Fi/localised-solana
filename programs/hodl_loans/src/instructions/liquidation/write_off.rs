@@ -6,13 +6,13 @@ use crate::events::LoanWrittenOff;
 use crate::math::checked::{add, sub, to_u64};
 use crate::math::loan::{accrued_lp_interest, lp_contribution};
 use crate::state::{Config, Market, Position};
-use crate::valuation::load_valuation;
+use crate::valuation::{load_valuation, ValuationRequest};
 
 #[derive(Accounts)]
 pub struct WriteOffLoan<'info> {
     pub admin: Signer<'info>,
     #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ HodlError::Unauthorized)]
-    pub config: Account<'info, Config>,
+    pub config: Box<Account<'info, Config>>,
     #[account(mut)]
     pub position: AccountLoader<'info, Position>,
     #[account(
@@ -51,14 +51,18 @@ pub fn handle_write_off_loan<'info>(ctx: Context<'info, WriteOffLoan<'info>>, lo
     require_keys_eq!(position.market, market_key, HodlError::MarketMismatch);
     let index = position.loan_index(loan_id).ok_or(HodlError::LoanNotFound)?;
 
+    let ngn_feed = ctx.accounts.ngn_feed.to_account_info();
     let valuation = load_valuation(
-        ctx.program_id,
         &position,
-        market,
-        &ctx.accounts.ngn_feed.to_account_info(),
-        ctx.remaining_accounts,
-        0,
-        &clock,
+        &ValuationRequest {
+            program_id: ctx.program_id,
+            market,
+            ngn_feed: &ngn_feed,
+            remaining: ctx.remaining_accounts,
+            extra_debt: 0,
+            promo_cap_bps: ctx.accounts.config.promo_cap_bps,
+            clock: &clock,
+        },
     )?;
     require!(valuation.health.is_liquidatable(), HodlError::NotLiquidatable);
     require!(

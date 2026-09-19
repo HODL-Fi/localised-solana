@@ -97,31 +97,37 @@ pub struct Valuation {
 }
 
 /// Spec §8 valuation of a position, optionally including `extra_debt` about to be borrowed.
-pub fn load_valuation(
-    program_id: &Pubkey,
-    position: &Position,
-    market: &Market,
-    ngn_feed: &AccountInfo,
-    remaining: &[AccountInfo],
-    extra_debt: u64,
-    clock: &Clock,
-) -> Result<Valuation> {
+/// Everything a health check needs besides the position itself. Grouped rather than passed
+/// positionally: the list grew past what a reader can keep straight, and `extra_debt` and
+/// `promo_cap_bps` are both small integers that would transpose silently.
+pub struct ValuationRequest<'a, 'info> {
+    pub program_id: &'a Pubkey,
+    pub market: &'a Market,
+    pub ngn_feed: &'a AccountInfo<'info>,
+    pub remaining: &'a [AccountInfo<'info>],
+    /// Debt to count on top of the position's own — the loan `take_loan` is about to write.
+    pub extra_debt: u64,
+    pub promo_cap_bps: u16,
+    pub clock: &'a Clock,
+}
+
+pub fn load_valuation(position: &Position, request: &ValuationRequest) -> Result<Valuation> {
+    let ValuationRequest { program_id, market, ngn_feed, remaining, extra_debt, promo_cap_bps, clock } = *request;
     let collateral = load_collateral_values(program_id, position, remaining, clock)?;
     let ngn = read_ngn_price(ngn_feed, market, clock)?;
     let debt = add(total_debt(position, clock.unix_timestamp)?, extra_debt as u128)?;
-    let health = compute_health(&collateral, debt, market.decimals, ngn)?;
+    let health = compute_health(
+        &collateral,
+        debt,
+        market.decimals,
+        ngn,
+        position.promo_balance,
+        promo_cap_bps,
+    )?;
     Ok(Valuation { health, collateral, ngn })
 }
 
 /// Spec §8 health for a position, optionally including `extra_debt` about to be borrowed.
-pub fn load_health(
-    program_id: &Pubkey,
-    position: &Position,
-    market: &Market,
-    ngn_feed: &AccountInfo,
-    remaining: &[AccountInfo],
-    extra_debt: u64,
-    clock: &Clock,
-) -> Result<Health> {
-    Ok(load_valuation(program_id, position, market, ngn_feed, remaining, extra_debt, clock)?.health)
+pub fn load_health(position: &Position, request: &ValuationRequest) -> Result<Health> {
+    Ok(load_valuation(position, request)?.health)
 }

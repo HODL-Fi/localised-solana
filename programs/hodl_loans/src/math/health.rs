@@ -29,6 +29,10 @@ impl CollateralValue {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Health {
     pub own_value: u128,
+    /// Promo actually counted: the position's promo valued at the NGN bid, capped at
+    /// `promo_cap_bps` of the collateral the borrower put up themselves. It lifts both limits
+    /// below, and is zero for a position holding no collateral of its own.
+    pub promo_counted: u128,
     pub borrow_limit: u128,
     pub liquidation_line: u128,
     pub debt: u128,
@@ -50,6 +54,8 @@ pub fn compute_health(
     debt_cngn: u128,
     cngn_decimals: u8,
     ngn: UsdPrice,
+    promo_balance: u64,
+    promo_cap_bps: u16,
 ) -> Result<Health> {
     let mut health = Health::default();
     for c in collateral {
@@ -61,6 +67,15 @@ pub fn compute_health(
             mul_div_floor(value, c.liquidation_threshold_bps as u128, BPS)?,
         )?;
     }
+    // Spec §12: promo is a topping on collateral the borrower owns, never a substitute for it.
+    // The cap is a fraction of `own_value`, so a position with nothing of its own counts none of
+    // it — which is what makes defaulting a loss for the borrower rather than a way to profit.
+    let promo_value = token_value(promo_balance as u128, cngn_decimals, ngn.lower())?;
+    let cap = mul_div_floor(health.own_value, promo_cap_bps as u128, BPS)?;
+    health.promo_counted = promo_value.min(cap);
+    health.borrow_limit = add(health.borrow_limit, health.promo_counted)?;
+    health.liquidation_line = add(health.liquidation_line, health.promo_counted)?;
+
     health.debt = token_value_ceil(debt_cngn, cngn_decimals, ngn.upper()?)?;
     Ok(health)
 }
@@ -99,7 +114,7 @@ mod tests {
             },
         ];
         // Debt: 1,600,000 cNGN = $1,000.
-        let h = compute_health(&collateral, 1_600_000_000_000, 6, ngn()).unwrap();
+        let h = compute_health(&collateral, 1_600_000_000_000, 6, ngn(), 0, 0).unwrap();
         assert_eq!(h.own_value, 1_990 * USD);
         assert_eq!(h.borrow_limit, 1_393 * USD);
         assert_eq!(h.liquidation_line, 1_791 * USD);
@@ -119,12 +134,12 @@ mod tests {
             liquidation_threshold_bps: 9_000,
         }];
         // $700 of debt exactly at the 70% limit is healthy.
-        let at_limit = compute_health(&collateral, 1_120_000_000_000, 6, ngn()).unwrap();
+        let at_limit = compute_health(&collateral, 1_120_000_000_000, 6, ngn(), 0, 0).unwrap();
         assert_eq!(at_limit.debt, 700 * USD);
         assert!(at_limit.is_healthy());
         // A 1% spread pushes the same debt over the limit.
         let wide = UsdPrice { price: 625_000_000, conf: 6_250_000 };
-        let over = compute_health(&collateral, 1_120_000_000_000, 6, wide).unwrap();
+        let over = compute_health(&collateral, 1_120_000_000_000, 6, wide, 0, 0).unwrap();
         assert_eq!(over.debt, 707 * USD);
         assert!(!over.is_healthy());
     }
@@ -140,13 +155,13 @@ mod tests {
             ltv_bps: 5_000,
             liquidation_threshold_bps: 7_500,
         }];
-        let h = compute_health(&split, 0, 6, ngn()).unwrap();
+        let h = compute_health(&split, 0, 6, ngn(), 0, 0).unwrap();
         assert_eq!(h.own_value, 30_000 * USD);
         assert_eq!(h.borrow_limit, 15_000 * USD);
         assert_eq!(h.liquidation_line, 22_500 * USD);
         // The same holding at multiplier 1 is worth the raw balance.
         let plain = [CollateralValue { multiplier: MULTIPLIER_SCALE, ..split[0] }];
-        assert_eq!(compute_health(&plain, 0, 6, ngn()).unwrap().own_value, 20_000 * USD);
+        assert_eq!(compute_health(&plain, 0, 6, ngn(), 0, 0).unwrap().own_value, 20_000 * USD);
     }
 
     #[test]
@@ -167,10 +182,10 @@ mod tests {
 
     #[test]
     fn no_collateral_means_any_debt_is_unhealthy() {
-        let h = compute_health(&[], 1, 6, ngn()).unwrap();
+        let h = compute_health(&[], 1, 6, ngn(), 0, 0).unwrap();
         assert_eq!(h.borrow_limit, 0);
         assert!(!h.is_healthy());
         assert!(h.is_liquidatable());
-        assert!(compute_health(&[], 0, 6, ngn()).unwrap().is_healthy());
+        assert!(compute_health(&[], 0, 6, ngn(), 0, 0).unwrap().is_healthy());
     }
 }

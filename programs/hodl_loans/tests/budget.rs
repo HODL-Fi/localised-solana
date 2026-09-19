@@ -41,22 +41,22 @@ fn full_position_stays_under_the_default_compute_budget() {
         env.set_pyth_price(m, price, conf);
     }
 
-    // 10th (last) loan slot: the health check walks all 8 collateral slots and the 9 existing
-    // overdue loans. Measured 66,126 CU.
+    // 10th (last) loan slot: the health check walks all 8 collateral slots, the promo cap and
+    // the 9 existing overdue loans. Measured 67,943 CU.
     let prices = env.price_accounts(&owner);
     let ixn = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 1_000 * ONE_CNGN, 30 * DAY, prices);
     let cu = send_cu(&mut env.svm, &[ixn], &[&env.admin, &setup.borrower.key]).unwrap();
-    assert!(cu < 75_000, "take_loan at 8 collateral slots / 9 existing overdue loans used {cu} CU");
+    assert!(cu < 85_000, "take_loan at 8 collateral slots / 9 existing overdue loans used {cu} CU");
 
-    // withdraw_collateral's post-withdrawal health check walks the same 8 slots and now 10
-    // loans. Measured 70,170 CU.
+    // withdraw_collateral's post-withdrawal health check walks the same 8 slots, the promo cap
+    // and now 10 loans. Measured 71,986 CU.
     let token = env.create_token_account(&setup.usdc, &owner);
     let wd = withdraw_collateral_ix(&owner, &setup.usdc, &SPL_TOKEN, &token, Some(&setup.cngn), ONE_USDC, env.price_accounts(&owner));
     let cu = send_cu(&mut env.svm, &[wd], &[&env.admin, &setup.borrower.key]).unwrap();
-    assert!(cu < 75_000, "withdraw_collateral at 8 collateral slots / 10 loans used {cu} CU");
+    assert!(cu < 85_000, "withdraw_collateral at 8 collateral slots / 10 loans used {cu} CU");
 
     // liquidate prices all 8 collateral slots and all 10 loans, then moves two token types.
-    // Measured 83,018 CU. Crash every collateral price to $0.001 so the position is liquidatable.
+    // Measured 86,320 CU. Crash every collateral price to $0.001 so the position is liquidatable.
     for m in &mints {
         env.set_pyth_price(m, 100_000, 0);
     }
@@ -71,7 +71,7 @@ fn full_position_stays_under_the_default_compute_budget() {
     assert!(cu < 100_000, "liquidate at 8 collateral slots / 10 loans used {cu} CU");
 
     // repay_loan needs no price accounts but still scans all 10 loan slots to find loan 0.
-    // Measured 19,215 CU.
+    // Measured 19,239 CU.
     env.mint_to(&setup.cngn, &setup.borrower_cngn, 100_000 * ONE_CNGN);
     let rp = repay_loan_ix(&owner, &owner, &setup.cngn, &setup.borrower_cngn, 0, u64::MAX);
     let cu = send_cu(&mut env.svm, &[rp], &[&env.admin, &setup.borrower.key]).unwrap();
@@ -102,8 +102,8 @@ fn an_all_xstock_position_stays_under_the_default_compute_budget() {
     }
 
     // 10th (last) loan slot: the health check unpacks 8 mints on top of the usual 8 collateral
-    // slots and 9 existing loans. **Measured 72,533 CU — this is the figure spec §15 points at,
-    // and the only place it is written down.**
+    // slots, the promo cap and 9 existing loans. **Measured 75,850 CU — this is the figure spec
+    // §15 points at, and the only place it is written down.**
     //
     // It is a floor for mainnet, not an estimate of it: `MintKind::XStock` initializes a
     // metadata *pointer* but writes no `TokenMetadata` extension, so the fixture mint is

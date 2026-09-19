@@ -821,6 +821,7 @@ pub fn take_loan_ix(owner: &Pubkey, mint: &Pubkey, owner_token: &Pubkey, amount:
         hodl_loans::accounts::TakeLoan {
             owner: *owner,
             access: access_pda(owner),
+            config: config_pda(),
             position: position_pda(owner),
             market: market_pda(mint),
             mint: *mint,
@@ -967,6 +968,7 @@ pub fn withdraw_collateral_ix(
         hodl_loans::accounts::WithdrawCollateral {
             owner: *owner,
             access: access_pda(owner),
+            config: config_pda(),
             position: position_pda(owner),
             collateral: collateral_pda(mint),
             mint: *mint,
@@ -1043,6 +1045,7 @@ pub fn liquidate_ix(
         hodl_loans::instruction::Liquidate { loan_id, amount },
         hodl_loans::accounts::Liquidate {
             liquidator: *liquidator,
+            config: config_pda(),
             position: position_pda(position_owner),
             market: market_pda(mint),
             mint: *mint,
@@ -1540,5 +1543,29 @@ impl Env {
 
     pub fn voucher_receipt(&self, campaign: &Pubkey, nonce: u64) -> hodl_loans::VoucherReceipt {
         self.fetch(&voucher_pda(campaign, nonce))
+    }
+}
+
+// ---- Promo in the health check (Task 5) ----
+
+impl Env {
+    /// `Env::loan_ready` plus a funded promo vault and one open campaign, so a borrower can
+    /// hold promo while borrowing against real collateral.
+    pub fn promo_ready() -> (Self, LoanSetup) {
+        let (mut env, setup) = Self::loan_ready();
+        let admin = env.admin.pubkey();
+        let source = env.create_token_account(&setup.cngn, &admin);
+        env.mint_to(&setup.cngn, &source, 10_000_000 * ONE_CNGN);
+        let fund = fund_promo_vault_ix(&admin, &setup.cngn, &source, 10_000_000 * ONE_CNGN);
+        send(&mut env.svm, &[fund], &[&env.admin]).expect("fund promo vault");
+        env.create_campaign(&setup.cngn, 1, 5_000_000 * ONE_CNGN);
+        (env, setup)
+    }
+
+    /// Raises the per-position promo ceiling, for the cases that need more than the default.
+    pub fn set_max_promo_per_position(&mut self, mint: &Pubkey, max: u64) {
+        let params = hodl_loans::MarketParams { max_promo_per_position: max, ..default_market_params() };
+        let instruction = update_market_params_ix(&self.admin.pubkey(), mint, params);
+        send(&mut self.svm, &[instruction], &[&self.admin]).expect("update market params");
     }
 }

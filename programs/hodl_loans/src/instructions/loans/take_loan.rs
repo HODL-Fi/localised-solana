@@ -1,20 +1,23 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
-use crate::constants::{ACCESS_SEED, BPS, MARKET_SEED, MIN_TENURE, POSITION_SEED};
+use crate::constants::{ACCESS_SEED, BPS, CONFIG_SEED, MARKET_SEED, MIN_TENURE, POSITION_SEED};
 use crate::errors::HodlError;
 use crate::events::LoanOpened;
 use crate::math::checked::add;
 use crate::math::loan::lp_contribution;
-use crate::state::{Access, LoanSlot, Market, Position};
+use crate::state::{Access, Config, LoanSlot, Market, Position};
 use crate::token::transfer::transfer_from_vault;
-use crate::valuation::load_health;
+use crate::valuation::{load_health, ValuationRequest};
 
 #[derive(Accounts)]
 pub struct TakeLoan<'info> {
     pub owner: Signer<'info>,
     #[account(seeds = [ACCESS_SEED, owner.key().as_ref()], bump = access.bump)]
     pub access: Account<'info, Access>,
+    /// Carries `promo_cap_bps`, which bounds how much of a position's promo counts (spec §12).
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
     #[account(mut, seeds = [POSITION_SEED, owner.key().as_ref()], bump)]
     pub position: AccountLoader<'info, Position>,
     #[account(
@@ -75,14 +78,18 @@ pub fn handle_take_loan<'info>(
             HodlError::MarketMismatch
         );
         let index = position.free_loan_index().ok_or(HodlError::NoFreeLoanSlot)?;
+        let ngn_feed = ctx.accounts.ngn_feed.to_account_info();
         let health = load_health(
-            ctx.program_id,
             &position,
-            market,
-            &ctx.accounts.ngn_feed.to_account_info(),
-            ctx.remaining_accounts,
-            amount,
-            &clock,
+            &ValuationRequest {
+                program_id: ctx.program_id,
+                market,
+                ngn_feed: &ngn_feed,
+                remaining: ctx.remaining_accounts,
+                extra_debt: amount,
+                promo_cap_bps: ctx.accounts.config.promo_cap_bps,
+                clock: &clock,
+            },
         )?;
         require!(health.is_healthy(), HodlError::Unhealthy);
 

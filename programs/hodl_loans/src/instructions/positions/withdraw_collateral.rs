@@ -1,19 +1,22 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
-use crate::constants::{ACCESS_SEED, COLLATERAL_SEED, POSITION_SEED};
+use crate::constants::{ACCESS_SEED, COLLATERAL_SEED, CONFIG_SEED, POSITION_SEED};
 use crate::errors::HodlError;
 use crate::events::CollateralWithdrawn;
-use crate::state::{Access, CollateralAsset, Market, Position};
+use crate::state::{Access, CollateralAsset, Config, Market, Position};
 use crate::token::extensions::require_collateral_mint_on_exit;
 use crate::token::transfer::transfer_from_vault;
-use crate::valuation::load_health;
+use crate::valuation::{load_health, ValuationRequest};
 
 #[derive(Accounts)]
 pub struct WithdrawCollateral<'info> {
     pub owner: Signer<'info>,
     #[account(seeds = [ACCESS_SEED, owner.key().as_ref()], bump = access.bump)]
     pub access: Account<'info, Access>,
+    /// Carries `promo_cap_bps`, which bounds how much of a position's promo counts (spec §12).
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
     #[account(mut, seeds = [POSITION_SEED, owner.key().as_ref()], bump)]
     pub position: AccountLoader<'info, Position>,
     #[account(mut, seeds = [COLLATERAL_SEED, mint.key().as_ref()], bump = collateral.bump, has_one = mint, has_one = vault)]
@@ -54,14 +57,18 @@ pub fn handle_withdraw_collateral<'info>(ctx: Context<'info, WithdrawCollateral<
                 return err!(HodlError::PriceAccountMismatch);
             };
             require_keys_eq!(position.market, market.key(), HodlError::MarketMismatch);
+            let ngn_feed = ngn_feed.to_account_info();
             let health = load_health(
-                ctx.program_id,
                 &position,
-                market,
-                &ngn_feed.to_account_info(),
-                ctx.remaining_accounts,
-                0,
-                &Clock::get()?,
+                &ValuationRequest {
+                    program_id: ctx.program_id,
+                    market,
+                    ngn_feed: &ngn_feed,
+                    remaining: ctx.remaining_accounts,
+                    extra_debt: 0,
+                    promo_cap_bps: ctx.accounts.config.promo_cap_bps,
+                    clock: &Clock::get()?,
+                },
             )?;
             require!(health.is_healthy(), HodlError::Unhealthy);
         }

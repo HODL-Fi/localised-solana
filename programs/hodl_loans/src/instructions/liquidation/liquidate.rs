@@ -1,21 +1,24 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
-use crate::constants::{COLLATERAL_SEED, MARKET_SEED};
+use crate::constants::{COLLATERAL_SEED, CONFIG_SEED, MARKET_SEED};
 use crate::errors::HodlError;
 use crate::events::{LoanLiquidated, LoanPartiallyLiquidated};
 use crate::math::checked::{add, sub, to_u64};
 use crate::math::liquidation::{principal_share, seize_for_repayment};
 use crate::math::loan::{accrued_lp_interest, loan_balance, lp_contribution, reserve_share};
-use crate::state::{CollateralAsset, Market, Position};
+use crate::state::{CollateralAsset, Config, Market, Position};
 use crate::token::extensions::require_collateral_mint_on_exit;
 use crate::token::transfer::{transfer_from_user, transfer_from_vault};
-use crate::valuation::load_valuation;
+use crate::valuation::{load_valuation, ValuationRequest};
 
 /// Open to anyone: no `Access` account, so a liquidation bot needs no whitelist.
 #[derive(Accounts)]
 pub struct Liquidate<'info> {
     pub liquidator: Signer<'info>,
+    /// Carries `promo_cap_bps`, which bounds how much of a position's promo counts (spec §12).
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
     #[account(mut)]
     pub position: AccountLoader<'info, Position>,
     #[account(
@@ -82,14 +85,18 @@ pub fn handle_liquidate<'info>(ctx: Context<'info, Liquidate<'info>>, loan_id: u
             .collateral_index(&collateral_mint)
             .ok_or(HodlError::InsufficientCollateral)?;
 
+        let ngn_feed = ctx.accounts.ngn_feed.to_account_info();
         let valuation = load_valuation(
-            ctx.program_id,
             &position,
-            market,
-            &ctx.accounts.ngn_feed.to_account_info(),
-            ctx.remaining_accounts,
-            0,
-            &clock,
+            &ValuationRequest {
+                program_id: ctx.program_id,
+                market,
+                ngn_feed: &ngn_feed,
+                remaining: ctx.remaining_accounts,
+                extra_debt: 0,
+                promo_cap_bps: ctx.accounts.config.promo_cap_bps,
+                clock: &clock,
+            },
         )?;
         require!(valuation.health.is_liquidatable(), HodlError::NotLiquidatable);
         // `load_valuation` returns one value per used slot, in slot order.
