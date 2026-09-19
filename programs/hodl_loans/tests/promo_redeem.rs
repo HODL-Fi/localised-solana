@@ -213,6 +213,27 @@ fn the_expiry_boundary_is_the_only_thing_separating_redeem_from_close() {
 }
 
 #[test]
+fn redemption_cannot_rebind_a_position_already_bound_to_another_market() {
+    let (mut env, setup) = Env::loan_ready();
+    env.take_loan(&setup.borrower, &setup, 1_000 * ONE_CNGN, 30 * 86_400).unwrap();
+    assert_eq!(env.position(&setup.borrower.pubkey()).market, market_pda(&setup.cngn));
+
+    // A second market, with its own funded promo vault and campaign.
+    let other = env.create_mint(MintKind::CngnLike, 6);
+    env.create_market_with_promo(&other);
+    let admin = env.admin.pubkey();
+    let source = env.create_token_account(&other, &admin);
+    env.mint_to(&other, &source, FUNDING);
+    send(&mut env.svm, &[fund_promo_vault_ix(&admin, &other, &source, FUNDING)], &[&env.admin]).unwrap();
+    env.create_campaign(&other, 1, BUDGET);
+
+    // The position is already bound to `setup.cngn` from the loan above; redeeming against the
+    // second market's own valid voucher must not silently rebind it.
+    let result = env.redeem_promo(&setup.borrower, &other, 1, GRANT, 7);
+    assert_hodl_error(result, HodlError::MarketMismatch);
+}
+
+#[test]
 fn a_receipt_is_closable_once_its_voucher_can_no_longer_be_used() {
     let (mut env, cngn, borrower) = ready();
     let campaign = campaign_pda(&cngn, 1);
