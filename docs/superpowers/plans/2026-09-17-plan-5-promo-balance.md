@@ -1906,7 +1906,7 @@ pub struct VoucherReceipt {
 }
 ```
 
-Create `programs/hodl_loans/src/instructions/promos/redeem.rs`. Note the one line that is *not* in this task — `position.market = ...` arrives in Task 6, with expiry:
+Create `programs/hodl_loans/src/instructions/promos/redeem.rs`:
 
 ```rust
 use anchor_lang::prelude::*;
@@ -3002,14 +3002,7 @@ pub fn handle_revoke_promo(ctx: Context<RevokePromo>) -> Result<()> {
 }
 ```
 
-Bind the market when a voucher is redeemed, in `programs/hodl_loans/src/instructions/promos/redeem.rs`, immediately before `position.promo_balance` is increased:
-
-```rust
-    // Promo is backed by one market's vault and counted against its cap, so redeeming binds the
-    // position to that market exactly as a first loan would — and `expire_promo` needs to know
-    // which vault to credit when the position has never borrowed.
-    position.market = ctx.accounts.market.key();
-```
+The market binding in `redeem.rs` that this step used to add — `position.market = ctx.accounts.market.key();` and its comment — is already there: Task 4's code block carries it, so do not add it a second time.
 
 In `programs/hodl_loans/src/instructions/loans/take_loan.rs`, add the optional account after `config`:
 
