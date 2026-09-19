@@ -1483,7 +1483,7 @@ fn ed25519_instruction_covers(data: &[u8], signer: &Pubkey, message: &[u8]) -> b
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 180 tests in all (the unit suite is now 47). (Higher than this plan was first generated with, because review rounds added tests: +1 from Task 3 onward for the Task 2 multi-campaign double-close test pinning `close_campaign`'s `active` guard, and +1 more from Task 4 onward for the same-transaction voucher-replay test. The totals below already include both.)
+Expected: every binary reports `ok`, 180 tests in all (the unit suite is now 47). (Higher than this plan was first generated with, because review rounds added tests: +1 from Task 3 onward for the Task 2 multi-campaign double-close test pinning `close_campaign`'s `active` guard, and +5 more from Task 4 onward for the same-transaction voucher-replay test plus the four its fix round added (expiry boundary, market rebinding, market paused, zero amount). The totals below already include all of them.)
 
 - [ ] **Step 5: Commit**
 
@@ -2106,7 +2106,7 @@ and the entry points:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 189 tests in all (`promo_redeem` is new with 9).
+Expected: every binary reports `ok`, 193 tests in all (`promo_redeem` is new with 13).
 
 - [ ] **Step 5: Commit**
 
@@ -2650,7 +2650,7 @@ Finally, promo costs roughly 4,000 CU on every health check, which puts `withdra
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 193 tests in all (`promo_health` is new with 4).
+Expected: every binary reports `ok`, 197 tests in all (`promo_health` is new with 4).
 
 - [ ] **Step 5: Commit**
 
@@ -3150,7 +3150,7 @@ and the entry points:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 199 tests in all (`promo_lifecycle` is new with 6).
+Expected: every binary reports `ok`, 203 tests in all (`promo_lifecycle` is new with 6).
 
 - [ ] **Step 5: Commit**
 
@@ -3497,7 +3497,7 @@ Run: `./scripts/test.sh --test promo_forfeit`
 Expected: 5 tests, all `ok`.
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 204 tests in all (`promo_forfeit` is new with 5).
+Expected: every binary reports `ok`, 208 tests in all (`promo_forfeit` is new with 5).
 
 Run: `cargo clippy -p hodl_loans --all-targets -- -D warnings`
 Expected: no warnings.
@@ -3733,7 +3733,7 @@ Run: `./scripts/test.sh --test promo_cap`
 Expected: 3 tests, all `ok`.
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 207 tests in all — 47 unit and 160 LiteSVM.
+Expected: every binary reports `ok`, 211 tests in all — 47 unit and 164 LiteSVM.
 
 Run: `cargo clippy -p hodl_loans --all-targets -- -D warnings`
 Expected: no warnings.
