@@ -161,3 +161,24 @@ fn the_promo_clock_restarts_only_when_the_last_loan_closes() {
     env.repay(&setup, 1, 2_000 * ONE_CNGN).unwrap();
     assert_eq!(env.position(&owner).promo_last_activity_at, env.now());
 }
+
+#[test]
+fn take_loan_requires_the_promo_vault_when_promo_is_due_for_release() {
+    let (mut env, setup) = Env::promo_ready();
+    let borrower = &setup.borrower;
+    let owner = borrower.pubkey();
+    env.redeem_promo(borrower, &setup.cngn, 1, GRANT, 7).unwrap();
+    env.warp_seconds(INACTIVITY);
+    env.set_pyth_price(&setup.usdc, ONE_DOLLAR, 0);
+    env.set_ngn_price(NGN_USD, NGN_SPREAD);
+
+    // Without the fix, an `if let Some(...)` refactor here would silently let the stale promo
+    // survive into the health check ~30 lines later — this pins the `ok_or` guard directly.
+    let prices = env.price_accounts(&owner);
+    let borrow = take_loan_ix_no_promo_vault(&owner, &setup.cngn, &setup.borrower_cngn, 1_000 * ONE_CNGN, 30 * DAY, prices);
+    let result = send(&mut env.svm, &[borrow], &[&env.admin, &borrower.key]);
+    assert_hodl_error(result, HodlError::PromoAccountsRequired);
+
+    // The promo is untouched — it did not silently survive past the missing-vault guard either.
+    assert_eq!(env.position(&owner).promo_balance, GRANT);
+}

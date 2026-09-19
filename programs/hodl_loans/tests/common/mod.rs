@@ -879,6 +879,36 @@ pub fn take_loan_ix(owner: &Pubkey, mint: &Pubkey, owner_token: &Pubkey, amount:
     instruction
 }
 
+/// Same as `take_loan_ix`, but without the promo vault account — for exercising the
+/// `PromoAccountsRequired` guard when a position's promo is due for release.
+pub fn take_loan_ix_no_promo_vault(
+    owner: &Pubkey,
+    mint: &Pubkey,
+    owner_token: &Pubkey,
+    amount: u64,
+    tenure_seconds: i64,
+    prices: Vec<AccountMeta>,
+) -> Instruction {
+    let mut instruction = ix(
+        hodl_loans::instruction::TakeLoan { amount, tenure_seconds },
+        hodl_loans::accounts::TakeLoan {
+            owner: *owner,
+            access: access_pda(owner),
+            config: config_pda(),
+            promo_vault: None,
+            position: position_pda(owner),
+            market: market_pda(mint),
+            mint: *mint,
+            vault: market_vault_pda(mint),
+            owner_token: *owner_token,
+            ngn_feed: ngn_feed(),
+            token_program: TOKEN_2022,
+        },
+    );
+    instruction.accounts.extend(prices);
+    instruction
+}
+
 impl Env {
     pub fn set_account_data(&mut self, key: &Pubkey, owner: &Pubkey, data: Vec<u8>) {
         let account = solana_account::Account {
