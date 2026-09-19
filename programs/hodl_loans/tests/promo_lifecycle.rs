@@ -225,15 +225,31 @@ fn cross_market_vault_and_market_accounts_are_rejected() {
     let lender = env.new_lender(&other, POOL_CNGN);
     env.deposit(&lender, &other, POOL_CNGN).unwrap();
 
+    // Market B's own vault holds real, committed promo — redeemed by one of its own borrowers —
+    // so the mismatch checks below are shown to protect funds actually at stake, rather than
+    // merely colliding with an empty vault's underflow.
+    let admin = env.admin.pubkey();
+    let other_source = env.create_token_account(&other, &admin);
+    env.mint_to(&other, &other_source, 10_000_000 * ONE_CNGN);
+    let fund_other = fund_promo_vault_ix(&admin, &other, &other_source, 10_000_000 * ONE_CNGN);
+    send(&mut env.svm, &[fund_other], &[&env.admin]).expect("fund market B promo vault");
+    env.create_campaign(&other, 1, 5_000_000 * ONE_CNGN);
+    let other_market_borrower = env.new_borrower();
+    env.redeem_promo(&other_market_borrower, &other, 1, GRANT, 1).unwrap();
+    let other_outstanding_before = env.promo_vault(&other).outstanding;
+    assert_eq!(other_outstanding_before, GRANT);
+
     // expire_promo: market B's market + vault named for a position still bound to market A.
     env.warp_seconds(INACTIVITY);
     let wrong_expire = expire_promo_ix(&other, &owner);
     assert_hodl_error(send(&mut env.svm, &[wrong_expire], &[&env.admin]), HodlError::MarketMismatch);
+    // Market B's committed promo is untouched — the rejection happened before any release.
+    assert_eq!(env.promo_vault(&other).outstanding, other_outstanding_before);
 
     // revoke_promo: same mismatch, no waiting required.
-    let admin = env.admin.pubkey();
     let wrong_revoke = revoke_promo_ix(&admin, &other, &owner);
     assert_hodl_error(send(&mut env.svm, &[wrong_revoke], &[&env.admin]), HodlError::MarketMismatch);
+    assert_eq!(env.promo_vault(&other).outstanding, other_outstanding_before);
 
     // take_loan: naming market B's accounts for a position bound to market A is rejected before
     // the promo is ever inspected.
@@ -246,11 +262,55 @@ fn cross_market_vault_and_market_accounts_are_rejected() {
     assert_eq!(env.position(&owner).promo_balance, GRANT);
 
     // close_position: same mismatch, on a second position so the first stays intact for the
-    // assertion above.
+    // assertion above. Both `market` and `promo_vault` here come from market B, so this exercises
+    // `close_position`'s own `position.market == market.key()` check (`close_position.rs:45`),
+    // not `release_promo`'s chokepoint — see
+    // `close_position_release_promo_chokepoint_rejects_cross_market_vault` below for that.
     let other_borrower = env.new_borrower();
     let other_owner = other_borrower.pubkey();
     env.redeem_promo(&other_borrower, &setup.cngn, 1, GRANT, 8).unwrap();
     let wrong_close = close_position_with_promo_ix(&other_owner, &env.admin.pubkey(), &other);
     assert_hodl_error(env.sponsored(wrong_close, &other_borrower.key), HodlError::MarketMismatch);
     assert_eq!(env.position(&other_owner).promo_balance, GRANT);
+}
+
+#[test]
+fn close_position_release_promo_chokepoint_rejects_cross_market_vault() {
+    // `close_position_with_promo_ix` derives both `market` and `promo_vault` from a single
+    // mint, so it cannot present a mismatched pair — the leg above fires on
+    // `close_position`'s own `position.market == market.key()` check, never on
+    // `release_promo`'s chokepoint. `promo_vault` is the one account in `close_position` with no
+    // `has_one = market` constraint (its seeds are self-referential), so it is the one place a
+    // foreign vault can actually reach `release_promo`. This test isolates exactly that: `market`
+    // matches the position (market A), only `promo_vault` is foreign (market B).
+    let (mut env, setup) = Env::promo_ready();
+    let borrower = env.new_borrower();
+    let owner = borrower.pubkey();
+    env.redeem_promo(&borrower, &setup.cngn, 1, GRANT, 7).unwrap();
+
+    // Market B, funded with real committed promo redeemed by one of its own borrowers — enough
+    // to cover the release amount, so a wrongly-accepted call would drain it rather than
+    // underflow.
+    let other = env.create_mint(MintKind::CngnLike, 6);
+    env.create_market_with_promo(&other);
+    let admin = env.admin.pubkey();
+    let other_source = env.create_token_account(&other, &admin);
+    env.mint_to(&other, &other_source, 10_000_000 * ONE_CNGN);
+    let fund_other = fund_promo_vault_ix(&admin, &other, &other_source, 10_000_000 * ONE_CNGN);
+    send(&mut env.svm, &[fund_other], &[&env.admin]).expect("fund market B promo vault");
+    env.create_campaign(&other, 1, 5_000_000 * ONE_CNGN);
+    let other_market_borrower = env.new_borrower();
+    env.redeem_promo(&other_market_borrower, &other, 1, GRANT, 1).unwrap();
+    let other_outstanding_before = env.promo_vault(&other).outstanding;
+    assert_eq!(other_outstanding_before, GRANT);
+
+    // `market` names market A (matching the position, so `close_position.rs:45` passes cleanly);
+    // `promo_vault` names market B's vault.
+    let wrong_close = close_position_with_split_promo_ix(&owner, &env.admin.pubkey(), &setup.cngn, &other);
+    assert_hodl_error(env.sponsored(wrong_close, &borrower.key), HodlError::MarketMismatch);
+
+    // Neither side moved: the position still holds its promo, and market B's committed promo
+    // is untouched.
+    assert_eq!(env.position(&owner).promo_balance, GRANT);
+    assert_eq!(env.promo_vault(&other).outstanding, other_outstanding_before);
 }

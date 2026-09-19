@@ -725,11 +725,25 @@ pub fn revoke_promo_ix(admin: &Pubkey, mint: &Pubkey, owner: &Pubkey) -> Instruc
 
 /// `close_position`, naming the promo vault so a position still holding promo can hand it back.
 pub fn close_position_with_promo_ix(owner: &Pubkey, rent_payer: &Pubkey, mint: &Pubkey) -> Instruction {
+    close_position_with_split_promo_ix(owner, rent_payer, mint, mint)
+}
+
+/// `close_position`, letting the `market` and `promo_vault` accounts come from two different
+/// markets. `promo_vault` derives from its own self-referential seeds (no `has_one = market`
+/// constraint links it back to `market`), so this shape can present a foreign vault behind an
+/// otherwise-legitimate `market` account — the only caller of `release_promo` able to do so, and
+/// the reason `release_promo` carries its own chokepoint check rather than trusting callers.
+pub fn close_position_with_split_promo_ix(
+    owner: &Pubkey,
+    rent_payer: &Pubkey,
+    market_mint: &Pubkey,
+    vault_mint: &Pubkey,
+) -> Instruction {
     ix(
         hodl_loans::instruction::ClosePosition {},
         hodl_loans::accounts::ClosePosition {
-            market: Some(market_pda(mint)),
-            promo_vault: Some(promo_vault_pda(mint)),
+            market: Some(market_pda(market_mint)),
+            promo_vault: Some(promo_vault_pda(vault_mint)),
             owner: *owner,
             access: access_pda(owner),
             position: position_pda(owner),
