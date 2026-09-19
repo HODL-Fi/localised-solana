@@ -65,6 +65,10 @@ pub fn handle_redeem_promo(
     voucher_expiry: i64,
 ) -> Result<()> {
     ctx.accounts.access.require_active()?;
+    // Redemption draws down the promo vault and raises borrowing power, so it is paused
+    // alongside `take_loan` / `deposit_collateral` — operations that reduce exposure
+    // (`repay_loan`, `withdraw_collateral`, `close_voucher_receipt`) stay open under a pause.
+    require!(!ctx.accounts.market.paused, HodlError::MarketPaused);
     require!(amount > 0, HodlError::AmountTooSmall);
     let now = Clock::get()?.unix_timestamp;
 

@@ -213,6 +213,21 @@ fn the_expiry_boundary_is_the_only_thing_separating_redeem_from_close() {
 }
 
 #[test]
+fn redemption_respects_the_market_pause() {
+    let (mut env, cngn, borrower) = ready();
+    let admin = env.admin.pubkey();
+
+    send(&mut env.svm, &[set_market_paused_ix(&admin, &cngn, true)], &[&env.admin]).unwrap();
+    let result = env.redeem_promo(&borrower, &cngn, 1, GRANT, 7);
+    assert_hodl_error(result, HodlError::MarketPaused);
+
+    // Unpausing lets it through, same voucher untouched (the receipt never got created).
+    send(&mut env.svm, &[set_market_paused_ix(&admin, &cngn, false)], &[&env.admin]).unwrap();
+    env.redeem_promo(&borrower, &cngn, 1, GRANT, 7).unwrap();
+    assert_eq!(env.position(&borrower.pubkey()).promo_balance, GRANT);
+}
+
+#[test]
 fn redemption_cannot_rebind_a_position_already_bound_to_another_market() {
     let (mut env, setup) = Env::loan_ready();
     env.take_loan(&setup.borrower, &setup, 1_000 * ONE_CNGN, 30 * 86_400).unwrap();
