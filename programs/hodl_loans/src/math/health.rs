@@ -188,4 +188,65 @@ mod tests {
         assert!(h.is_liquidatable());
         assert!(compute_health(&[], 0, 6, ngn(), 0, 0).unwrap().is_healthy());
     }
+
+    // ---- promo_counted (Task 5) — previously exercised only through SVM tests. ----
+
+    #[test]
+    fn promo_cap_rounds_down_on_the_boundary() {
+        // own_value = 4 (single base units) with a 20% cap: 4 * 2000 / 10000 = 0.8, which
+        // floors to 0 but would ceil to 1. Pins the rounding direction so a ceiling swap at
+        // the cap computation does not slip through with the other tests still green.
+        let tiny = [CollateralValue {
+            amount: 4,
+            decimals: 0,
+            multiplier: MULTIPLIER_SCALE,
+            price: UsdPrice { price: 1, conf: 0 },
+            ltv_bps: 5_000,
+            liquidation_threshold_bps: 7_500,
+        }];
+        // 1 unit of promo is worth 625 (from `ngn()`'s bid) — comfortably above either
+        // candidate cap, so the assertion below isolates the cap's own rounding.
+        let h = compute_health(&tiny, 0, 6, ngn(), 1, 2_000).unwrap();
+        assert_eq!(h.own_value, 4);
+        assert_eq!(h.promo_counted, 0);
+    }
+
+    #[test]
+    fn promo_above_the_cap_counts_only_the_cap() {
+        // $1,000 of collateral at a 20% cap admits at most $200 of promo.
+        let collateral = [CollateralValue {
+            amount: 1_000_000_000,
+            decimals: 6,
+            multiplier: MULTIPLIER_SCALE,
+            price: UsdPrice { price: USD, conf: 0 },
+            ltv_bps: 7_000,
+            liquidation_threshold_bps: 9_000,
+        }];
+        // 500,000 cNGN is worth $312.50 at the bid — well past the $200 cap.
+        let h = compute_health(&collateral, 0, 6, ngn(), 500_000_000_000, 2_000).unwrap();
+        assert_eq!(h.own_value, 1_000 * USD);
+        assert_eq!(h.promo_counted, 200 * USD);
+    }
+
+    #[test]
+    fn promo_below_the_cap_counts_in_full() {
+        // Same $1,000 / 20% cap ($200 ceiling), but only $62.50 of promo offered.
+        let collateral = [CollateralValue {
+            amount: 1_000_000_000,
+            decimals: 6,
+            multiplier: MULTIPLIER_SCALE,
+            price: UsdPrice { price: USD, conf: 0 },
+            ltv_bps: 7_000,
+            liquidation_threshold_bps: 9_000,
+        }];
+        let h = compute_health(&collateral, 0, 6, ngn(), 100_000_000_000, 2_000).unwrap();
+        assert_eq!(h.promo_counted, 62_500_000_000_000);
+    }
+
+    #[test]
+    fn zero_own_collateral_counts_no_promo() {
+        let h = compute_health(&[], 0, 6, ngn(), 500_000_000_000, 2_000).unwrap();
+        assert_eq!(h.own_value, 0);
+        assert_eq!(h.promo_counted, 0);
+    }
 }
