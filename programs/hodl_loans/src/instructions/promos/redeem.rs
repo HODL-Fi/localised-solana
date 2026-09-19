@@ -36,8 +36,12 @@ pub struct RedeemPromo<'info> {
         has_one = market
     )]
     pub campaign: Box<Account<'info, Campaign>>,
-    /// Its creation is what stops a voucher being redeemed twice: the second attempt cannot
-    /// initialize an account that already exists.
+    /// Its creation is what stops a voucher being redeemed twice while this receipt lives: the
+    /// second attempt cannot initialize an account that already exists. The PDA seeds
+    /// `[VOUCHER_SEED, campaign, nonce]` do NOT include `voucher_expiry`, so the on-chain
+    /// guarantee is "one redemption per (campaign, nonce) per expiry epoch", not per
+    /// (campaign, nonce) outright — once the receipt is closed past expiry, only backend nonce
+    /// discipline (never reissuing the same nonce with a later expiry) prevents a replay.
     #[account(
         init,
         payer = payer,

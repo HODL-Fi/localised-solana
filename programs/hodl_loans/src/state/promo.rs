@@ -63,7 +63,12 @@ pub struct Campaign {
 }
 
 /// Spec §12. Proof that one voucher nonce has been redeemed. Its existence is what prevents a
-/// replay: `redeem_promo` creates it, so a second redemption of the same nonce cannot init.
+/// replay while it lives: `redeem_promo` creates it, so a second redemption of the same nonce
+/// cannot init until it is closed. Its PDA seeds are `[VOUCHER_SEED, campaign, nonce]` — NOT
+/// including `voucher_expiry`, which is only stored below — so the on-chain guarantee is "one
+/// redemption per (campaign, nonce) per expiry epoch", not per (campaign, nonce) outright. Once
+/// this receipt is closed past its expiry, the backend must never reissue the same nonce with a
+/// later expiry, or the voucher becomes redeemable again.
 #[account]
 #[derive(InitSpace)]
 pub struct VoucherReceipt {
