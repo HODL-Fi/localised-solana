@@ -73,7 +73,10 @@ fn one_ed25519_instruction_cannot_authorise_two_redemptions_in_one_transaction()
         redeem_promo_ix(&admin, &owner, &cngn, 1, GRANT, 7, expiry),
     ];
     let result = send(&mut env.svm, &instructions, &[&env.admin, &borrower.key]);
-    assert!(result.is_err(), "a single transaction must not redeem the same voucher twice");
+    // The second `init` of the same voucher_receipt PDA fails with the System Program's
+    // "already in use" error (Custom(0)), not a HodlError — pin that specific failure rather
+    // than accepting any error.
+    assert_custom_error(result, 0);
 
     // The whole transaction reverts atomically: even the first, individually-valid redemption
     // never lands.
@@ -184,6 +187,19 @@ fn redemption_needs_an_active_whitelist() {
     env.blacklist(&borrower.pubkey());
     let result = env.redeem_promo(&borrower, &cngn, 1, GRANT, 7);
     assert_hodl_error(result, HodlError::Blacklisted);
+
+    // Clearing the blacklist flag does not re-whitelist the wallet.
+    let unblacklist = unblacklist_ix(&env.admin.pubkey(), &borrower.pubkey());
+    send(&mut env.svm, &[unblacklist], &[&env.admin]).unwrap();
+    let result = env.redeem_promo(&borrower, &cngn, 1, GRANT, 7);
+    assert_hodl_error(result, HodlError::NotWhitelisted);
+}
+
+#[test]
+fn redeeming_a_zero_amount_is_rejected() {
+    let (mut env, cngn, borrower) = ready();
+    let result = env.redeem_promo(&borrower, &cngn, 1, 0, 7);
+    assert_hodl_error(result, HodlError::AmountTooSmall);
 }
 
 #[test]
