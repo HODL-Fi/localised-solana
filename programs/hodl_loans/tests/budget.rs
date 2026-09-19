@@ -56,7 +56,10 @@ fn full_position_stays_under_the_default_compute_budget() {
     assert!(cu < 85_000, "withdraw_collateral at 8 collateral slots / 10 loans used {cu} CU");
 
     // liquidate prices all 8 collateral slots and all 10 loans, then moves two token types.
-    // Measured 86,320 CU. Crash every collateral price to $0.001 so the position is liquidatable.
+    // This position holds no promo, so forfeiture (Task 7) resolves its two extra accounts and
+    // takes the zero-balance early return rather than paying for a third CPI — the two accounts
+    // alone are still ~7,600 CU over the pre-Task-7 baseline of 86,320. Measured 93,971 CU.
+    // Crash every collateral price to $0.001 so the position is liquidatable.
     for m in &mints {
         env.set_pyth_price(m, 100_000, 0);
     }
@@ -68,7 +71,7 @@ fn full_position_stays_under_the_default_compute_budget() {
         &seized_to, 0, 100 * ONE_CNGN, prices,
     );
     let cu = send_cu(&mut env.svm, &[lq], &[&liquidator.key]).unwrap();
-    assert!(cu < 100_000, "liquidate at 8 collateral slots / 10 loans used {cu} CU");
+    assert!(cu < 120_000, "liquidate at 8 collateral slots / 10 loans used {cu} CU");
 
     // repay_loan needs no price accounts but still scans all 10 loan slots to find loan 0.
     // Measured 19,239 CU.

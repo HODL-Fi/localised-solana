@@ -1134,6 +1134,8 @@ pub fn liquidate_ix(
         hodl_loans::accounts::Liquidate {
             liquidator: *liquidator,
             config: config_pda(),
+            promo_vault: promo_vault_pda(mint),
+            promo_vault_token: promo_vault_token_pda(mint),
             position: position_pda(position_owner),
             market: market_pda(mint),
             mint: *mint,
@@ -1201,6 +1203,11 @@ pub fn write_off_loan_ix(admin: &Pubkey, position_owner: &Pubkey, mint: &Pubkey,
             position: position_pda(position_owner),
             market: market_pda(mint),
             ngn_feed: ngn_feed(),
+            mint: *mint,
+            vault: market_vault_pda(mint),
+            promo_vault: promo_vault_pda(mint),
+            promo_vault_token: promo_vault_token_pda(mint),
+            token_program: TOKEN_2022,
         },
     );
     instruction.accounts.extend(prices);

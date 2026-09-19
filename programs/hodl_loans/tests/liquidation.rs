@@ -2,7 +2,6 @@ mod common;
 
 use common::*;
 use hodl_loans::HodlError;
-use solana_signer::Signer;
 
 const DAY: i64 = 86_400;
 /// The borrower's loan: 700,000 cNGN, worth $437.94 at the NGN ask.
@@ -280,8 +279,7 @@ fn liquidation_rejections() {
 fn liquidation_checks_the_borrowed_market() {
     let (mut env, setup) = underwater();
     let other = env.create_mint(MintKind::CngnLike, 6);
-    let create = create_market_ix(&env.admin.pubkey(), &other, &TOKEN_2022, default_market_params());
-    send(&mut env.svm, &[create], &[&env.admin]).unwrap();
+    env.create_market_with_promo(&other);
     let liquidator = env.new_liquidator(&other, LOAN);
     let collateral_account = env.create_token_account(&setup.usdc, &liquidator.pubkey());
 

@@ -321,3 +321,11 @@ pub struct PromoReleased {
     pub owner: Pubkey,
     pub amount: u64,
 }
+
+#[event]
+pub struct PromoForfeited {
+    pub market: Pubkey,
+    pub position: Pubkey,
+    pub owner: Pubkey,
+    pub amount: u64,
+}

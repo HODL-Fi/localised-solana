@@ -1,13 +1,14 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
-use crate::constants::{COLLATERAL_SEED, CONFIG_SEED, MARKET_SEED};
+use crate::constants::{COLLATERAL_SEED, CONFIG_SEED, MARKET_SEED, PROMO_VAULT_SEED};
 use crate::errors::HodlError;
 use crate::events::{LoanLiquidated, LoanPartiallyLiquidated};
+use crate::instructions::promos::{forfeit_promo, ForfeitAccounts};
 use crate::math::checked::{add, sub, to_u64};
 use crate::math::liquidation::{principal_share, seize_for_repayment};
 use crate::math::loan::{accrued_lp_interest, loan_balance, lp_contribution, reserve_share};
-use crate::state::{CollateralAsset, Config, Market, Position};
+use crate::state::{CollateralAsset, Config, Market, Position, PromoVault};
 use crate::token::extensions::require_collateral_mint_on_exit;
 use crate::token::transfer::{transfer_from_user, transfer_from_vault};
 use crate::valuation::{load_valuation, ValuationRequest};
@@ -30,6 +31,16 @@ pub struct Liquidate<'info> {
         has_one = ngn_feed @ HodlError::PriceAccountMismatch
     )]
     pub market: Box<Account<'info, Market>>,
+    #[account(
+        mut,
+        seeds = [PROMO_VAULT_SEED, market.key().as_ref()],
+        bump = promo_vault.bump,
+        has_one = market
+    )]
+    pub promo_vault: Box<Account<'info, PromoVault>>,
+    /// The promo vault's cNGN, which forfeiture moves into the market vault (spec §11 step 3).
+    #[account(mut, address = promo_vault.vault @ HodlError::PromoVaultInsufficient)]
+    pub promo_vault_token: Box<InterfaceAccount<'info, TokenAccount>>,
     #[account(mint::token_program = token_program)]
     pub mint: Box<InterfaceAccount<'info, Mint>>,
     #[account(mut)]
@@ -65,11 +76,13 @@ pub struct Liquidate<'info> {
 /// account, the source of its scaled-UI multiplier — the whole position is priced, because
 /// health decides whether it may be liquidated at all.
 ///
-/// A late loan is not liquidatable on its own: only an unhealthy position is (spec §2).
-/// Promo forfeiture (spec §11 step 3) arrives with Plan 5.
+/// A late loan is not liquidatable on its own: only an unhealthy position is (spec §2). Any
+/// promo backing the position is forfeited to lenders before repayment is priced (spec §11
+/// step 3).
 pub fn handle_liquidate<'info>(ctx: Context<'info, Liquidate<'info>>, loan_id: u64, amount: u64) -> Result<()> {
     require!(amount > 0, HodlError::AmountTooSmall);
     let market_key = ctx.accounts.market.key();
+    let position_key = ctx.accounts.position.key();
     let collateral_mint = ctx.accounts.collateral_mint.key();
     let clock = Clock::get()?;
     let now = clock.unix_timestamp;
@@ -99,6 +112,23 @@ pub fn handle_liquidate<'info>(ctx: Context<'info, Liquidate<'info>>, loan_id: u
             },
         )?;
         require!(valuation.health.is_liquidatable(), HodlError::NotLiquidatable);
+
+        // Spec §11 step 3: the promo behind a defaulting position goes to lenders, before any
+        // of the repayment is priced. It does not reduce what the borrower owes.
+        let forfeited = forfeit_promo(
+            &mut position,
+            position_key,
+            market_key,
+            &mut ForfeitAccounts {
+                promo_vault: &mut ctx.accounts.promo_vault,
+                promo_token: &ctx.accounts.promo_vault_token,
+                market_vault: &ctx.accounts.vault,
+                mint: &ctx.accounts.mint,
+                token_program: ctx.accounts.token_program.key(),
+            },
+        )?;
+        market.cash = to_u64(add(market.cash as u128, forfeited as u128)?)?;
+
         // `load_valuation` returns one value per used slot, in slot order.
         let priced = position.collateral[..slot_index].iter().filter(|s| s.amount > 0).count();
         let collateral_price = valuation.collateral[priced].price.price;
@@ -154,6 +184,11 @@ pub fn handle_liquidate<'info>(ctx: Context<'info, Liquidate<'info>>, loan_id: u
         let remaining_principal = slot.principal;
         if remaining_principal == 0 {
             *slot = bytemuck::Zeroable::zeroed();
+            // Superseded by forfeiture above: `promo_balance` is already 0 by this point (it was
+            // either 0 coming in, or `forfeit_promo` zeroed it earlier in this same call), so
+            // this write only ever lands on a position that already has no promo for the clock
+            // to gate. It is kept for the positions with no promo at all, where it is a no-op
+            // either way, rather than adding a branch to special-case it.
             if !position.has_active_loans() {
                 position.promo_last_activity_at = now;
             }
