@@ -182,3 +182,47 @@ fn take_loan_requires_the_promo_vault_when_promo_is_due_for_release() {
     // The promo is untouched — it did not silently survive past the missing-vault guard either.
     assert_eq!(env.position(&owner).promo_balance, GRANT);
 }
+
+#[test]
+fn cross_market_vault_and_market_accounts_are_rejected() {
+    let (mut env, setup) = Env::promo_ready();
+    let borrower = &setup.borrower;
+    let owner = borrower.pubkey();
+    env.redeem_promo(borrower, &setup.cngn, 1, GRANT, 7).unwrap();
+
+    // A second market, fully promo-equipped and funded, that this position never redeemed
+    // against.
+    let other = env.create_mint(MintKind::CngnLike, 6);
+    env.create_market_with_promo(&other);
+    let lender = env.new_lender(&other, POOL_CNGN);
+    env.deposit(&lender, &other, POOL_CNGN).unwrap();
+
+    // expire_promo: market B's market + vault named for a position still bound to market A.
+    env.warp_seconds(INACTIVITY);
+    let wrong_expire = expire_promo_ix(&other, &owner);
+    assert_hodl_error(send(&mut env.svm, &[wrong_expire], &[&env.admin]), HodlError::MarketMismatch);
+
+    // revoke_promo: same mismatch, no waiting required.
+    let admin = env.admin.pubkey();
+    let wrong_revoke = revoke_promo_ix(&admin, &other, &owner);
+    assert_hodl_error(send(&mut env.svm, &[wrong_revoke], &[&env.admin]), HodlError::MarketMismatch);
+
+    // take_loan: naming market B's accounts for a position bound to market A is rejected before
+    // the promo is ever inspected.
+    let other_account = env.create_token_account(&other, &owner);
+    let prices = env.price_accounts(&owner);
+    let borrow = take_loan_ix(&owner, &other, &other_account, 1_000 * ONE_CNGN, 30 * DAY, prices);
+    assert_hodl_error(send(&mut env.svm, &[borrow], &[&env.admin, &borrower.key]), HodlError::MarketMismatch);
+
+    // The promo survived all three rejected attempts.
+    assert_eq!(env.position(&owner).promo_balance, GRANT);
+
+    // close_position: same mismatch, on a second position so the first stays intact for the
+    // assertion above.
+    let other_borrower = env.new_borrower();
+    let other_owner = other_borrower.pubkey();
+    env.redeem_promo(&other_borrower, &setup.cngn, 1, GRANT, 8).unwrap();
+    let wrong_close = close_position_with_promo_ix(&other_owner, &env.admin.pubkey(), &other);
+    assert_hodl_error(env.sponsored(wrong_close, &other_borrower.key), HodlError::MarketMismatch);
+    assert_eq!(env.position(&other_owner).promo_balance, GRANT);
+}
