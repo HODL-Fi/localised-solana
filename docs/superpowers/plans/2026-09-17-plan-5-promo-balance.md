@@ -3163,7 +3163,7 @@ and the entry points:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 208 tests in all (`promo_lifecycle` is new with 6).
+Expected: every binary reports `ok`, 211 tests in all (`promo_lifecycle` is new with 9).
 
 - [ ] **Step 5: Commit**
 
@@ -3510,7 +3510,7 @@ Run: `./scripts/test.sh --test promo_forfeit`
 Expected: 5 tests, all `ok`.
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 213 tests in all (`promo_forfeit` is new with 5).
+Expected: every binary reports `ok`, 216 tests in all (`promo_forfeit` is new with 5).
 
 Run: `cargo clippy -p hodl_loans --all-targets -- -D warnings`
 Expected: no warnings.
@@ -3746,7 +3746,7 @@ Run: `./scripts/test.sh --test promo_cap`
 Expected: 3 tests, all `ok`.
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 216 tests in all — 51 unit and 165 LiteSVM.
+Expected: every binary reports `ok`, 219 tests in all — 51 unit and 168 LiteSVM.
 
 Run: `cargo clippy -p hodl_loans --all-targets -- -D warnings`
 Expected: no warnings.
