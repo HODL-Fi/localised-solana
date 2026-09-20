@@ -42,14 +42,14 @@ fn full_position_stays_under_the_default_compute_budget() {
     }
 
     // 10th (last) loan slot: the health check walks all 8 collateral slots, the promo cap and
-    // the 9 existing overdue loans. Measured 67,943 CU.
+    // the 9 existing overdue loans. Measured 76,263 CU.
     let prices = env.price_accounts(&owner);
     let ixn = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 1_000 * ONE_CNGN, 30 * DAY, prices);
     let cu = send_cu(&mut env.svm, &[ixn], &[&env.admin, &setup.borrower.key]).unwrap();
     assert!(cu < 85_000, "take_loan at 8 collateral slots / 9 existing overdue loans used {cu} CU");
 
     // withdraw_collateral's post-withdrawal health check walks the same 8 slots, the promo cap
-    // and now 10 loans. Measured 71,986 CU.
+    // and now 10 loans. Measured 75,682 CU.
     let token = env.create_token_account(&setup.usdc, &owner);
     let wd = withdraw_collateral_ix(&owner, &setup.usdc, &SPL_TOKEN, &token, Some(&setup.cngn), ONE_USDC, env.price_accounts(&owner));
     let cu = send_cu(&mut env.svm, &[wd], &[&env.admin, &setup.borrower.key]).unwrap();
@@ -58,8 +58,8 @@ fn full_position_stays_under_the_default_compute_budget() {
     // liquidate prices all 8 collateral slots and all 10 loans, then moves two token types.
     // This position holds NO promo, so `forfeit_promo` resolves its two extra `Option` accounts
     // and takes the zero-balance early return rather than paying for a third CPI — the two
-    // accounts alone are still ~7,600 CU over the pre-Task-7 baseline of 86,320. Measured
-    // 93,971 CU. This is the CHEAP no-forfeit path, not the most expensive liquidate path
+    // accounts alone are still ~9,900 CU over the pre-Task-7 baseline of 86,320. Measured
+    // 96,179 CU. This is the CHEAP no-forfeit path, not the most expensive liquidate path
     // overall — see `full_position_liquidation_with_promo_forfeit_stays_under_the_default_compute_budget`
     // below for the case where the forfeit actually fires (token CPI + event).
     // Crash every collateral price to $0.001 so the position is liquidatable.
@@ -77,7 +77,7 @@ fn full_position_stays_under_the_default_compute_budget() {
     assert!(cu < 120_000, "liquidate at 8 collateral slots / 10 loans used {cu} CU");
 
     // repay_loan needs no price accounts but still scans all 10 loan slots to find loan 0.
-    // Measured 19,239 CU.
+    // Measured 19,248 CU.
     env.mint_to(&setup.cngn, &setup.borrower_cngn, 100_000 * ONE_CNGN);
     let rp = repay_loan_ix(&owner, &owner, &setup.cngn, &setup.borrower_cngn, 0, u64::MAX);
     let cu = send_cu(&mut env.svm, &[rp], &[&env.admin, &setup.borrower.key]).unwrap();
@@ -137,7 +137,7 @@ fn full_position_liquidation_with_promo_forfeit_stays_under_the_default_compute_
 
     // liquidate prices all 8 collateral slots and all 10 loans, moves the liquidator's
     // repayment and the seized collateral, and now also forfeits the promo balance: a third
-    // token CPI on top of the no-promo case's two. Measured 98,661 CU.
+    // token CPI on top of the no-promo case's two. Measured 100,884 CU.
     for m in &mints {
         env.set_pyth_price(m, 100_000, 0);
     }
@@ -214,7 +214,7 @@ fn an_all_xstock_position_stays_under_the_default_compute_budget() {
     }
 
     // 10th (last) loan slot: the health check unpacks 8 mints on top of the usual 8 collateral
-    // slots, the promo cap and 9 existing loans. **Measured 75,850 CU — this is the figure spec
+    // slots, the promo cap and 9 existing loans. **Measured 82,670 CU — this is the figure spec
     // §15 points at, and the only place it is written down.**
     //
     // It is a floor for mainnet, not an estimate of it: `MintKind::XStock` initializes a
