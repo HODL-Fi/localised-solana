@@ -56,9 +56,12 @@ fn full_position_stays_under_the_default_compute_budget() {
     assert!(cu < 85_000, "withdraw_collateral at 8 collateral slots / 10 loans used {cu} CU");
 
     // liquidate prices all 8 collateral slots and all 10 loans, then moves two token types.
-    // This position holds no promo, so forfeiture (Task 7) resolves its two extra accounts and
-    // takes the zero-balance early return rather than paying for a third CPI — the two accounts
-    // alone are still ~7,600 CU over the pre-Task-7 baseline of 86,320. Measured 93,971 CU.
+    // This position holds NO promo, so `forfeit_promo` resolves its two extra `Option` accounts
+    // and takes the zero-balance early return rather than paying for a third CPI — the two
+    // accounts alone are still ~7,600 CU over the pre-Task-7 baseline of 86,320. Measured
+    // 93,971 CU. This is the CHEAP no-forfeit path, not the most expensive liquidate path
+    // overall — see `full_position_liquidation_with_promo_forfeit_stays_under_the_default_compute_budget`
+    // below for the case where the forfeit actually fires (token CPI + event).
     // Crash every collateral price to $0.001 so the position is liquidatable.
     for m in &mints {
         env.set_pyth_price(m, 100_000, 0);
@@ -79,6 +82,75 @@ fn full_position_stays_under_the_default_compute_budget() {
     let rp = repay_loan_ix(&owner, &owner, &setup.cngn, &setup.borrower_cngn, 0, u64::MAX);
     let cu = send_cu(&mut env.svm, &[rp], &[&env.admin, &setup.borrower.key]).unwrap();
     assert!(cu < 25_000, "repay_loan at 10 loan slots used {cu} CU");
+}
+
+/// Same shape as `full_position_stays_under_the_default_compute_budget`'s liquidate case, but
+/// the position actually holds promo, so `forfeit_promo` pays for its token CPI, its
+/// `require_invariant` check and its event — not the zero-balance early return. This is the
+/// most expensive `liquidate` path the program can be asked to run.
+#[test]
+fn full_position_liquidation_with_promo_forfeit_stays_under_the_default_compute_budget() {
+    let (mut env, setup) = Env::loan_ready();
+    let owner = setup.borrower.pubkey();
+
+    // Fund the promo vault, open a campaign, and redeem promo onto the position so the final
+    // liquidate below actually forfeits a nonzero balance.
+    let admin = env.admin.pubkey();
+    let source = env.create_token_account(&setup.cngn, &admin);
+    env.mint_to(&setup.cngn, &source, 10_000_000 * ONE_CNGN);
+    let fund = fund_promo_vault_ix(&admin, &setup.cngn, &source, 10_000_000 * ONE_CNGN);
+    send(&mut env.svm, &[fund], &[&env.admin]).expect("fund promo vault");
+    env.create_campaign(&setup.cngn, 1, 5_000_000 * ONE_CNGN);
+    env.redeem_promo(&setup.borrower, &setup.cngn, 1, 50_000 * ONE_CNGN, 7).unwrap();
+
+    // `Env::loan_ready` already deposits usdc into slot 0; 7 more mints fill the other 7 slots.
+    let mut mints = vec![setup.usdc];
+    for i in 0..7 {
+        let decimals = if i % 2 == 0 { 9 } else { 6 };
+        let mint = env.list_spl_collateral(decimals);
+        env.set_pyth_price(&mint, 150 * ONE_DOLLAR, 10_000_000);
+        env.deposit_collateral(&setup.borrower, &mint, 10u64.pow(decimals as u32) * 10);
+        mints.push(mint);
+    }
+    assert_eq!(mints.len(), 8);
+
+    // Fill 9 of the position's 10 loan slots, each priced against all 8 collateral slots.
+    for i in 0..9 {
+        let prices = env.price_accounts(&owner);
+        let ixn = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 1_000 * ONE_CNGN, 30 * DAY, prices);
+        send_cu(&mut env.svm, &[ixn], &[&env.admin, &setup.borrower.key]).unwrap_or_else(|e| panic!("take_loan #{i} failed: {e}"));
+    }
+
+    // Warp past every loan's 30-day maturity so penalty math runs on all of them, then refresh
+    // both price feeds (they are now stale).
+    env.warp_seconds(40 * DAY);
+    env.set_ngn_price(NGN_USD, NGN_SPREAD);
+    for m in &mints {
+        let (price, conf) = if *m == setup.usdc { (ONE_DOLLAR, 0) } else { (150 * ONE_DOLLAR, 10_000_000) };
+        env.set_pyth_price(m, price, conf);
+    }
+
+    // 10th (last) loan slot, filling the position out to its structural limits.
+    let prices = env.price_accounts(&owner);
+    let ixn = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 1_000 * ONE_CNGN, 30 * DAY, prices);
+    send_cu(&mut env.svm, &[ixn], &[&env.admin, &setup.borrower.key]).unwrap();
+
+    // liquidate prices all 8 collateral slots and all 10 loans, moves the liquidator's
+    // repayment and the seized collateral, and now also forfeits the promo balance: a third
+    // token CPI on top of the no-promo case's two. Measured 98,661 CU.
+    for m in &mints {
+        env.set_pyth_price(m, 100_000, 0);
+    }
+    let liquidator = env.new_liquidator(&setup.cngn, 100_000 * ONE_CNGN);
+    let seized_to = env.create_token_account(&setup.usdc, &liquidator.pubkey());
+    let prices = env.price_accounts(&owner);
+    let lq = liquidate_ix(
+        &liquidator.pubkey(), &owner, &setup.cngn, &liquidator.cngn, &setup.usdc, &SPL_TOKEN,
+        &seized_to, 0, 100 * ONE_CNGN, prices,
+    );
+    let cu = send_cu(&mut env.svm, &[lq], &[&liquidator.key]).unwrap();
+    assert_eq!(env.position(&owner).promo_balance, 0, "the forfeit must actually have fired");
+    assert!(cu < 120_000, "liquidate-with-forfeit at 8 collateral slots / 10 loans used {cu} CU");
 }
 
 /// An all-xStock position is the most expensive health check the program can be asked to run:
