@@ -226,7 +226,7 @@ In `scale_switchboard_value`:
 - [ ] **Step 5: Run the suite**
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, **236 tests in all** (the unit suite is now 56).
+Expected: every binary reports `ok`, **236 tests in all** (the unit suite is now 54).
 
 No integration test changes its expected values. That is worth noticing rather than assuming: the existing fixtures use spreads that divide evenly, so before these tests were written nothing in the suite could tell the two rounding directions apart.
 
@@ -495,7 +495,7 @@ To see them work, temporarily add `pub extra: u64` to `CollateralAsset` above `r
 - [ ] **Step 3: Run the suite**
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, **239 tests in all** (the unit suite is now 58).
+Expected: every binary reports `ok`, **239 tests in all** (the unit suite is now 56).
 
 - [ ] **Step 4: Commit**
 
