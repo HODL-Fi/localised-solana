@@ -94,6 +94,7 @@ pub fn forfeit_promo(
         position: position_key,
         owner: position.owner,
         amount,
+        moved,
     });
     Ok(moved)
 }

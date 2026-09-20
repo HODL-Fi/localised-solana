@@ -339,5 +339,11 @@ pub struct PromoForfeited {
     pub market: Pubkey,
     pub position: Pubkey,
     pub owner: Pubkey,
+    /// Promo removed from the position. Always the position's whole balance.
     pub amount: u64,
+    /// cNGN that actually reached the market vault. Equal to `amount` except after an issuer
+    /// clawback from the promo vault, where the transfer is clamped to the balance on hand —
+    /// see `forfeit_promo`. An indexer summing what lenders received must use this, not
+    /// `amount`.
+    pub moved: u64,
 }
