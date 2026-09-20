@@ -28,6 +28,29 @@ fn assert_invariants(env: &Env, setup: &LoanSetup, label: &str) {
 
     let vault_balance = env.token_balance(&market_vault_pda(&setup.cngn));
     assert!(vault_balance >= market.cash, "{label}: vault balance {vault_balance} < market.cash {}", market.cash);
+
+    // Promo invariants (spec §12). This harness tracks a single borrower per `LoanSetup`, so
+    // "sum of all positions' promo_balance" reduces to that one position's balance — the only
+    // one any scenario here ever grants promo to.
+    let promo_vault = env.promo_vault(&setup.cngn);
+    assert!(
+        promo_vault.outstanding + promo_vault.unissued <= promo_vault.cash,
+        "{label}: promo_vault outstanding {} + unissued {} > cash {}",
+        promo_vault.outstanding,
+        promo_vault.unissued,
+        promo_vault.cash
+    );
+    assert_eq!(
+        position.promo_balance, promo_vault.outstanding,
+        "{label}: position.promo_balance {} != promo_vault.outstanding {}",
+        position.promo_balance, promo_vault.outstanding
+    );
+    let promo_vault_balance = env.token_balance(&promo_vault_token_pda(&setup.cngn));
+    assert!(
+        promo_vault_balance >= promo_vault.cash,
+        "{label}: promo vault token balance {promo_vault_balance} < promo_vault.cash {}",
+        promo_vault.cash
+    );
 }
 
 #[test]
@@ -140,4 +163,55 @@ fn a_default_runs_from_liquidation_to_write_off() {
     let withdraw = withdraw_collateral_ix(&owner, &setup.usdc, &SPL_TOKEN, &token, None, dust, vec![]);
     env.sponsored(withdraw, &setup.borrower.key).unwrap();
     assert_eq!(env.token_balance(&token), dust);
+}
+
+/// Same sequence as `a_default_runs_from_liquidation_to_write_off`, but the position holds
+/// promo throughout: `Env::loan_ready` never grants any, so that test never exercises a
+/// forfeit or the promo invariants. This one does, with all invariants asserted after every
+/// step.
+#[test]
+fn a_default_runs_from_liquidation_to_write_off_with_promo() {
+    let (mut env, setup) = Env::promo_ready();
+    let owner = setup.borrower.pubkey();
+    let grant = 50_000 * ONE_CNGN;
+    env.redeem_promo(&setup.borrower, &setup.cngn, 1, grant, 7).unwrap();
+    assert_invariants(&env, &setup, "after redeeming promo");
+
+    env.take_loan(&setup.borrower, &setup, 700_000 * ONE_CNGN, 365 * DAY).unwrap();
+    assert_invariants(&env, &setup, "after borrowing");
+
+    // USDC at $0.45 puts $437.94 of debt over the liquidation line, even counting the promo.
+    env.set_pyth_price(&setup.usdc, 45_000_000, 0);
+    let liquidator = env.new_liquidator(&setup.cngn, 10_000_000 * ONE_CNGN);
+    let seized_to = env.create_token_account(&setup.usdc, &liquidator.pubkey());
+    env.liquidate(&liquidator, &setup, &setup.usdc, &seized_to, 0, 300_000 * ONE_CNGN).unwrap();
+    assert_invariants(&env, &setup, "after liquidating");
+    // The forfeit fires exactly once, at the first liquidation to touch this loan.
+    assert_eq!(env.position(&owner).promo_balance, 0);
+
+    // The rest of the collateral collapses to dust, so the remaining loan is written off.
+    env.set_pyth_price(&setup.usdc, 100_000, 0);
+    env.write_off(&setup, 0).unwrap();
+    assert_invariants(&env, &setup, "after the write-off");
+    let market = env.market(&setup.cngn);
+    assert_eq!(market.total_borrows, 0);
+    assert!(market.total_bad_debt > 0);
+    assert!(!env.position(&owner).has_active_loans());
+
+    // Same shortfall check as the non-promo variant, but reconciled against the full `grant`:
+    // the forfeit fired at liquidation, not at write-off (per the assertion above), so its cNGN
+    // was already in the market vault by the time `total_bad_debt` was booked — the lender's
+    // real shortfall comes in `grant` lower than `total_bad_debt` records, because
+    // `write_off_loan` books the loan's raw shortfall without knowing an earlier instruction
+    // already covered part of it (`write_off_loan`'s own `forfeited` is zero here; Fix 5 only
+    // nets a forfeit that fires inside the SAME write-off call). `shortfall + grant` reconstructs
+    // `total_bad_debt` exactly: what the lender actually lost, plus what already made up for it.
+    env.withdraw(&setup.lender, &setup.cngn, u64::MAX).unwrap();
+    let returned = env.token_balance(&setup.lender.token);
+    let shortfall = POOL_CNGN - returned;
+    assert_eq!(
+        shortfall + grant, market.total_bad_debt as u64,
+        "lender shortfall {shortfall} plus the forfeited promo {grant} does not match the recorded bad debt {}",
+        market.total_bad_debt
+    );
 }

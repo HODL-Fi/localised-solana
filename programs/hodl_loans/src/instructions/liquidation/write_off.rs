@@ -1,18 +1,20 @@
 use anchor_lang::prelude::*;
+use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
-use crate::constants::{CONFIG_SEED, MARKET_SEED};
+use crate::constants::{CONFIG_SEED, MARKET_SEED, PROMO_VAULT_SEED};
 use crate::errors::HodlError;
 use crate::events::LoanWrittenOff;
+use crate::instructions::promos::{forfeit_promo, ForfeitAccounts};
 use crate::math::checked::{add, sub, to_u64};
 use crate::math::loan::{accrued_lp_interest, lp_contribution};
-use crate::state::{Config, Market, Position};
-use crate::valuation::load_valuation;
+use crate::state::{Config, Market, Position, PromoVault};
+use crate::valuation::{load_valuation, ValuationRequest};
 
 #[derive(Accounts)]
 pub struct WriteOffLoan<'info> {
     pub admin: Signer<'info>,
     #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ HodlError::Unauthorized)]
-    pub config: Account<'info, Config>,
+    pub config: Box<Account<'info, Config>>,
     #[account(mut)]
     pub position: AccountLoader<'info, Position>,
     #[account(
@@ -24,6 +26,32 @@ pub struct WriteOffLoan<'info> {
     pub market: Box<Account<'info, Market>>,
     /// CHECK: address pinned to `market.ngn_feed`; parsed by `read_ngn_price`.
     pub ngn_feed: UncheckedAccount<'info>,
+    #[account(address = market.mint, mint::token_program = token_program)]
+    pub mint: Box<InterfaceAccount<'info, Mint>>,
+    #[account(mut, address = market.vault @ HodlError::MarketMismatch)]
+    pub vault: Box<InterfaceAccount<'info, TokenAccount>>,
+    /// Forfeiture moves the position's promo backing into the market vault (spec §11 step 3),
+    /// so a written-off loan still returns what the protocol lent the borrower for free.
+    /// `create_promo_vault` is a separate admin action (`vault.rs`), so a market can run with
+    /// no promo vault at all. Required only when the position holds promo (`promo_balance >
+    /// 0`) — the handler reverts with `PromoAccountsRequired` rather than silently skipping
+    /// the forfeit by omitting these accounts.
+    #[account(
+        mut,
+        seeds = [PROMO_VAULT_SEED, market.key().as_ref()],
+        bump = promo_vault.bump,
+        has_one = market
+    )]
+    pub promo_vault: Option<Box<Account<'info, PromoVault>>>,
+    /// `promo_vault` is itself `Option`, so its `vault` field cannot be named in an `address`
+    /// constraint here — checked as a `constraint` instead, to the same effect.
+    #[account(
+        mut,
+        constraint = promo_vault.as_ref().is_none_or(|pv| pv.vault == promo_vault_token.key())
+            @ HodlError::PromoVaultMismatch
+    )]
+    pub promo_vault_token: Option<Box<InterfaceAccount<'info, TokenAccount>>>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 /// Spec §11 `write_off_loan`. `remaining_accounts`: per used collateral slot, in slot order, a
@@ -38,9 +66,12 @@ pub struct WriteOffLoan<'info> {
 /// The admin signs through a timelocked multisig, so a lender who watches the queue can
 /// withdraw before the loss lands (spec §18). That is accepted: a write-off needs the
 /// collateral to be dust, which bounds what the remaining lenders absorb.
-/// Promo forfeiture (spec §11 step 3) arrives with Plan 5.
+///
+/// Any promo backing the position is forfeited to lenders before the loss is booked (spec §11
+/// step 3), offsetting part of what the reserve and lenders would otherwise absorb alone.
 pub fn handle_write_off_loan<'info>(ctx: Context<'info, WriteOffLoan<'info>>, loan_id: u64) -> Result<()> {
     let market_key = ctx.accounts.market.key();
+    let position_key = ctx.accounts.position.key();
     let clock = Clock::get()?;
     let now = clock.unix_timestamp;
 
@@ -51,20 +82,52 @@ pub fn handle_write_off_loan<'info>(ctx: Context<'info, WriteOffLoan<'info>>, lo
     require_keys_eq!(position.market, market_key, HodlError::MarketMismatch);
     let index = position.loan_index(loan_id).ok_or(HodlError::LoanNotFound)?;
 
+    let ngn_feed = ctx.accounts.ngn_feed.to_account_info();
     let valuation = load_valuation(
-        ctx.program_id,
         &position,
-        market,
-        &ctx.accounts.ngn_feed.to_account_info(),
-        ctx.remaining_accounts,
-        0,
-        &clock,
+        &ValuationRequest {
+            program_id: ctx.program_id,
+            market,
+            ngn_feed: &ngn_feed,
+            remaining: ctx.remaining_accounts,
+            extra_debt: 0,
+            promo_cap_bps: ctx.accounts.config.promo_cap_bps,
+            clock: &clock,
+        },
     )?;
     require!(valuation.health.is_liquidatable(), HodlError::NotLiquidatable);
     require!(
         valuation.health.own_value < market.bad_debt_dust_usd,
         HodlError::WriteOffNotAllowed
     );
+
+    // Spec §11 step 3: the promo behind a defaulting position goes to lenders, before the loss
+    // is booked. It does not reduce what the borrower owed.
+    //
+    // The forfeit cannot be skipped: `promo_balance > 0` implies the promo vault exists (it is
+    // the only way promo could have been redeemed onto the position), so there is no legitimate
+    // reason to omit the accounts. Their absence reverts rather than letting the write-off
+    // proceed without making lenders whole.
+    let forfeited = if position.promo_balance > 0 {
+        let promo_vault = ctx.accounts.promo_vault.as_mut().ok_or(HodlError::PromoAccountsRequired)?;
+        let promo_vault_token =
+            ctx.accounts.promo_vault_token.as_ref().ok_or(HodlError::PromoAccountsRequired)?;
+        forfeit_promo(
+            &mut position,
+            position_key,
+            market_key,
+            &mut ForfeitAccounts {
+                promo_vault,
+                promo_token: promo_vault_token,
+                market_vault: &ctx.accounts.vault,
+                mint: &ctx.accounts.mint,
+                token_program: ctx.accounts.token_program.key(),
+            },
+        )?
+    } else {
+        0
+    };
+    market.cash = to_u64(add(market.cash as u128, forfeited as u128)?)?;
 
     let loan = position.loans[index];
     let released = accrued_lp_interest(
@@ -75,6 +138,12 @@ pub fn handle_write_off_loan<'info>(ctx: Context<'info, WriteOffLoan<'info>>, lo
         now,
     )?;
     let loss = add(loan.principal as u128, released)?;
+    // `forfeited` already landed in `market.cash` above, so it already repaid part of this
+    // shortfall — booking the gross `loss` as bad debt on top would double-count it. Net it out
+    // before it reaches `covered` or `total_bad_debt`; it can exceed `loss` (forfeiture releases
+    // the position's whole promo balance, not just enough to cover this one loan), so floor at
+    // zero rather than using checked subtraction.
+    let net_loss = loss.saturating_sub(forfeited as u128);
 
     market.accrued_interest = market.accrued_interest.saturating_sub(released);
     market.total_borrows = market
@@ -87,28 +156,26 @@ pub fn handle_write_off_loan<'info>(ctx: Context<'info, WriteOffLoan<'info>>, lo
     )?;
 
     // The reserve absorbs what it can; the rest reaches lenders as a fall in the share price.
-    let covered = to_u64(loss.min(market.protocol_reserve as u128))?;
+    let covered = to_u64(net_loss.min(market.protocol_reserve as u128))?;
     market.protocol_reserve = market
         .protocol_reserve
         .checked_sub(covered)
         .ok_or(HodlError::MathOverflow)?;
-    market.total_bad_debt = add(market.total_bad_debt, loss)?;
+    market.total_bad_debt = add(market.total_bad_debt, net_loss)?;
 
     position.loans[index] = bytemuck::Zeroable::zeroed();
-    if !position.has_active_loans() {
-        position.promo_last_activity_at = now;
-    }
     let owner = position.owner;
     let total_bad_debt = market.total_bad_debt;
     drop(position);
 
     emit!(LoanWrittenOff {
         market: market_key,
-        position: ctx.accounts.position.key(),
+        position: position_key,
         owner,
         loan_id,
         principal: loan.principal,
-        loss,
+        loss: net_loss,
+        forfeited,
         covered_by_reserve: covered,
         total_bad_debt,
     });

@@ -241,8 +241,109 @@ pub struct LoanWrittenOff {
     pub owner: Pubkey,
     pub loan_id: u64,
     pub principal: u64,
-    /// Principal plus the lender interest released for it.
+    /// Principal plus the lender interest released for it, net of any promo forfeited in the
+    /// same call (`forfeited`). The gross figure is `loss + forfeited`.
     pub loss: u128,
+    /// Promo forfeited to lenders in this same write-off, already netted out of `loss` and
+    /// `total_bad_debt`. Zero when the position held no promo, or when it was already forfeited
+    /// by an earlier liquidation.
+    pub forfeited: u64,
     pub covered_by_reserve: u64,
     pub total_bad_debt: u128,
+}
+
+#[event]
+pub struct PromoVaultCreated {
+    pub market: Pubkey,
+    pub promo_vault: Pubkey,
+    pub vault: Pubkey,
+}
+
+#[event]
+pub struct PromoVaultFunded {
+    pub market: Pubkey,
+    pub amount: u64,
+    pub cash: u64,
+}
+
+#[event]
+pub struct PromoVaultWithdrawn {
+    pub market: Pubkey,
+    pub amount: u64,
+    pub cash: u64,
+}
+
+#[event]
+pub struct PromoCapSet {
+    pub old: u16,
+    pub new: u16,
+    pub by: Pubkey,
+}
+
+#[event]
+pub struct CampaignCreated {
+    pub market: Pubkey,
+    pub campaign: Pubkey,
+    pub campaign_id: u64,
+    pub budget: u64,
+    pub redeem_until: i64,
+}
+
+#[event]
+pub struct CampaignClosed {
+    pub market: Pubkey,
+    pub campaign: Pubkey,
+    pub campaign_id: u64,
+    pub granted: u64,
+    /// The unspent budget handed back to the vault's free cNGN.
+    pub returned: u64,
+}
+
+#[event]
+pub struct PromoRedeemed {
+    pub market: Pubkey,
+    pub position: Pubkey,
+    pub owner: Pubkey,
+    pub campaign_id: u64,
+    pub nonce: u64,
+    pub amount: u64,
+    pub promo_balance: u64,
+}
+
+#[event]
+pub struct PromoExpired {
+    pub market: Pubkey,
+    pub position: Pubkey,
+    pub owner: Pubkey,
+    pub amount: u64,
+}
+
+#[event]
+pub struct PromoRevoked {
+    pub market: Pubkey,
+    pub position: Pubkey,
+    pub owner: Pubkey,
+    pub amount: u64,
+}
+
+#[event]
+pub struct PromoReleased {
+    pub market: Pubkey,
+    pub position: Pubkey,
+    pub owner: Pubkey,
+    pub amount: u64,
+}
+
+#[event]
+pub struct PromoForfeited {
+    pub market: Pubkey,
+    pub position: Pubkey,
+    pub owner: Pubkey,
+    /// Promo removed from the position. Always the position's whole balance.
+    pub amount: u64,
+    /// cNGN that actually reached the market vault. Equal to `amount` except after an issuer
+    /// clawback from the promo vault, where the transfer is clamped to the balance on hand —
+    /// see `forfeit_promo`. An indexer summing what lenders received must use this, not
+    /// `amount`.
+    pub moved: u64,
 }

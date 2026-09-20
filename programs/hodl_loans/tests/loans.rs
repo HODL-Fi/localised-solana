@@ -145,7 +145,9 @@ fn price_accounts_must_match_the_positions_slots() {
 
     // The NGN feed must be the market's.
     let mut instruction = take(good.clone());
-    instruction.accounts[7] = AccountMeta::new_readonly(pyth_account(&setup.usdc), false);
+    // Found by key rather than by index: the account list grows between plans.
+    let slot = instruction.accounts.iter().position(|a| a.pubkey == ngn_feed()).unwrap();
+    instruction.accounts[slot] = AccountMeta::new_readonly(pyth_account(&setup.usdc), false);
     assert_hodl_error(send(&mut env.svm, &[instruction], &[&env.admin, &setup.borrower.key]), HodlError::PriceAccountMismatch);
 
     send(&mut env.svm, &[take(good)], &[&env.admin, &setup.borrower.key]).unwrap();
@@ -212,8 +214,7 @@ fn a_position_borrows_from_one_market() {
     env.take_loan(&setup.borrower, &setup, 1_000 * ONE_CNGN, 30 * DAY).unwrap();
 
     let other = env.create_mint(MintKind::CngnLike, 6);
-    let create = create_market_ix(&env.admin.pubkey(), &other, &TOKEN_2022, default_market_params());
-    send(&mut env.svm, &[create], &[&env.admin]).unwrap();
+    env.create_market_with_promo(&other);
     let lender = env.new_lender(&other, POOL_CNGN);
     env.deposit(&lender, &other, POOL_CNGN).unwrap();
 

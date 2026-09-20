@@ -1,20 +1,32 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
-use crate::constants::{ACCESS_SEED, BPS, MARKET_SEED, MIN_TENURE, POSITION_SEED};
+use crate::constants::{ACCESS_SEED, BPS, CONFIG_SEED, MARKET_SEED, MIN_TENURE, POSITION_SEED, PROMO_VAULT_SEED};
 use crate::errors::HodlError;
-use crate::events::LoanOpened;
+use crate::events::{LoanOpened, PromoExpired};
+use crate::instructions::promos::release_promo;
 use crate::math::checked::add;
 use crate::math::loan::lp_contribution;
-use crate::state::{Access, LoanSlot, Market, Position};
+use crate::state::{Access, Config, LoanSlot, Market, Position, PromoVault};
 use crate::token::transfer::transfer_from_vault;
-use crate::valuation::load_health;
+use crate::valuation::{load_health, ValuationRequest};
 
 #[derive(Accounts)]
 pub struct TakeLoan<'info> {
     pub owner: Signer<'info>,
     #[account(seeds = [ACCESS_SEED, owner.key().as_ref()], bump = access.bump)]
     pub access: Account<'info, Access>,
+    /// Carries `promo_cap_bps`, which bounds how much of a position's promo counts (spec §12).
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
+    /// Required when the position holds promo: step 3 may expire it, which credits the vault.
+    #[account(
+        mut,
+        seeds = [PROMO_VAULT_SEED, market.key().as_ref()],
+        bump = promo_vault.bump,
+        has_one = market
+    )]
+    pub promo_vault: Option<Box<Account<'info, PromoVault>>>,
     #[account(mut, seeds = [POSITION_SEED, owner.key().as_ref()], bump)]
     pub position: AccountLoader<'info, Position>,
     #[account(
@@ -75,14 +87,41 @@ pub fn handle_take_loan<'info>(
             HodlError::MarketMismatch
         );
         let index = position.free_loan_index().ok_or(HodlError::NoFreeLoanSlot)?;
+
+        // Spec §10 step 3: a quiet position's promo expires before it can support a new loan.
+        // `saturating_add` can only push the deadline later (never wrap it earlier), so this
+        // fails safe on overflow — it depends on `MarketParams::validate` requiring
+        // `promo_inactivity_seconds > 0`, so the two must not drift apart.
+        if position.promo_balance > 0
+            && !position.has_active_loans()
+            && now >= position.promo_last_activity_at.saturating_add(market.promo_inactivity_seconds)
+        {
+            let promo_vault = ctx
+                .accounts
+                .promo_vault
+                .as_mut()
+                .ok_or(HodlError::PromoAccountsRequired)?;
+            let amount = release_promo(&mut position, promo_vault)?;
+            emit!(PromoExpired {
+                market: market_key,
+                position: ctx.accounts.position.key(),
+                owner: position.owner,
+                amount,
+            });
+        }
+
+        let ngn_feed = ctx.accounts.ngn_feed.to_account_info();
         let health = load_health(
-            ctx.program_id,
             &position,
-            market,
-            &ctx.accounts.ngn_feed.to_account_info(),
-            ctx.remaining_accounts,
-            amount,
-            &clock,
+            &ValuationRequest {
+                program_id: ctx.program_id,
+                market,
+                ngn_feed: &ngn_feed,
+                remaining: ctx.remaining_accounts,
+                extra_debt: amount,
+                promo_cap_bps: ctx.accounts.config.promo_cap_bps,
+                clock: &clock,
+            },
         )?;
         require!(health.is_healthy(), HodlError::Unhealthy);
 

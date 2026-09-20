@@ -9,6 +9,7 @@ pub mod oracle;
 pub mod state;
 pub mod token;
 pub mod valuation;
+pub mod voucher;
 
 pub use constants::*;
 pub use errors::*;
@@ -100,6 +101,60 @@ pub mod hodl_loans {
 
     pub fn sweep_collateral_excess(ctx: Context<SweepCollateralExcess>) -> Result<()> {
         instructions::handle_sweep_collateral_excess(ctx)
+    }
+
+    pub fn create_promo_vault(ctx: Context<CreatePromoVault>) -> Result<()> {
+        instructions::handle_create_promo_vault(ctx)
+    }
+
+    pub fn fund_promo_vault(ctx: Context<FundPromoVault>, amount: u64) -> Result<()> {
+        instructions::handle_fund_promo_vault(ctx, amount)
+    }
+
+    pub fn withdraw_promo_vault(ctx: Context<WithdrawPromoVault>, amount: u64) -> Result<()> {
+        instructions::handle_withdraw_promo_vault(ctx, amount)
+    }
+
+    pub fn sweep_promo_excess(ctx: Context<SweepPromoExcess>) -> Result<()> {
+        instructions::handle_sweep_promo_excess(ctx)
+    }
+
+    pub fn set_promo_cap(ctx: Context<SetPromoCap>, promo_cap_bps: u16) -> Result<()> {
+        instructions::handle_set_promo_cap(ctx, promo_cap_bps)
+    }
+
+    pub fn create_campaign(
+        ctx: Context<CreateCampaign>,
+        campaign_id: u64,
+        budget: u64,
+        redeem_until: i64,
+    ) -> Result<()> {
+        instructions::handle_create_campaign(ctx, campaign_id, budget, redeem_until)
+    }
+
+    pub fn close_campaign(ctx: Context<CloseCampaign>) -> Result<()> {
+        instructions::handle_close_campaign(ctx)
+    }
+
+    pub fn redeem_promo(
+        ctx: Context<RedeemPromo>,
+        amount: u64,
+        nonce: u64,
+        voucher_expiry: i64,
+    ) -> Result<()> {
+        instructions::handle_redeem_promo(ctx, amount, nonce, voucher_expiry)
+    }
+
+    pub fn close_voucher_receipt(ctx: Context<CloseVoucherReceipt>) -> Result<()> {
+        instructions::handle_close_voucher_receipt(ctx)
+    }
+
+    pub fn expire_promo(ctx: Context<ExpirePromo>) -> Result<()> {
+        instructions::handle_expire_promo(ctx)
+    }
+
+    pub fn revoke_promo(ctx: Context<RevokePromo>) -> Result<()> {
+        instructions::handle_revoke_promo(ctx)
     }
 
     pub fn harvest_reserve(ctx: Context<HarvestReserve>, amount: u64) -> Result<()> {

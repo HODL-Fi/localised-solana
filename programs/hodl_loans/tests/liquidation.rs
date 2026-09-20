@@ -280,6 +280,8 @@ fn liquidation_rejections() {
 fn liquidation_checks_the_borrowed_market() {
     let (mut env, setup) = underwater();
     let other = env.create_mint(MintKind::CngnLike, 6);
+    // Deliberately no promo vault on `other`: the market-mismatch check must fire from the
+    // handler body, not depend on `other` having every optional account populated.
     let create = create_market_ix(&env.admin.pubkey(), &other, &TOKEN_2022, default_market_params());
     send(&mut env.svm, &[create], &[&env.admin]).unwrap();
     let liquidator = env.new_liquidator(&other, LOAN);
@@ -288,9 +290,42 @@ fn liquidation_checks_the_borrowed_market() {
     let owner = setup.borrower.pubkey();
     let prices = env.price_accounts(&owner);
     let program = env.mint_program(&setup.usdc);
-    let instruction = liquidate_ix(
+    let instruction = liquidate_ix_no_promo(
         &liquidator.pubkey(), &owner, &other, &liquidator.cngn, &setup.usdc, &program,
         &collateral_account, 0, ONE_CNGN, prices,
     );
     assert_hodl_error(send(&mut env.svm, &[instruction], &[&liquidator.key]), HodlError::MarketMismatch);
+}
+
+#[test]
+fn liquidation_and_write_off_both_succeed_on_a_market_with_no_promo_vault() {
+    // `create_promo_vault` is a separate admin action (`vault.rs`): a market that never got
+    // one must still support both liquidation and write-off. Before the promo accounts became
+    // `Option`, Anchor failed to deserialize the uninitialized promo-vault PDA before the
+    // handler ever ran, making both instructions permanently impossible on such a market.
+    let (mut env, setup) = Env::loan_ready_no_promo_vault();
+    let owner = setup.borrower.pubkey();
+
+    let prices = env.price_accounts(&owner);
+    let borrow = take_loan_ix_no_promo_vault(&owner, &setup.cngn, &setup.borrower_cngn, LOAN, 365 * DAY, prices);
+    send(&mut env.svm, &[borrow], &[&env.admin, &setup.borrower.key]).unwrap();
+    env.set_pyth_price(&setup.usdc, USDC_CRASHED, 0);
+
+    let liquidator = env.new_liquidator(&setup.cngn, LOAN);
+    let seized_to = env.create_token_account(&setup.usdc, &liquidator.pubkey());
+    let program = env.mint_program(&setup.usdc);
+    let prices = env.price_accounts(&owner);
+    let liquidate = liquidate_ix_no_promo(
+        &liquidator.pubkey(), &owner, &setup.cngn, &liquidator.cngn, &setup.usdc, &program,
+        &seized_to, 0, 100_000 * ONE_CNGN, prices,
+    );
+    send(&mut env.svm, &[liquidate], &[&liquidator.key]).expect("liquidate must succeed with no promo vault on the market");
+    assert!(env.position(&owner).loans[0].principal > 0, "a partial liquidation must leave debt remaining");
+
+    // Crash the price further so the remaining collateral is dust, then write off the rest.
+    env.set_pyth_price(&setup.usdc, 100_000, 0);
+    let prices = env.price_accounts(&owner);
+    let write_off = write_off_loan_ix_no_promo(&env.admin.pubkey(), &owner, &setup.cngn, 0, prices);
+    send(&mut env.svm, &[write_off], &[&env.admin]).expect("write_off must succeed with no promo vault on the market");
+    assert!(env.market(&setup.cngn).total_bad_debt > 0);
 }

@@ -72,6 +72,21 @@ pub const COLLATERAL_SEED: &[u8] = b"collateral";
 pub const COLLATERAL_VAULT_SEED: &[u8] = b"collateral_vault";
 #[constant]
 pub const POSITION_SEED: &[u8] = b"position";
+#[constant]
+pub const PROMO_VAULT_SEED: &[u8] = b"promo_vault";
+#[constant]
+pub const PROMO_VAULT_TOKEN_SEED: &[u8] = b"promo_vault_token";
+#[constant]
+pub const CAMPAIGN_SEED: &[u8] = b"campaign";
+#[constant]
+pub const VOUCHER_SEED: &[u8] = b"voucher";
+
+/// Domain separator in the voucher message (spec §12). It binds a signature to this program's
+/// voucher format, so a `promo_signer` key reused elsewhere cannot produce a valid voucher.
+/// Published in the IDL so the off-chain promo signer reads it rather than hardcoding a copy
+/// that could drift from the program's.
+#[constant]
+pub const VOUCHER_DOMAIN: &str = "hodl_loans:promo_voucher:v1";
 
 #[cfg(test)]
 mod tests {
@@ -88,6 +103,10 @@ mod tests {
             COLLATERAL_SEED,
             COLLATERAL_VAULT_SEED,
             POSITION_SEED,
+            PROMO_VAULT_SEED,
+            PROMO_VAULT_TOKEN_SEED,
+            CAMPAIGN_SEED,
+            VOUCHER_SEED,
         ];
         for (i, a) in seeds.iter().enumerate() {
             for b in &seeds[i + 1..] {

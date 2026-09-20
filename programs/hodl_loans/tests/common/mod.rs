@@ -107,7 +107,8 @@ pub struct Env {
 impl Env {
     /// Program loaded with `admin` as its upgrade authority. `Config` is not initialized.
     pub fn new() -> Self {
-        let mut svm = LiteSVM::new();
+        // `with_precompiles` loads the native Ed25519 program, which promo vouchers need.
+        let mut svm = LiteSVM::new().with_precompiles();
         let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/deploy/hodl_loans.so"));
         svm.add_program(hodl_loans::ID, bytes).unwrap();
         let env = Self {
@@ -433,9 +434,24 @@ impl Env {
     pub fn with_cngn_market() -> (Self, Pubkey) {
         let mut env = Self::initialized();
         let mint = env.create_mint(MintKind::CngnLike, 6);
-        let instruction = create_market_ix(&env.admin.pubkey(), &mint, &TOKEN_2022, default_market_params());
+        let admin = env.admin.pubkey();
+        let instruction = create_market_ix(&admin, &mint, &TOKEN_2022, default_market_params());
         send(&mut env.svm, &[instruction], &[&env.admin]).expect("create market");
+        // Every market gets a promo vault, as a deployed one would: `take_loan` may expire promo
+        // (spec §10 step 3), so the account is part of its shape whether or not promo is funded.
+        send(&mut env.svm, &[create_promo_vault_ix(&admin, &mint)], &[&env.admin])
+            .expect("create promo vault");
         (env, mint)
+    }
+
+    /// A second market, with the promo vault every market needs: `take_loan`, `liquidate` and
+    /// `write_off_loan` all name it, so a market without one cannot be borrowed against.
+    pub fn create_market_with_promo(&mut self, mint: &Pubkey) {
+        let admin = self.admin.pubkey();
+        let create = create_market_ix(&admin, mint, &TOKEN_2022, default_market_params());
+        send(&mut self.svm, &[create], &[&self.admin]).expect("create market");
+        send(&mut self.svm, &[create_promo_vault_ix(&admin, mint)], &[&self.admin])
+            .expect("create promo vault");
     }
 
     pub fn market(&self, mint: &Pubkey) -> hodl_loans::Market {
@@ -675,6 +691,63 @@ pub fn close_position_ix(owner: &Pubkey, rent_payer: &Pubkey) -> Instruction {
             access: access_pda(owner),
             position: position_pda(owner),
             rent_payer: *rent_payer,
+            market: None,
+            promo_vault: None,
+        },
+    )
+}
+
+// ---- Promo expiry and revocation (Task 6) ----
+
+pub fn expire_promo_ix(mint: &Pubkey, owner: &Pubkey) -> Instruction {
+    ix(
+        hodl_loans::instruction::ExpirePromo {},
+        hodl_loans::accounts::ExpirePromo {
+            market: market_pda(mint),
+            promo_vault: promo_vault_pda(mint),
+            position: position_pda(owner),
+        },
+    )
+}
+
+pub fn revoke_promo_ix(admin: &Pubkey, mint: &Pubkey, owner: &Pubkey) -> Instruction {
+    ix(
+        hodl_loans::instruction::RevokePromo {},
+        hodl_loans::accounts::RevokePromo {
+            admin: *admin,
+            config: config_pda(),
+            market: market_pda(mint),
+            promo_vault: promo_vault_pda(mint),
+            position: position_pda(owner),
+        },
+    )
+}
+
+/// `close_position`, naming the promo vault so a position still holding promo can hand it back.
+pub fn close_position_with_promo_ix(owner: &Pubkey, rent_payer: &Pubkey, mint: &Pubkey) -> Instruction {
+    close_position_with_split_promo_ix(owner, rent_payer, mint, mint)
+}
+
+/// `close_position`, letting the `market` and `promo_vault` accounts come from two different
+/// markets. `promo_vault` derives from its own self-referential seeds (no `has_one = market`
+/// constraint links it back to `market`), so this shape can present a foreign vault behind an
+/// otherwise-legitimate `market` account — the only caller of `release_promo` able to do so, and
+/// the reason `release_promo` carries its own chokepoint check rather than trusting callers.
+pub fn close_position_with_split_promo_ix(
+    owner: &Pubkey,
+    rent_payer: &Pubkey,
+    market_mint: &Pubkey,
+    vault_mint: &Pubkey,
+) -> Instruction {
+    ix(
+        hodl_loans::instruction::ClosePosition {},
+        hodl_loans::accounts::ClosePosition {
+            market: Some(market_pda(market_mint)),
+            promo_vault: Some(promo_vault_pda(vault_mint)),
+            owner: *owner,
+            access: access_pda(owner),
+            position: position_pda(owner),
+            rent_payer: *rent_payer,
         },
     )
 }
@@ -805,6 +878,38 @@ pub fn take_loan_ix(owner: &Pubkey, mint: &Pubkey, owner_token: &Pubkey, amount:
         hodl_loans::accounts::TakeLoan {
             owner: *owner,
             access: access_pda(owner),
+            config: config_pda(),
+            promo_vault: Some(promo_vault_pda(mint)),
+            position: position_pda(owner),
+            market: market_pda(mint),
+            mint: *mint,
+            vault: market_vault_pda(mint),
+            owner_token: *owner_token,
+            ngn_feed: ngn_feed(),
+            token_program: TOKEN_2022,
+        },
+    );
+    instruction.accounts.extend(prices);
+    instruction
+}
+
+/// Same as `take_loan_ix`, but without the promo vault account — for exercising the
+/// `PromoAccountsRequired` guard when a position's promo is due for release.
+pub fn take_loan_ix_no_promo_vault(
+    owner: &Pubkey,
+    mint: &Pubkey,
+    owner_token: &Pubkey,
+    amount: u64,
+    tenure_seconds: i64,
+    prices: Vec<AccountMeta>,
+) -> Instruction {
+    let mut instruction = ix(
+        hodl_loans::instruction::TakeLoan { amount, tenure_seconds },
+        hodl_loans::accounts::TakeLoan {
+            owner: *owner,
+            access: access_pda(owner),
+            config: config_pda(),
+            promo_vault: None,
             position: position_pda(owner),
             market: market_pda(mint),
             mint: *mint,
@@ -905,6 +1010,31 @@ impl Env {
         let borrower_cngn = env.create_token_account(&cngn, &borrower.pubkey());
         (env, LoanSetup { cngn, usdc, lender, borrower, borrower_cngn })
     }
+
+    /// Same shape as `loan_ready`, but the market never got a `create_promo_vault` call —
+    /// `vault.rs` states a market can run without one. Liquidation and write-off must still
+    /// work here (Task 7 fix round, Fix 1): the promo accounts are `Option` and only required
+    /// when a position actually holds promo, which is never possible on a promo-less market.
+    pub fn loan_ready_no_promo_vault() -> (Self, LoanSetup) {
+        let mut env = Self::initialized();
+        let cngn = env.create_mint(MintKind::CngnLike, 6);
+        let admin = env.admin.pubkey();
+        let create = create_market_ix(&admin, &cngn, &TOKEN_2022, default_market_params());
+        send(&mut env.svm, &[create], &[&env.admin]).expect("create market");
+        // The program reads a Switchboard result from slot 0 as never updated.
+        env.svm.warp_to_slot(1_000);
+        let lender = env.new_lender(&cngn, POOL_CNGN);
+        env.deposit(&lender, &cngn, POOL_CNGN).unwrap();
+        env.set_ngn_price(NGN_USD, NGN_SPREAD);
+
+        let usdc = env.list_spl_collateral(6);
+        env.set_pyth_price(&usdc, ONE_DOLLAR, 0);
+
+        let borrower = env.new_borrower();
+        env.deposit_collateral(&borrower, &usdc, 1_000 * ONE_USDC);
+        let borrower_cngn = env.create_token_account(&cngn, &borrower.pubkey());
+        (env, LoanSetup { cngn, usdc, lender, borrower, borrower_cngn })
+    }
 }
 
 // ---- Repayment (Task 7) ----
@@ -951,6 +1081,7 @@ pub fn withdraw_collateral_ix(
         hodl_loans::accounts::WithdrawCollateral {
             owner: *owner,
             access: access_pda(owner),
+            config: config_pda(),
             position: position_pda(owner),
             collateral: collateral_pda(mint),
             mint: *mint,
@@ -1027,6 +1158,50 @@ pub fn liquidate_ix(
         hodl_loans::instruction::Liquidate { loan_id, amount },
         hodl_loans::accounts::Liquidate {
             liquidator: *liquidator,
+            config: config_pda(),
+            promo_vault: Some(promo_vault_pda(mint)),
+            promo_vault_token: Some(promo_vault_token_pda(mint)),
+            position: position_pda(position_owner),
+            market: market_pda(mint),
+            mint: *mint,
+            vault: market_vault_pda(mint),
+            liquidator_token: *liquidator_token,
+            collateral: collateral_pda(collateral_mint),
+            collateral_mint: *collateral_mint,
+            collateral_vault: collateral_vault_pda(collateral_mint),
+            liquidator_collateral: *liquidator_collateral,
+            ngn_feed: ngn_feed(),
+            token_program: TOKEN_2022,
+            collateral_token_program: *collateral_token_program,
+        },
+    );
+    instruction.accounts.extend(prices);
+    instruction
+}
+
+/// Same as `liquidate_ix`, but with no promo accounts — for a market that never got a
+/// `create_promo_vault` call, or for exercising the `PromoAccountsRequired` guard when a
+/// promo-holding position's accounts are omitted.
+#[allow(clippy::too_many_arguments)]
+pub fn liquidate_ix_no_promo(
+    liquidator: &Pubkey,
+    position_owner: &Pubkey,
+    mint: &Pubkey,
+    liquidator_token: &Pubkey,
+    collateral_mint: &Pubkey,
+    collateral_token_program: &Pubkey,
+    liquidator_collateral: &Pubkey,
+    loan_id: u64,
+    amount: u64,
+    prices: Vec<AccountMeta>,
+) -> Instruction {
+    let mut instruction = ix(
+        hodl_loans::instruction::Liquidate { loan_id, amount },
+        hodl_loans::accounts::Liquidate {
+            liquidator: *liquidator,
+            config: config_pda(),
+            promo_vault: None,
+            promo_vault_token: None,
             position: position_pda(position_owner),
             market: market_pda(mint),
             mint: *mint,
@@ -1094,6 +1269,34 @@ pub fn write_off_loan_ix(admin: &Pubkey, position_owner: &Pubkey, mint: &Pubkey,
             position: position_pda(position_owner),
             market: market_pda(mint),
             ngn_feed: ngn_feed(),
+            mint: *mint,
+            vault: market_vault_pda(mint),
+            promo_vault: Some(promo_vault_pda(mint)),
+            promo_vault_token: Some(promo_vault_token_pda(mint)),
+            token_program: TOKEN_2022,
+        },
+    );
+    instruction.accounts.extend(prices);
+    instruction
+}
+
+/// Same as `write_off_loan_ix`, but with no promo accounts — for a market that never got a
+/// `create_promo_vault` call, or for exercising the `PromoAccountsRequired` guard when a
+/// promo-holding position's accounts are omitted.
+pub fn write_off_loan_ix_no_promo(admin: &Pubkey, position_owner: &Pubkey, mint: &Pubkey, loan_id: u64, prices: Vec<AccountMeta>) -> Instruction {
+    let mut instruction = ix(
+        hodl_loans::instruction::WriteOffLoan { loan_id },
+        hodl_loans::accounts::WriteOffLoan {
+            admin: *admin,
+            config: config_pda(),
+            position: position_pda(position_owner),
+            market: market_pda(mint),
+            ngn_feed: ngn_feed(),
+            mint: *mint,
+            vault: market_vault_pda(mint),
+            promo_vault: None,
+            promo_vault_token: None,
+            token_program: TOKEN_2022,
         },
     );
     instruction.accounts.extend(prices);
@@ -1235,4 +1438,341 @@ impl Env {
         .unwrap();
         send(&mut self.svm, &[instruction], &[&self.admin]).expect("update multiplier");
     }
+}
+
+// ---- The promo vault (Task 1) ----
+
+pub fn promo_vault_pda(market_mint: &Pubkey) -> Pubkey {
+    pda(&[b"promo_vault", market_pda(market_mint).as_ref()])
+}
+
+pub fn promo_vault_token_pda(market_mint: &Pubkey) -> Pubkey {
+    pda(&[b"promo_vault_token", market_pda(market_mint).as_ref()])
+}
+
+pub fn create_promo_vault_ix(admin: &Pubkey, mint: &Pubkey) -> Instruction {
+    ix(
+        hodl_loans::instruction::CreatePromoVault {},
+        hodl_loans::accounts::CreatePromoVault {
+            admin: *admin,
+            config: config_pda(),
+            market: market_pda(mint),
+            mint: *mint,
+            promo_vault: promo_vault_pda(mint),
+            vault: promo_vault_token_pda(mint),
+            token_program: TOKEN_2022,
+            system_program: system_program::ID,
+        },
+    )
+}
+
+pub fn fund_promo_vault_ix(admin: &Pubkey, mint: &Pubkey, source: &Pubkey, amount: u64) -> Instruction {
+    ix(
+        hodl_loans::instruction::FundPromoVault { amount },
+        hodl_loans::accounts::FundPromoVault {
+            admin: *admin,
+            config: config_pda(),
+            market: market_pda(mint),
+            mint: *mint,
+            promo_vault: promo_vault_pda(mint),
+            vault: promo_vault_token_pda(mint),
+            source: *source,
+            token_program: TOKEN_2022,
+        },
+    )
+}
+
+pub fn withdraw_promo_vault_ix(admin: &Pubkey, mint: &Pubkey, destination: &Pubkey, amount: u64) -> Instruction {
+    ix(
+        hodl_loans::instruction::WithdrawPromoVault { amount },
+        hodl_loans::accounts::WithdrawPromoVault {
+            admin: *admin,
+            config: config_pda(),
+            market: market_pda(mint),
+            mint: *mint,
+            promo_vault: promo_vault_pda(mint),
+            vault: promo_vault_token_pda(mint),
+            destination: *destination,
+            token_program: TOKEN_2022,
+        },
+    )
+}
+
+pub fn sweep_promo_excess_ix(admin: &Pubkey, mint: &Pubkey, destination: &Pubkey) -> Instruction {
+    ix(
+        hodl_loans::instruction::SweepPromoExcess {},
+        hodl_loans::accounts::SweepPromoExcess {
+            admin: *admin,
+            config: config_pda(),
+            market: market_pda(mint),
+            mint: *mint,
+            promo_vault: promo_vault_pda(mint),
+            vault: promo_vault_token_pda(mint),
+            destination: *destination,
+            token_program: TOKEN_2022,
+        },
+    )
+}
+
+impl Env {
+    /// A cNGN market whose promo vault holds `funded` cNGN.
+    pub fn with_promo_vault(funded: u64) -> (Self, Pubkey) {
+        let (mut env, cngn) = Self::with_cngn_market();
+        let admin = env.admin.pubkey();
+        if funded > 0 {
+            let source = env.create_token_account(&cngn, &admin);
+            env.mint_to(&cngn, &source, funded);
+            let instruction = fund_promo_vault_ix(&admin, &cngn, &source, funded);
+            send(&mut env.svm, &[instruction], &[&env.admin]).expect("fund promo vault");
+        }
+        (env, cngn)
+    }
+
+    pub fn promo_vault(&self, market_mint: &Pubkey) -> hodl_loans::PromoVault {
+        self.fetch(&promo_vault_pda(market_mint))
+    }
+
+    /// A treasury-owned cNGN account, the only destination the sweeps and withdrawals accept.
+    pub fn treasury_token(&mut self, mint: &Pubkey) -> Pubkey {
+        let treasury = self.treasury.pubkey();
+        self.create_token_account(mint, &treasury)
+    }
+}
+
+// ---- Campaigns (Task 2) ----
+
+pub fn campaign_pda(market_mint: &Pubkey, campaign_id: u64) -> Pubkey {
+    pda(&[b"campaign", market_pda(market_mint).as_ref(), &campaign_id.to_le_bytes()])
+}
+
+pub fn create_campaign_ix(
+    admin: &Pubkey,
+    mint: &Pubkey,
+    campaign_id: u64,
+    budget: u64,
+    redeem_until: i64,
+) -> Instruction {
+    ix(
+        hodl_loans::instruction::CreateCampaign { campaign_id, budget, redeem_until },
+        hodl_loans::accounts::CreateCampaign {
+            admin: *admin,
+            config: config_pda(),
+            market: market_pda(mint),
+            promo_vault: promo_vault_pda(mint),
+            campaign: campaign_pda(mint, campaign_id),
+            system_program: system_program::ID,
+        },
+    )
+}
+
+pub fn close_campaign_ix(admin: &Pubkey, mint: &Pubkey, campaign_id: u64) -> Instruction {
+    ix(
+        hodl_loans::instruction::CloseCampaign {},
+        hodl_loans::accounts::CloseCampaign {
+            admin: *admin,
+            config: config_pda(),
+            market: market_pda(mint),
+            promo_vault: promo_vault_pda(mint),
+            campaign: campaign_pda(mint, campaign_id),
+        },
+    )
+}
+
+impl Env {
+    pub fn campaign(&self, market_mint: &Pubkey, campaign_id: u64) -> hodl_loans::Campaign {
+        self.fetch(&campaign_pda(market_mint, campaign_id))
+    }
+
+    /// Creates campaign `id` with `budget`, redeemable for a year.
+    pub fn create_campaign(&mut self, mint: &Pubkey, campaign_id: u64, budget: u64) {
+        let admin = self.admin.pubkey();
+        let until = self.now() + 365 * 86_400;
+        let instruction = create_campaign_ix(&admin, mint, campaign_id, budget, until);
+        send(&mut self.svm, &[instruction], &[&self.admin]).expect("create campaign");
+    }
+}
+
+// ---- Vouchers (Task 4) ----
+
+pub const ED25519_PROGRAM: Pubkey = hodl_loans::voucher::ED25519_PROGRAM_ID;
+pub fn instructions_sysvar() -> Pubkey {
+    solana_instructions_sysvar::ID
+}
+
+pub fn voucher_pda(campaign: &Pubkey, nonce: u64) -> Pubkey {
+    pda(&[b"voucher", campaign.as_ref(), &nonce.to_le_bytes()])
+}
+
+/// An Ed25519 program instruction proving `signer` signed `message`, in the layout the native
+/// program reads: two header bytes, one 14-byte descriptor, then the signature, key and message.
+/// Built by hand because no dependency here ships the SDK's builder.
+pub fn ed25519_verify_ix(signer: &Keypair, message: &[u8]) -> Instruction {
+    let signature_offset: u16 = 16;
+    let public_key_offset = signature_offset + 64;
+    let message_offset = public_key_offset + 32;
+    let mut data = vec![1u8, 0u8];
+    for value in [
+        signature_offset,
+        u16::MAX,
+        public_key_offset,
+        u16::MAX,
+        message_offset,
+        message.len() as u16,
+        u16::MAX,
+    ] {
+        data.extend_from_slice(&value.to_le_bytes());
+    }
+    data.extend_from_slice(signer.sign_message(message).as_ref());
+    data.extend_from_slice(signer.pubkey().as_ref());
+    data.extend_from_slice(message);
+    Instruction::new_with_bytes(ED25519_PROGRAM, &data, vec![])
+}
+
+pub fn redeem_promo_ix(
+    payer: &Pubkey,
+    owner: &Pubkey,
+    mint: &Pubkey,
+    campaign_id: u64,
+    amount: u64,
+    nonce: u64,
+    voucher_expiry: i64,
+) -> Instruction {
+    let campaign = campaign_pda(mint, campaign_id);
+    ix(
+        hodl_loans::instruction::RedeemPromo { amount, nonce, voucher_expiry },
+        hodl_loans::accounts::RedeemPromo {
+            payer: *payer,
+            owner: *owner,
+            access: access_pda(owner),
+            config: config_pda(),
+            market: market_pda(mint),
+            position: position_pda(owner),
+            promo_vault: promo_vault_pda(mint),
+            campaign,
+            voucher_receipt: voucher_pda(&campaign, nonce),
+            instructions_sysvar: instructions_sysvar(),
+            system_program: system_program::ID,
+        },
+    )
+}
+
+pub fn close_voucher_receipt_ix(rent_payer: &Pubkey, campaign: &Pubkey, nonce: u64) -> Instruction {
+    ix(
+        hodl_loans::instruction::CloseVoucherReceipt {},
+        hodl_loans::accounts::CloseVoucherReceipt {
+            rent_payer: *rent_payer,
+            voucher_receipt: voucher_pda(campaign, nonce),
+        },
+    )
+}
+
+impl Env {
+    /// The message the promo signer must sign for this voucher.
+    pub fn voucher_message(
+        &self,
+        mint: &Pubkey,
+        campaign_id: u64,
+        wallet: &Pubkey,
+        amount: u64,
+        nonce: u64,
+        voucher_expiry: i64,
+    ) -> Vec<u8> {
+        hodl_loans::voucher::PromoVoucher::new(
+            market_pda(mint),
+            campaign_id,
+            *wallet,
+            amount,
+            nonce,
+            voucher_expiry,
+        )
+        .message()
+        .unwrap()
+    }
+
+    /// Redeems a voucher: the Ed25519 proof first, then the redemption, in one transaction.
+    pub fn redeem_promo(
+        &mut self,
+        borrower: &Borrower,
+        mint: &Pubkey,
+        campaign_id: u64,
+        amount: u64,
+        nonce: u64,
+    ) -> TxResult {
+        let expiry = self.now() + 86_400;
+        self.redeem_voucher_signed_by(&self.promo_signer.insecure_clone(), borrower, mint, campaign_id, amount, nonce, expiry)
+    }
+
+    /// The same, with the signing key and expiry spelled out — for the cases where one of them
+    /// is meant to be wrong.
+    #[allow(clippy::too_many_arguments)]
+    pub fn redeem_voucher_signed_by(
+        &mut self,
+        signer: &Keypair,
+        borrower: &Borrower,
+        mint: &Pubkey,
+        campaign_id: u64,
+        amount: u64,
+        nonce: u64,
+        voucher_expiry: i64,
+    ) -> TxResult {
+        let owner = borrower.pubkey();
+        let message = self.voucher_message(mint, campaign_id, &owner, amount, nonce, voucher_expiry);
+        let admin = self.admin.pubkey();
+        let instructions = vec![
+            ed25519_verify_ix(signer, &message),
+            redeem_promo_ix(&admin, &owner, mint, campaign_id, amount, nonce, voucher_expiry),
+        ];
+        send(&mut self.svm, &instructions, &[&self.admin, &borrower.key])
+    }
+
+    pub fn voucher_receipt(&self, campaign: &Pubkey, nonce: u64) -> hodl_loans::VoucherReceipt {
+        self.fetch(&voucher_pda(campaign, nonce))
+    }
+}
+
+// ---- Promo in the health check (Task 5) ----
+
+impl Env {
+    /// `Env::loan_ready` plus a funded promo vault and one open campaign, so a borrower can
+    /// hold promo while borrowing against real collateral.
+    pub fn promo_ready() -> (Self, LoanSetup) {
+        let (mut env, setup) = Self::loan_ready();
+        let admin = env.admin.pubkey();
+        let source = env.create_token_account(&setup.cngn, &admin);
+        env.mint_to(&setup.cngn, &source, 10_000_000 * ONE_CNGN);
+        let fund = fund_promo_vault_ix(&admin, &setup.cngn, &source, 10_000_000 * ONE_CNGN);
+        send(&mut env.svm, &[fund], &[&env.admin]).expect("fund promo vault");
+        env.create_campaign(&setup.cngn, 1, 5_000_000 * ONE_CNGN);
+        (env, setup)
+    }
+
+    /// Raises the per-position promo ceiling, for the cases that need more than the default.
+    pub fn set_max_promo_per_position(&mut self, mint: &Pubkey, max: u64) {
+        let params = hodl_loans::MarketParams { max_promo_per_position: max, ..default_market_params() };
+        let instruction = update_market_params_ix(&self.admin.pubkey(), mint, params);
+        send(&mut self.svm, &[instruction], &[&self.admin]).expect("update market params");
+    }
+}
+
+// ---- The promo cap (Task 8) ----
+
+/// `set_promo_cap` re-checks every listed asset, so the caller passes them all, in ascending
+/// key order.
+pub fn set_promo_cap_ix(admin: &Pubkey, promo_cap_bps: u16, assets: &[Pubkey]) -> Instruction {
+    let mut instruction = ix(
+        hodl_loans::instruction::SetPromoCap { promo_cap_bps },
+        hodl_loans::accounts::SetPromoCap { admin: *admin, config: config_pda() },
+    );
+    let mut sorted: Vec<Pubkey> = assets.iter().map(collateral_pda).collect();
+    sorted.sort();
+    instruction.accounts.extend(sorted.into_iter().map(|k| AccountMeta::new_readonly(k, false)));
+    instruction
+}
+
+/// Serialises a `CollateralAsset` (discriminator + fields), for planting one at an arbitrary
+/// key with `Env::set_account_data` — used to forge a look-alike asset in tests.
+pub fn collateral_asset_bytes(asset: &hodl_loans::CollateralAsset) -> Vec<u8> {
+    let mut data = Vec::new();
+    asset.try_serialize(&mut data).unwrap();
+    data
 }

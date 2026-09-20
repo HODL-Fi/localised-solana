@@ -130,6 +130,39 @@ fn pairs_cover_the_slots_left_after_withdrawal() {
 }
 
 #[test]
+fn withdrawal_recomputes_the_promo_cap_against_the_post_withdrawal_collateral() {
+    // Scope note: `own_value` feeds both the base LTV term and the promo cap, so this cannot
+    // isolate a promo-only ordering regression — moving the health check before the decrement
+    // also trips three pre-existing withdraw tests. What this adds is the promo-carrying case
+    // at the boundary, which none of those three cover.
+    //
+    // 1,000 USDC collateral, 400,000 cNGN of promo ($249.75 at the NGN bid — comfortably past
+    // either candidate cap below), $600.60 of debt. Withdrawing 400 USDC:
+    //   post-withdrawal (correct): limit = 0.7 * $600 + min(promo, 20% * $600 = $120) = $540
+    //     < $600.60 debt -> must be rejected.
+    //   pre-withdrawal (the bug): limit = 0.7 * $1,000 + min(promo, 20% * $1,000 = $200) = $900
+    //     >= $600.60 debt -> would be allowed.
+    let (mut env, setup) = Env::promo_ready();
+    let borrower = &setup.borrower;
+    let owner = borrower.pubkey();
+    env.set_max_promo_per_position(&setup.cngn, 1_000_000 * ONE_CNGN);
+    env.redeem_promo(borrower, &setup.cngn, 1, 400_000 * ONE_CNGN, 1).unwrap();
+    env.take_loan(borrower, &setup, 960_000 * ONE_CNGN, 365 * DAY).unwrap();
+
+    let token = env.create_token_account(&setup.usdc, &owner);
+    let withdraw = withdraw_collateral_ix(
+        &owner,
+        &setup.usdc,
+        &SPL_TOKEN,
+        &token,
+        Some(&setup.cngn),
+        400 * ONE_USDC,
+        price_pairs(&[setup.usdc]),
+    );
+    assert_hodl_error(env.sponsored(withdraw, &borrower.key), HodlError::Unhealthy);
+}
+
+#[test]
 fn withdrawal_checks_the_borrowed_market() {
     let (mut env, setup) = Env::loan_ready();
     let owner = setup.borrower.pubkey();
