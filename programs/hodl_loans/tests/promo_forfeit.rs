@@ -274,13 +274,24 @@ fn liquidation_at_the_promo_lifted_boundary_never_books_bad_debt() {
     // before the liquidation bonus, which only shrinks recoverable value further — a single
     // seizure can never fully repay it; this is necessarily a partial liquidation.
     env.set_pyth_price(&setup.usdc, 999 * ONE_DOLLAR / 1_000, 0);
+    let market_cash_before = env.market(&setup.cngn).cash;
+    let promo_cash_before = env.promo_vault(&setup.cngn).cash;
     env.liquidate(&liquidator, &setup, &setup.usdc, &seized_to, 0, debt_raw)
         .expect("liquidation must succeed once nudged past the line");
 
-    // What matters is that the shortfall a pure-collateral recovery cannot reach is never
-    // booked as bad debt: `total_bad_debt` is `write_off_loan`'s field alone, and the full
-    // (uncapped) promo balance — not just the capped counted portion — already reached the
-    // market as cash.
+    // This is the actual recovery-vs-lift comparison, and the reason the assertions above are
+    // not enough on their own. The lift is bounded by the 20% cap on $1,000 of own collateral,
+    // so it is at most $200 — pinned by the `NotLiquidatable` assertion above, which only holds
+    // because promo raised the line that far. The recovery is the FULL grant, uncapped: 500,000
+    // cNGN, worth about $312 at the NGN bid. Recovery therefore exceeds lift by roughly $112,
+    // and these two assertions pin that the whole grant really moved rather than the counted
+    // portion.
+    assert_eq!(env.promo_vault(&setup.cngn).cash, promo_cash_before - grant);
+    assert!(env.market(&setup.cngn).cash >= market_cash_before + grant);
+
+    // `total_bad_debt` is written only by `write_off_loan`, which this test never calls, so on
+    // its own this says little — it is here to record that the position never reached the
+    // write-off path at all, not as evidence that the lift was covered.
     assert_eq!(env.market(&setup.cngn).total_bad_debt, 0);
     assert_eq!(env.position(&owner).promo_balance, 0);
     assert_eq!(env.promo_vault(&setup.cngn).outstanding, 0);
