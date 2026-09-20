@@ -27,6 +27,16 @@ What the Plan 2 reviews raised and deliberately left for later. The whole-branch
 
 ## Plan 6 (hardening, fuzzing, devnet)
 
+> **Partly resolved 2026-09-21 by Plan 6** (`2026-09-20-plan-6-math-bounds-and-shape.md`): the
+> checked-math sweep including `rescale`'s unchecked `exponent + USD_DECIMALS`; the parameter
+> bounds (collateral `decimals`, and `ngn_max_stale_slots` — `max_price_age_seconds` turned out
+> to be bounded already); `lp_interest` is now `#[cfg(test)]`; and the spread rounding, which was
+> worse than recorded here — Pyth's confidence had the identical defect, and rounding uncertainty
+> down is anti-conservative on *both* sides at once, since collateral counts at `price − conf`
+> and debt at `price + conf`. Everything else below stands: the Switchboard owner check, supply
+> chain, `valuation.rs` PDA re-derivation, `harvest_reserve` accrual and `take_loan` check order
+> go to Plan 7; the test gaps, Trident invariants and `cargo fmt` to Plan 8.
+
 - **Switchboard:** add an owner check against the On-Demand program ID, and either assert `permit_write_by_authority == 0` or record the feed authority as an accepted trust assumption (spec §20 item 4).
 - **Supply chain:** `switchboard-on-demand` pulls `switchboard-protos` (vendored `protoc` binaries at build time), `prost`, `libsecp256k1`, `rust_decimal` and borsh 0.9 just to read a 128-byte struct. Consider vendoring `CurrentResult`, its offset and the discriminator, keeping the crate as a dev-dependency with a test pinning size/offset/discriminator.
 - **Parameter bounds:** collateral `decimals` (above 38 every health check fails with `MathOverflow`), `max_price_age_seconds`, `ngn_max_stale_slots`.

@@ -714,6 +714,6 @@ git commit -m "fix: a substituted collateral vault reports CollateralVaultMismat
 
 - `./scripts/test.sh` reports 240 passing tests and `cargo clippy -p hodl_loans --all-targets -- -D warnings` is clean.
 - `grep -rn "fn pow10" programs/hodl_loans/src/` returns exactly one hit, in `math/checked.rs`.
-- `grep -rn "too_many_arguments" programs/hodl_loans/src/` returns nothing.
+- `grep -rn "too_many_arguments" programs/hodl_loans/src/` returns no **attribute** in `math/liquidation.rs`. Two hits remain and both are correct: the `#[allow]` in `token/transfer.rs` is pre-existing, unrelated to `Liquidate`, and out of this plan's scope; the other is the phrase inside `SeizureInputs`'s own doc comment explaining why the attribute went away.
 - No raw `-=` remains on an account field in `programs/hodl_loans/src/instructions/`.
-- The Plan 2, 3 and 4 follow-ups have their "math, bounds and shape" entries struck through with a pointer to this plan, the way Plan 2's own entries were struck when Plans 3, 4 and 5 resolved them.
+- The Plan 2, 3 and 4 follow-ups carry a resolution note on their Plan 6 sections naming the entries this plan closed, in the same form Plan 2 already uses for the items Plans 3, 4 and 5 resolved. **This is the controller's to do, not a task's** — it spans three documents no task owns, and listing it here without a task to produce it was a defect in this plan that Task 7's implementer caught.

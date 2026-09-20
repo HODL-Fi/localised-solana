@@ -17,6 +17,15 @@ What the Plan 4 reviews raised and deliberately left for later. The whole-branch
 
 ## Plan 6 (hardening, fuzzing, devnet)
 
+> **Partly resolved 2026-09-21 by Plan 6** (`2026-09-20-plan-6-math-bounds-and-shape.md`):
+> `seize_for_repayment`'s eight positional arguments are now a `SeizureInputs` struct and the
+> `#[allow(clippy::too_many_arguments)]` is gone, so `collateral_price` and `multiplier` can no
+> longer be transposed silently. The `withdraw_collateral` CU headroom item was already closed by
+> Plan 5, which raised that ceiling to 95,000. The `valuation.rs` PDA re-derivation and the
+> missing per-asset borrow pause go to Plan 7; the xStock fixture's real `TokenMetadata` to
+> Plan 8. The pathological-asset overflow and the `CollateralListed.kind` field order remain
+> documented rather than fixed.
+
 - **Re-derive the `CollateralAsset` PDA in `valuation.rs`.** It admits the account by owner + discriminator + stored mint rather than re-deriving `["collateral", mint]` with the stored bump. That is sound today only because of a *global* argument — the program creates these accounts at that PDA and nowhere else — and since Plan 4 the same account's `kind` also decides how many accounts the health walk consumes, so the assumption carries more weight than when Plan 2 first recorded it. Two lines and one hash of compute converts a whole-program argument into a local one. Raised out of the Plan 2 list by the Plan 4 whole-branch review.
 - **`take_loan` does not re-check the collateral mint**, so new debt can be drawn against an asset whose transfer hook the issuer has since switched on — the token program will refuse to seize it, but borrowing continues. The obvious fix (checking inside `load_collateral_values`) is wrong: it would re-seal `liquidate` and `write_off_loan`. What is missing is an admin action that stops *new borrowing* against one asset; `set_collateral_paused` blocks deposits only, and `ltv_bps` cannot go below its 1,000 floor.
 - **The `MintKind::XStock` fixture is one extension short of live:** it initialises `MetadataPointer` but never writes a real `TokenMetadata` extension, though the allowed set names it. `try_calculate_account_len` cannot size a variable-length extension, so the fix is extra space plus `token_metadata_initialize` after `initialize_mint2`. Worth doing before the devnet run, since the compute figures in `tests/budget.rs` are measured against a mint materially smaller than the real thing and a mainnet `take_loan` will read higher.

@@ -10,6 +10,16 @@ What the Plan 3 whole-branch review raised and deliberately left standing or pus
 
 ## Plan 6 (hardening, fuzzing, devnet)
 
+> **Partly resolved 2026-09-21 by Plan 6** (`2026-09-20-plan-6-math-bounds-and-shape.md`): the
+> collateral `decimals` bound derived from the liquidation path — though not at the figure
+> recorded below. "Around 24 decimals" is the modest case; against the worst repayment the
+> program permits the first failure is at **15**, because `seize_for_repayment` multiplies twice
+> and the second term carries the collateral price in its denominator. Bounded at 12. Also
+> resolved: the `INIT_SPACE` guards for `CollateralAsset` and `Market`, the shared `pow10`, and
+> the vault-mismatch error variant (`CollateralVaultMismatch`). The permissionless
+> overdue-penalty step goes to Plan 7; the `ZeroPrincipalRepaid` test, the `write_off_loan` test
+> gaps and the Trident probes to Plan 8.
+
 - **Collateral `decimals` bound, derived from the liquidation path.** The health path's `token_value`/`token_value_ceil` tolerate collateral decimals up to roughly 38 before overflowing `u128`. The liquidation path is tighter: `seize_for_repayment`'s `with_bonus × 10^collateral_decimals` term overflows around 24 decimals. `CollateralParams::validate` should enforce the bound the liquidation path actually needs, not the more permissive one the health path tolerates.
 - **`INIT_SPACE` guards for `CollateralAsset` and `Market`.** Both now carry fields taken from their reserved padding (`price_account`, `accrual_remainder`), and neither has a test pinning `Market::INIT_SPACE` / `CollateralAsset::INIT_SPACE` (or the account's actual byte size) the way `position.rs`'s `layout_is_fixed_size_without_padding_surprises` pins `Position`. Add the same guard for both.
 - **The permissionless overdue-penalty step.** Spec §11's accepted-risk note (added this fix wave) documents that the penalty only reaches lenders as a step, released at repayment or liquidation, and that `liquidate` having no access check lets a lender deposit, trigger the step via someone else's liquidation, and withdraw in one transaction — diluting honest lenders' share of penalty income without threatening solvency. Fix it by accruing the penalty into `lp_rate_product` continuously instead of releasing it as a step, or by amortising the release.
