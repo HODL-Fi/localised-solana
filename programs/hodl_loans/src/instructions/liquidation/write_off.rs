@@ -158,12 +158,6 @@ pub fn handle_write_off_loan<'info>(ctx: Context<'info, WriteOffLoan<'info>>, lo
     market.total_bad_debt = add(market.total_bad_debt, loss)?;
 
     position.loans[index] = bytemuck::Zeroable::zeroed();
-    // Superseded by forfeiture above: `promo_balance` is already 0 by this point (it was either
-    // 0 coming in, or `forfeit_promo` zeroed it earlier in this same call), so this write only
-    // ever lands on a position that already has no promo for the clock to gate.
-    if !position.has_active_loans() {
-        position.promo_last_activity_at = now;
-    }
     let owner = position.owner;
     let total_bad_debt = market.total_bad_debt;
     drop(position);

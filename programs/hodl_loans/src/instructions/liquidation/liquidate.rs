@@ -206,14 +206,6 @@ pub fn handle_liquidate<'info>(ctx: Context<'info, Liquidate<'info>>, loan_id: u
         let remaining_principal = slot.principal;
         if remaining_principal == 0 {
             *slot = bytemuck::Zeroable::zeroed();
-            // Superseded by forfeiture above: `promo_balance` is already 0 by this point (it was
-            // either 0 coming in, or `forfeit_promo` zeroed it earlier in this same call), so
-            // this write only ever lands on a position that already has no promo for the clock
-            // to gate. It is kept for the positions with no promo at all, where it is a no-op
-            // either way, rather than adding a branch to special-case it.
-            if !position.has_active_loans() {
-                position.promo_last_activity_at = now;
-            }
         }
 
         let held = &mut position.collateral[slot_index];
