@@ -81,4 +81,6 @@ pub enum HodlError {
     InsufficientCollateral,
     #[msg("Position holds promo: the market and promo vault accounts are required")]
     PromoAccountsRequired,
+    #[msg("Promo vault token account does not match the promo vault")]
+    PromoVaultMismatch,
 }
