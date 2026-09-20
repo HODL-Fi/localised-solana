@@ -217,8 +217,11 @@ fn collateral_sweep_moves_only_donations() {
 fn a_mint_with_too_many_decimals_cannot_be_listed() {
     // The bound comes from the LIQUIDATION path, not the health path. `token_value` copes with
     // roughly 38 decimals; `seize_for_repayment` multiplies twice and, against the worst
-    // repayment the program permits, first overflows at 15. Past the bound a position holding
-    // the asset could be opened and then never liquidated, so listing is refused instead.
+    // repayment the program permits, first overflows at 15. Past the bound, liquidation doesn't
+    // stop outright — the overflow scales with `repay_amount`, which a liquidator picks freely,
+    // so it degrades into smaller chunked repayments (roughly 13-20 decimals) and only becomes
+    // genuinely impossible past ~22. Listing is refused at the bound so that failure is loud at
+    // listing time instead of buried in the liquidation path.
     let mut env = Env::initialized();
     let admin = env.admin.pubkey();
 

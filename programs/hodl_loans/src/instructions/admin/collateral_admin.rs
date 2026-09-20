@@ -86,8 +86,10 @@ pub fn handle_list_collateral(
 
     // Set by the liquidation path, not the health path — see `MAX_COLLATERAL_DECIMALS`. Listing
     // is the only place the mint's own decimals enter the program, so it is the only place this
-    // can be refused; past the bound, `seize_for_repayment` overflows and positions holding the
-    // asset cannot be liquidated at all.
+    // can be refused; past the bound, `seize_for_repayment` starts overflowing on large
+    // repayments and liquidation degrades into smaller chunked repayments (genuinely impossible
+    // only past ~22 decimals). Refusing here keeps that failure loud at listing time rather than
+    // surprising a liquidator mid-liquidation.
     require!(
         ctx.accounts.mint.decimals <= MAX_COLLATERAL_DECIMALS,
         HodlError::InvalidParameters

@@ -35,13 +35,17 @@ pub const MAX_PRICE_AGE_SECONDS: u64 = 60;
 /// reader reaches for. `seize_for_repayment` is far tighter, because it multiplies twice:
 /// `with_bonus × 10^decimals` first, then `display × MULTIPLIER_SCALE`. The second term carries
 /// the collateral price in its denominator, so a cheap asset overflows sooner. Measured against
-/// the worst repayment the program permits — `u64::MAX` cNGN, a 100% liquidation bonus, and a
-/// $0.01 collateral — the first failure is at 15 decimals.
+/// the worst repayment the program permits — `u64::MAX` cNGN, a 100% liquidation bonus, a $0.01
+/// collateral, and today's NGN price ($0.000625) — the first failure is at 15 decimals.
 ///
 /// 12 clears every asset the protocol lists (USDC 6, SOL 9, the xStocks 8) with three decimals
-/// of margin against that measured cliff. The consequence of getting this wrong is not a bad
-/// price but an unliquidatable position: `seize_for_repayment` returns `MathOverflow` and the
-/// liquidator simply cannot act.
+/// of margin against that measured cliff. Past the bound the failure is not a clean liquidator
+/// lockout: the overflow scales linearly in `repay_amount`, and a liquidator picks `amount`
+/// itself, so it can route around the overflow by repaying less. Liquidation degrades into
+/// chunked repayments from roughly 13 to 20 decimals and only becomes genuinely impossible past
+/// about 22. The bound exists to make the failure loud at listing time, where it's a cheap,
+/// one-time refusal, instead of surprising a liquidator deep in the liquidation path — and to
+/// keep every `u128` headroom argument elsewhere in the program valid.
 pub const MAX_COLLATERAL_DECIMALS: u8 = 12;
 /// Upper bound on `MarketParams::ngn_max_stale_slots`. A Solana slot targets 400 ms, so 150
 /// slots is the same 60 seconds `MAX_PRICE_AGE_SECONDS` allows the collateral feeds — the NGN
