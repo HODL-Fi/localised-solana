@@ -1,7 +1,9 @@
 mod common;
 
+use anchor_lang::prelude::AccountMeta;
 use common::*;
 use hodl_loans::HodlError;
+use solana_keypair::Keypair;
 use solana_signer::Signer;
 
 #[test]
@@ -69,6 +71,33 @@ fn no_listed_asset_can_be_skipped_or_stood_in_for() {
     assert_hodl_error(send(&mut env.svm, &[over], &[&env.admin]), HodlError::InvalidParameters);
     let ok = set_promo_cap_ix(&admin, 100, &[permissive, strict_params_mint]);
     send(&mut env.svm, &[ok], &[&env.admin]).unwrap();
+}
+
+#[test]
+fn a_forged_asset_at_an_arbitrary_key_cannot_stand_in_for_the_real_one() {
+    // The count, ordering, owner and discriminator checks all pass for a look-alike account —
+    // only the PDA re-derivation catches it. Copy a real listed asset's `mint` and `bump` (so
+    // re-derivation would still reproduce the *real* collateral PDA) but drop `ltv_bps` to a
+    // value permissive enough to pass `validate` at a cap the real 70%/90% asset would reject,
+    // then plant that copy program-owned at an unrelated key instead of the real PDA.
+    let (mut env, _cngn) = Env::with_cngn_market();
+    let admin = env.admin.pubkey();
+    let mint = env.list_spl_collateral(6);
+    assert_eq!(env.config().collateral_count, 1);
+
+    let real: hodl_loans::CollateralAsset = env.fetch(&collateral_pda(&mint));
+    let forged = hodl_loans::CollateralAsset { ltv_bps: 1_000, ..real };
+    let forged_key = Keypair::new().pubkey();
+    env.set_account_data(&forged_key, &hodl_loans::ID, collateral_asset_bytes(&forged));
+
+    // 50% would fail against the real asset (70% LTV + 50% cap > 90% threshold) but passes
+    // against the forged one's 10% LTV — the only thing standing in the way is re-derivation.
+    let mut instruction = ix(
+        hodl_loans::instruction::SetPromoCap { promo_cap_bps: 5_000 },
+        hodl_loans::accounts::SetPromoCap { admin, config: config_pda() },
+    );
+    instruction.accounts.push(AccountMeta::new_readonly(forged_key, false));
+    assert_hodl_error(send(&mut env.svm, &[instruction], &[&env.admin]), HodlError::InvalidParameters);
 }
 
 #[test]

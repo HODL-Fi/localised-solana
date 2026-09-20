@@ -1768,3 +1768,11 @@ pub fn set_promo_cap_ix(admin: &Pubkey, promo_cap_bps: u16, assets: &[Pubkey]) -
     instruction.accounts.extend(sorted.into_iter().map(|k| AccountMeta::new_readonly(k, false)));
     instruction
 }
+
+/// Serialises a `CollateralAsset` (discriminator + fields), for planting one at an arbitrary
+/// key with `Env::set_account_data` — used to forge a look-alike asset in tests.
+pub fn collateral_asset_bytes(asset: &hodl_loans::CollateralAsset) -> Vec<u8> {
+    let mut data = Vec::new();
+    asset.try_serialize(&mut data).unwrap();
+    data
+}
