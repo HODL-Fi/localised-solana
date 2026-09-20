@@ -115,6 +115,7 @@ fn writing_off_a_loan_forfeits_the_promo_as_well() {
     env.set_pyth_price(&setup.usdc, 100_000, 0);
     let vault_before = env.promo_vault(&setup.cngn);
     let cash_before = env.market(&setup.cngn).cash;
+    let market_tokens_before = env.token_balance(&market_vault_pda(&setup.cngn));
 
     let prices = env.price_accounts(&owner);
     let write_off = write_off_loan_ix(&admin, &owner, &setup.cngn, 0, prices);
@@ -127,6 +128,11 @@ fn writing_off_a_loan_forfeits_the_promo_as_well() {
     // The promo offsets part of the loss the lenders would otherwise carry alone.
     assert_eq!(env.market(&setup.cngn).cash, cash_before + GRANT);
     assert!(env.market(&setup.cngn).total_bad_debt > 0);
+
+    // `write_off_loan` moving tokens at all is the most novel behaviour in this task — pin
+    // both legs of the transfer, not just the program-side bookkeeping.
+    assert_eq!(env.token_balance(&promo_vault_token_pda(&setup.cngn)), vault.cash);
+    assert_eq!(env.token_balance(&market_vault_pda(&setup.cngn)), market_tokens_before + GRANT);
 }
 
 #[test]
@@ -154,6 +160,31 @@ fn a_liquidation_must_name_the_positions_own_promo_vault() {
     // Named correctly, the same liquidation goes through.
     env.liquidate(&liquidator, &setup, &setup.usdc, &seized_to, 0, 100_000 * ONE_CNGN).unwrap();
     assert_eq!(env.position(&owner).promo_balance, 0);
+}
+
+#[test]
+fn a_dust_liquidation_still_forfeits_the_entire_promo_balance() {
+    // A liquidator can trigger the forfeit with an arbitrarily small repayment: `forfeit_promo`
+    // releases the whole `promo_balance` regardless of how much of the loan `amount` actually
+    // repays. Pinned so this cannot silently change to a proportional release.
+    let (mut env, setup) = underwater_with_promo();
+    let owner = setup.borrower.pubkey();
+    let liquidator = env.new_liquidator(&setup.cngn, 10_000 * ONE_CNGN);
+    let seized_to = env.create_token_account(&setup.usdc, &liquidator.pubkey());
+
+    let debt_before = env.position(&owner).loans[0].principal;
+    // 1,000 cNGN against a 700,000 cNGN loan: a dust-sized repayment, not a real dent.
+    env.liquidate(&liquidator, &setup, &setup.usdc, &seized_to, 0, 1_000 * ONE_CNGN).unwrap();
+
+    // The whole promo balance is gone in one dust-sized repayment.
+    assert_eq!(env.position(&owner).promo_balance, 0);
+    assert_eq!(env.promo_vault(&setup.cngn).outstanding, 0);
+
+    // The position survives: only a sliver of principal was actually repaid, and the loan
+    // stays open with debt remaining rather than closing.
+    let debt_after = env.position(&owner).loans[0].principal;
+    assert!(debt_after > 0, "the loan must still be open after a dust repayment");
+    assert!(debt_after < debt_before, "some principal must have been repaid");
 }
 
 #[test]
