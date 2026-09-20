@@ -195,3 +195,62 @@ fn write_off_reverts_when_a_promo_holding_position_omits_the_promo_accounts() {
     assert_eq!(env.position(&owner).promo_balance, GRANT);
     assert_eq!(env.market(&setup.cngn).total_bad_debt, 0);
 }
+
+#[test]
+fn liquidation_at_the_promo_lifted_boundary_never_books_bad_debt() {
+    // At the shipped config (LT 90%, promo cap 20%), `collateral.rs` argues the effective
+    // liquidation line — LT×V + promo_counted — can sit above 100% of collateral value V,
+    // because forfeiture returns the FULL, uncapped promo balance while the line was lifted
+    // only by the CAPPED value. This pins that claim at the boundary itself, rather than the
+    // deep-crash scenario `underwater_with_promo` exercises (which manufactures bad debt from
+    // the price crash regardless of promo, so it cannot distinguish "the lift was covered"
+    // from "it wasn't").
+    let (mut env, setup) = Env::promo_ready();
+    let owner = setup.borrower.pubkey();
+
+    // Comfortably clears the 20% promo cap ($200 at $1,000 own_value) without hitting
+    // `max_promo_per_position`.
+    let grant: u64 = 500_000 * ONE_CNGN;
+    env.set_max_promo_per_position(&setup.cngn, grant);
+    env.redeem_promo(&setup.borrower, &setup.cngn, 1, grant, 7).unwrap();
+
+    // Borrow while USDC is temporarily worth $5/token (own_value $5,000), so this debt is
+    // comfortably healthy at origination — `take_loan`'s cap is the LTV-based borrow limit,
+    // which sits below the LT-based liquidation line this test targets.
+    //
+    // `debt_raw` is chosen so its USD value at the NGN ask is $1,099.999999999526 — the
+    // closest a u64 cNGN base-unit amount can land below $1,100, which is exactly
+    // LT 90% × $1,000 + cap 20% × $1,000, the line at $1,000 own_value (derived via
+    // `hodl_loans::math::price::token_value_ceil` and `hodl_loans::math::health::compute_health`
+    // offline, not restated here).
+    env.set_pyth_price(&setup.usdc, 5 * ONE_DOLLAR, 0);
+    let debt_raw: u64 = 1_758_241_758_241;
+    let prices = env.price_accounts(&owner);
+    let borrow = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, debt_raw, 365 * DAY, prices);
+    send(&mut env.svm, &[borrow], &[&env.admin, &setup.borrower.key]).unwrap();
+
+    // Back to $1/token: own_value is exactly $1,000 again, so the fixed debt sits a hair under
+    // the line — not yet liquidatable. No time has elapsed (no `warp_seconds` since origination),
+    // so no interest or penalty has accrued and the debt is still exactly `debt_raw`.
+    env.set_pyth_price(&setup.usdc, ONE_DOLLAR, 0);
+    let liquidator = env.new_liquidator(&setup.cngn, 2_000_000 * ONE_CNGN);
+    let seized_to = env.create_token_account(&setup.usdc, &liquidator.pubkey());
+    let at_the_line = env.liquidate(&liquidator, &setup, &setup.usdc, &seized_to, 0, debt_raw);
+    assert_hodl_error(at_the_line, HodlError::NotLiquidatable);
+
+    // A tenth-of-a-cent nudge crosses it: $0.999/token drops own_value (and the line with it)
+    // just below the fixed debt. The debt now exceeds 100% of collateral value, so — even
+    // before the liquidation bonus, which only shrinks recoverable value further — a single
+    // seizure can never fully repay it; this is necessarily a partial liquidation.
+    env.set_pyth_price(&setup.usdc, 999 * ONE_DOLLAR / 1_000, 0);
+    env.liquidate(&liquidator, &setup, &setup.usdc, &seized_to, 0, debt_raw)
+        .expect("liquidation must succeed once nudged past the line");
+
+    // What matters is that the shortfall a pure-collateral recovery cannot reach is never
+    // booked as bad debt: `total_bad_debt` is `write_off_loan`'s field alone, and the full
+    // (uncapped) promo balance — not just the capped counted portion — already reached the
+    // market as cash.
+    assert_eq!(env.market(&setup.cngn).total_bad_debt, 0);
+    assert_eq!(env.position(&owner).promo_balance, 0);
+    assert_eq!(env.promo_vault(&setup.cngn).outstanding, 0);
+}
