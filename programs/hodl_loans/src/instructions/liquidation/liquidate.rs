@@ -31,16 +31,26 @@ pub struct Liquidate<'info> {
         has_one = ngn_feed @ HodlError::PriceAccountMismatch
     )]
     pub market: Box<Account<'info, Market>>,
+    /// `create_promo_vault` is a separate admin action (`vault.rs`), so a market can run with
+    /// no promo vault at all. Required only when the position holds promo (`promo_balance >
+    /// 0`) — the handler reverts with `PromoAccountsRequired` rather than silently letting a
+    /// liquidator skip the forfeit by omitting these accounts.
     #[account(
         mut,
         seeds = [PROMO_VAULT_SEED, market.key().as_ref()],
         bump = promo_vault.bump,
         has_one = market
     )]
-    pub promo_vault: Box<Account<'info, PromoVault>>,
+    pub promo_vault: Option<Box<Account<'info, PromoVault>>>,
     /// The promo vault's cNGN, which forfeiture moves into the market vault (spec §11 step 3).
-    #[account(mut, address = promo_vault.vault @ HodlError::PromoVaultInsufficient)]
-    pub promo_vault_token: Box<InterfaceAccount<'info, TokenAccount>>,
+    /// `promo_vault` is itself `Option`, so its `vault` field cannot be named in an `address`
+    /// constraint here — checked as a `constraint` instead, to the same effect.
+    #[account(
+        mut,
+        constraint = promo_vault.as_ref().is_none_or(|pv| pv.vault == promo_vault_token.key())
+            @ HodlError::PromoVaultInsufficient
+    )]
+    pub promo_vault_token: Option<Box<InterfaceAccount<'info, TokenAccount>>>,
     #[account(mint::token_program = token_program)]
     pub mint: Box<InterfaceAccount<'info, Mint>>,
     #[account(mut)]
@@ -115,18 +125,30 @@ pub fn handle_liquidate<'info>(ctx: Context<'info, Liquidate<'info>>, loan_id: u
 
         // Spec §11 step 3: the promo behind a defaulting position goes to lenders, before any
         // of the repayment is priced. It does not reduce what the borrower owes.
-        let forfeited = forfeit_promo(
-            &mut position,
-            position_key,
-            market_key,
-            &mut ForfeitAccounts {
-                promo_vault: &mut ctx.accounts.promo_vault,
-                promo_token: &ctx.accounts.promo_vault_token,
-                market_vault: &ctx.accounts.vault,
-                mint: &ctx.accounts.mint,
-                token_program: ctx.accounts.token_program.key(),
-            },
-        )?;
+        //
+        // The forfeit cannot be skipped: `promo_balance > 0` implies the promo vault exists (it
+        // is the only way promo could have been redeemed onto the position), so there is no
+        // legitimate reason to omit the accounts. Their absence reverts rather than letting the
+        // liquidation proceed without making lenders whole.
+        let forfeited = if position.promo_balance > 0 {
+            let promo_vault = ctx.accounts.promo_vault.as_mut().ok_or(HodlError::PromoAccountsRequired)?;
+            let promo_vault_token =
+                ctx.accounts.promo_vault_token.as_ref().ok_or(HodlError::PromoAccountsRequired)?;
+            forfeit_promo(
+                &mut position,
+                position_key,
+                market_key,
+                &mut ForfeitAccounts {
+                    promo_vault,
+                    promo_token: promo_vault_token,
+                    market_vault: &ctx.accounts.vault,
+                    mint: &ctx.accounts.mint,
+                    token_program: ctx.accounts.token_program.key(),
+                },
+            )?
+        } else {
+            0
+        };
         market.cash = to_u64(add(market.cash as u128, forfeited as u128)?)?;
 
         // `load_valuation` returns one value per used slot, in slot order.

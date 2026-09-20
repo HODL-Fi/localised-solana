@@ -1010,6 +1010,31 @@ impl Env {
         let borrower_cngn = env.create_token_account(&cngn, &borrower.pubkey());
         (env, LoanSetup { cngn, usdc, lender, borrower, borrower_cngn })
     }
+
+    /// Same shape as `loan_ready`, but the market never got a `create_promo_vault` call —
+    /// `vault.rs` states a market can run without one. Liquidation and write-off must still
+    /// work here (Task 7 fix round, Fix 1): the promo accounts are `Option` and only required
+    /// when a position actually holds promo, which is never possible on a promo-less market.
+    pub fn loan_ready_no_promo_vault() -> (Self, LoanSetup) {
+        let mut env = Self::initialized();
+        let cngn = env.create_mint(MintKind::CngnLike, 6);
+        let admin = env.admin.pubkey();
+        let create = create_market_ix(&admin, &cngn, &TOKEN_2022, default_market_params());
+        send(&mut env.svm, &[create], &[&env.admin]).expect("create market");
+        // The program reads a Switchboard result from slot 0 as never updated.
+        env.svm.warp_to_slot(1_000);
+        let lender = env.new_lender(&cngn, POOL_CNGN);
+        env.deposit(&lender, &cngn, POOL_CNGN).unwrap();
+        env.set_ngn_price(NGN_USD, NGN_SPREAD);
+
+        let usdc = env.list_spl_collateral(6);
+        env.set_pyth_price(&usdc, ONE_DOLLAR, 0);
+
+        let borrower = env.new_borrower();
+        env.deposit_collateral(&borrower, &usdc, 1_000 * ONE_USDC);
+        let borrower_cngn = env.create_token_account(&cngn, &borrower.pubkey());
+        (env, LoanSetup { cngn, usdc, lender, borrower, borrower_cngn })
+    }
 }
 
 // ---- Repayment (Task 7) ----
@@ -1134,8 +1159,49 @@ pub fn liquidate_ix(
         hodl_loans::accounts::Liquidate {
             liquidator: *liquidator,
             config: config_pda(),
-            promo_vault: promo_vault_pda(mint),
-            promo_vault_token: promo_vault_token_pda(mint),
+            promo_vault: Some(promo_vault_pda(mint)),
+            promo_vault_token: Some(promo_vault_token_pda(mint)),
+            position: position_pda(position_owner),
+            market: market_pda(mint),
+            mint: *mint,
+            vault: market_vault_pda(mint),
+            liquidator_token: *liquidator_token,
+            collateral: collateral_pda(collateral_mint),
+            collateral_mint: *collateral_mint,
+            collateral_vault: collateral_vault_pda(collateral_mint),
+            liquidator_collateral: *liquidator_collateral,
+            ngn_feed: ngn_feed(),
+            token_program: TOKEN_2022,
+            collateral_token_program: *collateral_token_program,
+        },
+    );
+    instruction.accounts.extend(prices);
+    instruction
+}
+
+/// Same as `liquidate_ix`, but with no promo accounts — for a market that never got a
+/// `create_promo_vault` call, or for exercising the `PromoAccountsRequired` guard when a
+/// promo-holding position's accounts are omitted.
+#[allow(clippy::too_many_arguments)]
+pub fn liquidate_ix_no_promo(
+    liquidator: &Pubkey,
+    position_owner: &Pubkey,
+    mint: &Pubkey,
+    liquidator_token: &Pubkey,
+    collateral_mint: &Pubkey,
+    collateral_token_program: &Pubkey,
+    liquidator_collateral: &Pubkey,
+    loan_id: u64,
+    amount: u64,
+    prices: Vec<AccountMeta>,
+) -> Instruction {
+    let mut instruction = ix(
+        hodl_loans::instruction::Liquidate { loan_id, amount },
+        hodl_loans::accounts::Liquidate {
+            liquidator: *liquidator,
+            config: config_pda(),
+            promo_vault: None,
+            promo_vault_token: None,
             position: position_pda(position_owner),
             market: market_pda(mint),
             mint: *mint,
@@ -1205,8 +1271,31 @@ pub fn write_off_loan_ix(admin: &Pubkey, position_owner: &Pubkey, mint: &Pubkey,
             ngn_feed: ngn_feed(),
             mint: *mint,
             vault: market_vault_pda(mint),
-            promo_vault: promo_vault_pda(mint),
-            promo_vault_token: promo_vault_token_pda(mint),
+            promo_vault: Some(promo_vault_pda(mint)),
+            promo_vault_token: Some(promo_vault_token_pda(mint)),
+            token_program: TOKEN_2022,
+        },
+    );
+    instruction.accounts.extend(prices);
+    instruction
+}
+
+/// Same as `write_off_loan_ix`, but with no promo accounts — for a market that never got a
+/// `create_promo_vault` call, or for exercising the `PromoAccountsRequired` guard when a
+/// promo-holding position's accounts are omitted.
+pub fn write_off_loan_ix_no_promo(admin: &Pubkey, position_owner: &Pubkey, mint: &Pubkey, loan_id: u64, prices: Vec<AccountMeta>) -> Instruction {
+    let mut instruction = ix(
+        hodl_loans::instruction::WriteOffLoan { loan_id },
+        hodl_loans::accounts::WriteOffLoan {
+            admin: *admin,
+            config: config_pda(),
+            position: position_pda(position_owner),
+            market: market_pda(mint),
+            ngn_feed: ngn_feed(),
+            mint: *mint,
+            vault: market_vault_pda(mint),
+            promo_vault: None,
+            promo_vault_token: None,
             token_program: TOKEN_2022,
         },
     );

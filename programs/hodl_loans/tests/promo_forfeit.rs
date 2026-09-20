@@ -3,6 +3,7 @@ mod common;
 use common::*;
 use anchor_lang::error::ErrorCode as AnchorError;
 use anchor_lang::prelude::AccountMeta;
+use hodl_loans::HodlError;
 use solana_signer::Signer;
 
 const DAY: i64 = 86_400;
@@ -153,4 +154,44 @@ fn a_liquidation_must_name_the_positions_own_promo_vault() {
     // Named correctly, the same liquidation goes through.
     env.liquidate(&liquidator, &setup, &setup.usdc, &seized_to, 0, 100_000 * ONE_CNGN).unwrap();
     assert_eq!(env.position(&owner).promo_balance, 0);
+}
+
+#[test]
+fn liquidation_reverts_when_a_promo_holding_position_omits_the_promo_accounts() {
+    // `promo_balance > 0` implies the promo vault exists, so there is no legitimate reason to
+    // omit these accounts — the liquidator cannot use their absence to skip the forfeit.
+    let (mut env, setup) = underwater_with_promo();
+    let owner = setup.borrower.pubkey();
+    let liquidator = env.new_liquidator(&setup.cngn, 1_000_000 * ONE_CNGN);
+    let seized_to = env.create_token_account(&setup.usdc, &liquidator.pubkey());
+
+    let program = env.mint_program(&setup.usdc);
+    let prices = env.price_accounts(&owner);
+    let instruction = liquidate_ix_no_promo(
+        &liquidator.pubkey(), &owner, &setup.cngn, &liquidator.cngn, &setup.usdc, &program,
+        &seized_to, 0, 100_000 * ONE_CNGN, prices,
+    );
+    let result = send(&mut env.svm, &[instruction], &[&liquidator.key]);
+    assert_hodl_error(result, HodlError::PromoAccountsRequired);
+
+    // The promo survives the failed attempt untouched.
+    assert_eq!(env.position(&owner).promo_balance, GRANT);
+}
+
+#[test]
+fn write_off_reverts_when_a_promo_holding_position_omits_the_promo_accounts() {
+    let (mut env, setup) = underwater_with_promo();
+    let owner = setup.borrower.pubkey();
+    let admin = env.admin.pubkey();
+
+    // Collateral worth $1 is below the $5 dust threshold, so the loan is write-off eligible.
+    env.set_pyth_price(&setup.usdc, 100_000, 0);
+    let prices = env.price_accounts(&owner);
+    let instruction = write_off_loan_ix_no_promo(&admin, &owner, &setup.cngn, 0, prices);
+    let result = send(&mut env.svm, &[instruction], &[&env.admin]);
+    assert_hodl_error(result, HodlError::PromoAccountsRequired);
+
+    // The promo survives the failed attempt untouched, and no loss was booked.
+    assert_eq!(env.position(&owner).promo_balance, GRANT);
+    assert_eq!(env.market(&setup.cngn).total_bad_debt, 0);
 }
