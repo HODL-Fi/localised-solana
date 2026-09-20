@@ -105,6 +105,8 @@ lendbit-solana/
 | `VIRTUAL_ASSETS` | 1 |
 | `USD_SCALE` | 10^12 (fixed-point USD used in all health math; 10^18 would let `amount × price` overflow `u128` for large balances) |
 | `MAX_PRICE_AGE_SECONDS` | 60 (the largest `max_price_age_seconds` an admin may set) |
+| `MAX_NGN_STALE_SLOTS` | 150 (the largest `ngn_max_stale_slots` an admin may set — the same 60 seconds at a 400 ms slot, so the NGN feed cannot drift further behind than the collateral feeds) |
+| `MAX_COLLATERAL_DECIMALS` | 12 (the largest `decimals` a collateral mint may have; set by the liquidation path, see §8) |
 
 ## 7. Accounts
 
@@ -199,13 +201,19 @@ Every account starts with `version: u8` and `bump: u8`, and ends with reserved p
 - **Liveness risk of a pinned feed.** A pinned `PriceUpdateV2` is a sponsored push account with a fixed write authority — a liquidator cannot refresh it directly. If the sponsor's crank stalls beyond `max_price_age_seconds`, every position holding that asset becomes un-liquidatable, and because `write_off_loan` prices the position the same way, the bad-debt escape hatch closes at the same time. The remedy is operational: `update_collateral_params` unpins the asset, through the admin multisig's timelock (§18).
 - Read the `PriceUpdateV2` account with `get_price_no_older_than(max_price_age_seconds, pyth_feed_id)`, and require full verification. A too-old price fails with `StalePrice`, another feed with `PriceAccountMismatch`, anything else (such as partial verification or a non-positive price) with `InvalidPrice`.
 - Reject when `conf × BPS > price × max_conf_bps`.
-- Convert price and confidence to `USD_SCALE` using the feed exponent.
+- Convert price and confidence to `USD_SCALE` using the feed exponent. **The price rounds down and the confidence rounds up**, and the asymmetry is deliberate: collateral counts at `price − conf` and debt at `price + conf`, so a confidence rounded down would value collateral too high *and* debt too low. Rounding the uncertainty up is the only direction conservative for both. The same rule applies to the Switchboard spread below. The exponent comes from the feed account, so the shift is computed with a checked add — an absurd exponent is `InvalidPrice`, not an aborted transaction.
 
 **Switchboard (cNGN):**
 - The account address must equal `market.ngn_feed`, and its data must carry the `PullFeedAccountData` discriminator.
 - Read the aggregated `result`. Fail with `StalePrice` when `result.slot` is 0, older than `ngn_max_stale_slots`, or has fewer than `ngn_min_samples` samples. Require a positive value.
 - The spread is `result.std_dev`. Reject when it exceeds `ngn_max_spread_bps` of the value.
 - Treat 1 cNGN as 1 NGN.
+
+### Collateral decimals
+
+A collateral mint's `decimals` is bounded at `MAX_COLLATERAL_DECIMALS` when it is listed, and the bound comes from the **liquidation** path rather than the health path. `token_value` copes with roughly 38 decimals before `u128` gives out, which is the number a reader reaches for; `seize_for_repayment` multiplies twice — `with_bonus × 10^decimals`, then `display × MULTIPLIER_SCALE` — and the second term carries the collateral price in its denominator, so a cheap asset overflows sooner. Measured against the worst repayment the program permits (`u64::MAX` cNGN, a 100% bonus, a $0.01 collateral), the first failure is at 15 decimals.
+
+The consequence of getting this wrong is not a bad price but an **unliquidatable position**: `seize_for_repayment` returns `MathOverflow` and no liquidator can act. Listing is the only place the mint's own decimals enter the program, so it is the only place the configuration can be refused. The figure lives in `constants.rs` beside its derivation.
 
 ### xStock multiplier
 
