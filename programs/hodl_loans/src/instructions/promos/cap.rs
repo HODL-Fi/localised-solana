@@ -17,6 +17,12 @@ pub struct SetPromoCap<'info> {
 /// the gap that keeps a fully drawn position solvent. Every listed asset is re-checked against
 /// the new value before it takes effect.
 ///
+/// Lowering the cap affects existing positions immediately, the same class of accepted admin
+/// power as lowering an LTV or liquidation threshold (`collateral_admin.rs`): it reduces
+/// `promo_counted`, which reduces `liquidation_line` for every promo-holding position at once. A
+/// borrower whose debt has accrued above their borrow limit but below their liquidation line
+/// becomes liquidatable in this same transaction, with no price movement.
+///
 /// `remaining_accounts` carries every `CollateralAsset`, **in ascending key order**. The count
 /// must equal `config.collateral_count` and the keys must strictly increase, which together
 /// rule out the mistake a bare count check allows: passing one permissive asset several times
