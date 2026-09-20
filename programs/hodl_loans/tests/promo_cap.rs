@@ -112,6 +112,10 @@ fn setting_the_cap_is_admin_only_and_bounded() {
     // Above 100% is meaningless, and with no assets listed there is nothing to contradict it.
     let absurd = set_promo_cap_ix(&admin, 10_001, &[]);
     assert_hodl_error(send(&mut env.svm, &[absurd], &[&env.admin]), HodlError::InvalidParameters);
+    // A 100% cap is accepted here only because no asset is listed to re-check it against. It
+    // leaves the program unable to list any *new* asset afterwards — `validate` would need
+    // `ltv >= 1_000` and `ltv + 10_000 <= lt <= 10_000`, which is unsatisfiable — but that is
+    // correct and recoverable (the admin can lower the cap again), not a lockout of the program.
     send(&mut env.svm, &[set_promo_cap_ix(&admin, 10_000, &[])], &[&env.admin]).unwrap();
     assert_eq!(env.config().promo_cap_bps, 10_000);
 }
