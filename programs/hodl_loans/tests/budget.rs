@@ -153,6 +153,43 @@ fn full_position_liquidation_with_promo_forfeit_stays_under_the_default_compute_
     assert!(cu < 120_000, "liquidate-with-forfeit at 8 collateral slots / 10 loans used {cu} CU");
 }
 
+/// Pins `liquidate`'s legacy transaction size: the two promo accounts cost exactly +66 bytes
+/// of the 1,232-byte legacy budget, permanently and unconditionally, whether or not the
+/// position holds promo. litesvm does not enforce the packet limit, so a passing test suite is
+/// not evidence this fits — this assertion is. Measured 1,185 bytes.
+#[test]
+fn liquidate_fits_a_legacy_transaction_at_eight_collateral_slots() {
+    let (mut env, setup) = Env::loan_ready();
+    let owner = setup.borrower.pubkey();
+
+    let mut mints = vec![setup.usdc];
+    for i in 0..7 {
+        let decimals = if i % 2 == 0 { 9 } else { 6 };
+        let mint = env.list_spl_collateral(decimals);
+        env.set_pyth_price(&mint, 150 * ONE_DOLLAR, 10_000_000);
+        env.deposit_collateral(&setup.borrower, &mint, 10u64.pow(decimals as u32) * 10);
+        mints.push(mint);
+    }
+    assert_eq!(mints.len(), 8);
+
+    let prices = env.price_accounts(&owner);
+    let ixn = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 100_000 * ONE_CNGN, 30 * DAY, prices);
+    send(&mut env.svm, &[ixn], &[&env.admin, &setup.borrower.key]).unwrap();
+
+    for m in &mints {
+        env.set_pyth_price(m, 100_000, 0);
+    }
+    let liquidator = env.new_liquidator(&setup.cngn, 100_000 * ONE_CNGN);
+    let seized_to = env.create_token_account(&setup.usdc, &liquidator.pubkey());
+    let prices = env.price_accounts(&owner);
+    let lq = liquidate_ix(
+        &liquidator.pubkey(), &owner, &setup.cngn, &liquidator.cngn, &setup.usdc, &SPL_TOKEN,
+        &seized_to, 0, 100 * ONE_CNGN, prices,
+    );
+    let size = legacy_tx_size(&lq, &liquidator.pubkey(), 1);
+    assert!(size <= PACKET_DATA_SIZE, "liquidate at 8 collateral slots no longer fits a legacy transaction ({size} bytes)");
+}
+
 /// An all-xStock position is the most expensive health check the program can be asked to run:
 /// three accounts and a mint unpack per slot instead of two accounts and none.
 #[test]
