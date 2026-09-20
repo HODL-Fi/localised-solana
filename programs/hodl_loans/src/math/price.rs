@@ -132,7 +132,10 @@ mod tests {
         // `exponent` is read from the oracle account. Computing the shift with `+` would
         // overflow i32 and abort the whole transaction; `checked_add` makes it a normal error
         // the caller can see.
-        assert!(scale_pyth_price(1, 0, i32::MAX).is_err());
+        assert_eq!(scale_pyth_price(1, 0, i32::MAX).unwrap_err(), HodlError::InvalidPrice.into());
+        // `i32::MIN + USD_DECIMALS` does not overflow (`i32::MIN + 12` is in range), so this case
+        // was already an error before `checked_add` existed — `pow10` overflows on the resulting
+        // exponent's huge magnitude instead.
         assert!(scale_pyth_price(1, 0, i32::MIN).is_err());
     }
 
