@@ -399,9 +399,10 @@ fn full_all_xstock_position_liquidation_with_promo_forfeit_stays_under_the_defau
     // This suite's CU is not deterministic in general — the harness keys its mints randomly, so
     // where a target sorts into the collateral slot array can shift the scan in ~1,500 CU steps
     // (see the note on `full_position_stays_under_the_default_compute_budget`) — but every slot
-    // here holds the same asset shape (an xStock), so that sort order has nothing to bite on:
-    // measured exactly 107,416 CU on every one of 5 runs. The ceiling below still leaves the
-    // same margin the sibling standard-collateral forfeit case above does, in case that changes.
+    // here holds the same asset shape (an xStock), so that sort order has nothing to bite on and
+    // the big step disappears: measured 107,425-107,487 CU over 14 runs, a spread of ~60 rather
+    // than ~1,500. Not zero, though — do not restate this as an exact figure. The ceiling below
+    // still leaves the same margin the sibling standard-collateral forfeit case above does.
     for m in &mints {
         env.set_pyth_price(m, 100_000, 0);
     }

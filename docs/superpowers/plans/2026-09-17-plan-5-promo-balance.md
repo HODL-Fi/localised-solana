@@ -3526,7 +3526,20 @@ and call it immediately after the liquidatable check:
     pub token_program: Interface<'info, TokenInterface>,
 ```
 
-with the same call placed after the dust check and before the loss is booked.
+with the same call placed after the dust check and before the loss is booked, and netting the forfeited amount out of the loss before it is booked:
+
+```rust
+    let loss = add(loan.principal as u128, released)?;
+    // `forfeited` already landed in `market.cash` above, so it already repaid part of this
+    // shortfall — booking the gross `loss` as bad debt on top would double-count it. Net it out
+    // before it reaches `covered` or `total_bad_debt`; it can exceed `loss` (forfeiture releases
+    // the position's whole promo balance, not just enough to cover this one loan), so floor at
+    // zero rather than using checked subtraction.
+    let net_loss = loss.saturating_sub(forfeited as u128);
+```
+
+Without that netting, `covered = min(loss, reserve)` draws against `protocol_reserve` for cNGN
+the forfeit already supplied — real state, not just a reporting figure.
 
 Add the event:
 
@@ -3536,7 +3549,13 @@ pub struct PromoForfeited {
     pub market: Pubkey,
     pub position: Pubkey,
     pub owner: Pubkey,
+    /// Promo removed from the position. Always the position's whole balance.
     pub amount: u64,
+    /// cNGN that actually reached the market vault. Equal to `amount` except after an issuer
+    /// clawback from the promo vault, where the transfer is clamped to the balance on hand —
+    /// see `forfeit_promo`. An indexer summing what lenders received must use this, not
+    /// `amount`.
+    pub moved: u64,
 }
 ```
 
