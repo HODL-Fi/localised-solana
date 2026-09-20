@@ -3510,7 +3510,7 @@ Run: `./scripts/test.sh --test promo_forfeit`
 Expected: 5 tests, all `ok`.
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 217 tests in all (`promo_forfeit` is new with 5).
+Expected: every binary reports `ok`, 225 tests in all (`promo_forfeit` is new with 9).
 
 Run: `cargo clippy -p hodl_loans --all-targets -- -D warnings`
 Expected: no warnings.
@@ -3746,7 +3746,7 @@ Run: `./scripts/test.sh --test promo_cap`
 Expected: 3 tests, all `ok`.
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 220 tests in all — 51 unit and 169 LiteSVM.
+Expected: every binary reports `ok`, 228 tests in all — 51 unit and 177 LiteSVM.
 
 Run: `cargo clippy -p hodl_loans --all-targets -- -D warnings`
 Expected: no warnings.
