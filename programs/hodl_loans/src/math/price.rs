@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 
 use crate::constants::{BPS, USD_DECIMALS};
 use crate::errors::HodlError;
-use crate::math::checked::{add, mul_div_ceil, mul_div_floor};
+use crate::math::checked::{add, mul_div_ceil, mul_div_floor, pow10};
 
 /// A price in USD per whole token, at `USD_SCALE`, with its uncertainty.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,10 +22,6 @@ impl UsdPrice {
     pub fn upper(&self) -> Result<u128> {
         add(self.price, self.conf)
     }
-}
-
-fn pow10(exp: u32) -> Result<u128> {
-    Ok(10u128.checked_pow(exp).ok_or(HodlError::MathOverflow)?)
 }
 
 /// Rescale `value × 10^exponent` to `USD_SCALE`. Rounds down when shrinking.

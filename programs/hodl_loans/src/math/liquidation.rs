@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 
 use crate::constants::{BPS, MULTIPLIER_SCALE};
 use crate::errors::HodlError;
-use crate::math::checked::{add, mul_div_floor, to_u64};
+use crate::math::checked::{add, mul_div_floor, pow10, to_u64};
 
 /// How much cNGN a liquidator pays and how much collateral it takes for it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,10 +47,10 @@ pub fn seize_for_repayment(
 ) -> Result<Seizure> {
     require!(collateral_price > 0 && ngn_price > 0, HodlError::InvalidPrice);
     require!(multiplier > 0, HodlError::InvalidPrice);
-    let repaid_usd = mul_div_floor(repay_amount as u128, ngn_price, pow10(cngn_decimals)?)?;
+    let repaid_usd = mul_div_floor(repay_amount as u128, ngn_price, pow10(cngn_decimals as u32)?)?;
     let with_bonus = mul_div_floor(repaid_usd, add(BPS, bonus_bps as u128)?, BPS)?;
     // The price is per display token, so the display amount converts back to raw units.
-    let display = mul_div_floor(with_bonus, pow10(collateral_decimals)?, collateral_price)?;
+    let display = mul_div_floor(with_bonus, pow10(collateral_decimals as u32)?, collateral_price)?;
     let seize = mul_div_floor(display, MULTIPLIER_SCALE, multiplier)?;
 
     if seize <= slot_amount as u128 {
@@ -66,10 +66,6 @@ pub fn seize_for_repayment(
 pub fn principal_share(repay_amount: u64, principal: u64, balance_total: u128) -> Result<u64> {
     require!(balance_total > 0, HodlError::MathOverflow);
     to_u64(mul_div_floor(repay_amount as u128, principal as u128, balance_total)?)
-}
-
-fn pow10(exponent: u8) -> Result<u128> {
-    10u128.checked_pow(exponent as u32).ok_or(HodlError::MathOverflow.into())
 }
 
 #[cfg(test)]
