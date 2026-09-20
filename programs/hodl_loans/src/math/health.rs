@@ -58,6 +58,7 @@ pub fn compute_health(
     promo_cap_bps: u16,
 ) -> Result<Health> {
     let mut health = Health::default();
+    let mut promo_cap_total: u128 = 0;
     for c in collateral {
         let value = token_value(c.display_amount()?, c.decimals, c.price.lower())?;
         health.own_value = add(health.own_value, value)?;
@@ -66,13 +67,21 @@ pub fn compute_health(
             health.liquidation_line,
             mul_div_floor(value, c.liquidation_threshold_bps as u128, BPS)?,
         )?;
+        // Floor the promo cap PER ASSET, inside this same loop, instead of once on the
+        // aggregate `own_value` below. `floor(sum(v_i) * bps / BPS)` can exceed
+        // `sum(floor(v_i * bps / BPS))` by up to n-1 base units; at the shipped defaults
+        // (ltv 7000 + cap 2000 == lt 9000, zero slack) that gap alone was enough to push a
+        // maxed-out multi-asset position's `borrow_limit` a hair above `liquidation_line` the
+        // moment the cap changed — instant liquidation with no price move. Sum-of-floors ≤
+        // floor-of-sum always, so accumulating here is conservative: promo counts for slightly
+        // less, never more.
+        promo_cap_total = add(promo_cap_total, mul_div_floor(value, promo_cap_bps as u128, BPS)?)?;
     }
     // Spec §12: promo is a topping on collateral the borrower owns, never a substitute for it.
     // The cap is a fraction of `own_value`, so a position with nothing of its own counts none of
     // it — which is what makes defaulting a loss for the borrower rather than a way to profit.
     let promo_value = token_value(promo_balance as u128, cngn_decimals, ngn.lower())?;
-    let cap = mul_div_floor(health.own_value, promo_cap_bps as u128, BPS)?;
-    health.promo_counted = promo_value.min(cap);
+    health.promo_counted = promo_value.min(promo_cap_total);
     health.borrow_limit = add(health.borrow_limit, health.promo_counted)?;
     health.liquidation_line = add(health.liquidation_line, health.promo_counted)?;
 
@@ -248,5 +257,40 @@ mod tests {
         let h = compute_health(&[], 0, 6, ngn(), 500_000_000_000, 2_000).unwrap();
         assert_eq!(h.own_value, 0);
         assert_eq!(h.promo_counted, 0);
+    }
+
+    #[test]
+    fn lowering_the_cap_never_makes_a_maxed_out_multi_asset_position_liquidatable() {
+        // Two assets, each valued 10_000_000_000_003 at USD_SCALE (amount == value here: 0
+        // decimals, price 1, multiplier 1), at the shipped defaults — 70% LTV / 90% LT, zero
+        // slack against a 20% promo cap (7000 + 2000 == 9000). This is the exact boundary that
+        // used to break: floor(sum) for the cap disagreed with sum(floor) for the LTV/LT terms.
+        let asset = || CollateralValue {
+            amount: 10_000_000_000_003,
+            decimals: 0,
+            multiplier: MULTIPLIER_SCALE,
+            price: UsdPrice { price: 1, conf: 0 },
+            ltv_bps: 7_000,
+            liquidation_threshold_bps: 9_000,
+        };
+        let collateral = [asset(), asset()];
+        // Plenty of promo to saturate the cap either way; 1:1 NGN pricing keeps the numbers
+        // exact so the assertions below match the worked example precisely.
+        let promo_balance = 5_000_000_000_000u64;
+        let ngn_1to1 = UsdPrice { price: 1, conf: 0 };
+
+        // Borrow to exactly the position's limit while the cap is still the default 20%.
+        let at_cap = compute_health(&collateral, 0, 0, ngn_1to1, promo_balance, 2_000).unwrap();
+        assert_eq!(at_cap.borrow_limit, 18_000_000_000_004);
+        let debt = at_cap.borrow_limit;
+
+        // The admin lowers the cap to 0. Re-pricing the same debt against the recomputed
+        // liquidation line must not flip the position into liquidatable — the per-asset floor
+        // keeps `borrow_limit` and `liquidation_line` moving together instead of leaving a
+        // floor-of-sum-vs-sum-of-floors gap for a cap change to fall into.
+        let h = compute_health(&collateral, debt, 0, ngn_1to1, promo_balance, 0).unwrap();
+        assert_eq!(h.liquidation_line, 18_000_000_000_004);
+        assert_eq!(h.debt, debt);
+        assert!(!h.is_liquidatable());
     }
 }
