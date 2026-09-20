@@ -47,10 +47,10 @@ pub const MAX_PRICE_AGE_SECONDS: u64 = 60;
 /// one-time refusal, instead of surprising a liquidator deep in the liquidation path — and to
 /// keep every `u128` headroom argument elsewhere in the program valid.
 pub const MAX_COLLATERAL_DECIMALS: u8 = 12;
-/// Upper bound on `MarketParams::ngn_max_stale_slots`. A Solana slot targets 400 ms, so 150
-/// slots is the same 60 seconds `MAX_PRICE_AGE_SECONDS` allows the collateral feeds — the NGN
-/// feed prices the debt side of every health check, and there is no reason to let it drift
-/// further behind than the collateral side.
+/// Upper bound on `MarketParams::ngn_max_stale_slots`. At the 400 ms slot target, 150 slots is
+/// the same 60 seconds `MAX_PRICE_AGE_SECONDS` allows the collateral feeds; mainnet slots run
+/// 400-650 ms under load, so in practice this is closer to 60-100 seconds — the NGN feed prices
+/// the debt side of every health check and can drift further behind than the collateral feeds.
 pub const MAX_NGN_STALE_SLOTS: u64 = 150;
 
 /// Fixed-point scale for an xStock's scaled-UI multiplier (10^12 per whole multiple).
