@@ -1753,3 +1753,18 @@ impl Env {
         send(&mut self.svm, &[instruction], &[&self.admin]).expect("update market params");
     }
 }
+
+// ---- The promo cap (Task 8) ----
+
+/// `set_promo_cap` re-checks every listed asset, so the caller passes them all, in ascending
+/// key order.
+pub fn set_promo_cap_ix(admin: &Pubkey, promo_cap_bps: u16, assets: &[Pubkey]) -> Instruction {
+    let mut instruction = ix(
+        hodl_loans::instruction::SetPromoCap { promo_cap_bps },
+        hodl_loans::accounts::SetPromoCap { admin: *admin, config: config_pda() },
+    );
+    let mut sorted: Vec<Pubkey> = assets.iter().map(collateral_pda).collect();
+    sorted.sort();
+    instruction.accounts.extend(sorted.into_iter().map(|k| AccountMeta::new_readonly(k, false)));
+    instruction
+}

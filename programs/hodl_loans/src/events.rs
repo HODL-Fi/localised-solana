@@ -269,6 +269,12 @@ pub struct PromoVaultWithdrawn {
 }
 
 #[event]
+pub struct PromoCapSet {
+    pub old: u16,
+    pub new: u16,
+}
+
+#[event]
 pub struct CampaignCreated {
     pub market: Pubkey,
     pub campaign: Pubkey,

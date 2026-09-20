@@ -119,6 +119,10 @@ pub mod hodl_loans {
         instructions::handle_sweep_promo_excess(ctx)
     }
 
+    pub fn set_promo_cap(ctx: Context<SetPromoCap>, promo_cap_bps: u16) -> Result<()> {
+        instructions::handle_set_promo_cap(ctx, promo_cap_bps)
+    }
+
     pub fn create_campaign(
         ctx: Context<CreateCampaign>,
         campaign_id: u64,
