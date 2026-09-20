@@ -105,6 +105,7 @@ pub fn handle_fund_promo_vault(ctx: Context<FundPromoVault>, amount: u64) -> Res
 
     let promo_vault = &mut ctx.accounts.promo_vault;
     promo_vault.cash = to_u64(add(promo_vault.cash as u128, amount as u128)?)?;
+    promo_vault.require_invariant()?;
     emit!(PromoVaultFunded {
         market: ctx.accounts.market.key(),
         amount,

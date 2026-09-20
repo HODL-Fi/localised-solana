@@ -35,8 +35,14 @@ impl PromoVault {
 
     /// Promo leaving a position, on expiry, revocation, forfeiture or `close_position`. The cNGN
     /// itself does not move on expiry or revocation — it becomes free HODL funds again.
+    ///
+    /// Decreasing `outstanding` is monotone-safe for the §12 invariant on its own, but the
+    /// invariant check is called here anyway: the point of the global rule (every handler that
+    /// moves `cash`, `outstanding` or `unissued` calls `require_invariant()`) is that a reader
+    /// never has to re-derive "is this direction safe?" at each call site.
     pub fn release(&mut self, amount: u64) -> Result<()> {
         self.outstanding = to_u64(sub(self.outstanding as u128, amount as u128)?)?;
+        self.require_invariant()?;
         Ok(())
     }
 
