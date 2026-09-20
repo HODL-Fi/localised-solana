@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-use crate::constants::{MAX_BAD_DEBT_DUST_USD, MAX_BPS, MIN_TENURE};
+use crate::constants::{MAX_BAD_DEBT_DUST_USD, MAX_BPS, MAX_NGN_STALE_SLOTS, MIN_TENURE};
 use crate::errors::HodlError;
 use crate::math::checked::{add, sub};
 use crate::math::interest::accrue_lp_interest;
@@ -73,7 +73,10 @@ impl MarketParams {
         require!(self.max_utilization_bps <= MAX_BPS, HodlError::InvalidParameters);
         require!(self.max_tenure_seconds >= MIN_TENURE, HodlError::InvalidParameters);
         require!(self.ngn_feed != Pubkey::default(), HodlError::InvalidParameters);
-        require!(self.ngn_max_stale_slots > 0, HodlError::InvalidParameters);
+        require!(
+            self.ngn_max_stale_slots > 0 && self.ngn_max_stale_slots <= MAX_NGN_STALE_SLOTS,
+            HodlError::InvalidParameters
+        );
         require!(self.ngn_min_samples >= 1, HodlError::InvalidParameters);
         require!(self.ngn_max_spread_bps <= MAX_BPS, HodlError::InvalidParameters);
         // `0` would mean promo is expirable in the same slot as the redemption that granted it —

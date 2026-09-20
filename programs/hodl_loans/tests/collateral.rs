@@ -212,3 +212,30 @@ fn collateral_sweep_moves_only_donations() {
     let by_stranger = sweep_collateral_excess_ix(&stranger.pubkey(), &mint, &SPL_TOKEN, &destination);
     assert_hodl_error(send(&mut env.svm, &[by_stranger], &[&stranger]), HodlError::Unauthorized);
 }
+
+#[test]
+fn a_mint_with_too_many_decimals_cannot_be_listed() {
+    // The bound comes from the LIQUIDATION path, not the health path. `token_value` copes with
+    // roughly 38 decimals; `seize_for_repayment` multiplies twice and, against the worst
+    // repayment the program permits, first overflows at 15. Past the bound a position holding
+    // the asset could be opened and then never liquidated, so listing is refused instead.
+    let mut env = Env::initialized();
+    let admin = env.admin.pubkey();
+
+    let too_wide = env.create_mint(MintKind::SplToken, 13);
+    let instruction = list_collateral_ix(
+        &admin,
+        &too_wide,
+        &SPL_TOKEN,
+        default_collateral_params(&too_wide),
+        CollateralKind::Standard,
+    );
+    assert_hodl_error(send(&mut env.svm, &[instruction], &[&env.admin]), HodlError::InvalidParameters);
+    assert_eq!(env.config().collateral_count, 0);
+
+    // The bound itself is allowed, and so is every decimals count the protocol actually uses.
+    env.list_spl_collateral(12);
+    env.list_spl_collateral(9);
+    env.list_spl_collateral(6);
+    assert_eq!(env.config().collateral_count, 3);
+}

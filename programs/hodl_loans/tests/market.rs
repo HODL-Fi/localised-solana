@@ -58,6 +58,19 @@ fn invalid_params_are_rejected() {
     params.max_tenure_seconds = 86_399;
     let instruction = create_market_ix(&admin, &mint, &TOKEN_2022, params);
     assert_hodl_error(send(&mut env.svm, &[instruction], &[&env.admin]), HodlError::InvalidParameters);
+
+    // The NGN feed prices the debt side of every health check, so it may not drift further
+    // behind than the collateral feeds do. 150 slots is the same 60 seconds
+    // `MAX_PRICE_AGE_SECONDS` allows them, at a 400 ms slot.
+    let mut params = default_market_params();
+    params.ngn_max_stale_slots = 151;
+    let instruction = create_market_ix(&admin, &mint, &TOKEN_2022, params);
+    assert_hodl_error(send(&mut env.svm, &[instruction], &[&env.admin]), HodlError::InvalidParameters);
+
+    let mut params = default_market_params();
+    params.ngn_max_stale_slots = 150;
+    let instruction = create_market_ix(&admin, &mint, &TOKEN_2022, params);
+    send(&mut env.svm, &[instruction], &[&env.admin]).expect("150 slots is the bound, not past it");
 }
 
 #[test]

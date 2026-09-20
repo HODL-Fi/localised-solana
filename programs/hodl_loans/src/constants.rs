@@ -28,6 +28,27 @@ pub const USD_DECIMALS: i32 = 12;
 /// price-selection surface for assets without a pinned price account.
 pub const MAX_PRICE_AGE_SECONDS: u64 = 60;
 
+/// Upper bound on a collateral mint's `decimals`, set by the LIQUIDATION path rather than the
+/// health path.
+///
+/// `token_value` tolerates roughly 38 decimals before `u128` gives out, which is the number a
+/// reader reaches for. `seize_for_repayment` is far tighter, because it multiplies twice:
+/// `with_bonus × 10^decimals` first, then `display × MULTIPLIER_SCALE`. The second term carries
+/// the collateral price in its denominator, so a cheap asset overflows sooner. Measured against
+/// the worst repayment the program permits — `u64::MAX` cNGN, a 100% liquidation bonus, and a
+/// $0.01 collateral — the first failure is at 15 decimals.
+///
+/// 12 clears every asset the protocol lists (USDC 6, SOL 9, the xStocks 8) with three decimals
+/// of margin against that measured cliff. The consequence of getting this wrong is not a bad
+/// price but an unliquidatable position: `seize_for_repayment` returns `MathOverflow` and the
+/// liquidator simply cannot act.
+pub const MAX_COLLATERAL_DECIMALS: u8 = 12;
+/// Upper bound on `MarketParams::ngn_max_stale_slots`. A Solana slot targets 400 ms, so 150
+/// slots is the same 60 seconds `MAX_PRICE_AGE_SECONDS` allows the collateral feeds — the NGN
+/// feed prices the debt side of every health check, and there is no reason to let it drift
+/// further behind than the collateral side.
+pub const MAX_NGN_STALE_SLOTS: u64 = 150;
+
 /// Fixed-point scale for an xStock's scaled-UI multiplier (10^12 per whole multiple).
 pub const MULTIPLIER_SCALE: u128 = 1_000_000_000_000;
 /// The multiplier a `Standard` asset always carries.

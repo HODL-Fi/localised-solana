@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{self, CloseAccount, Mint, TokenAccount, TokenInterface};
 
-use crate::constants::{ACCOUNT_VERSION, COLLATERAL_SEED, COLLATERAL_VAULT_SEED, CONFIG_SEED};
+use crate::constants::{ACCOUNT_VERSION, COLLATERAL_SEED, COLLATERAL_VAULT_SEED, CONFIG_SEED, MAX_COLLATERAL_DECIMALS};
 use crate::errors::HodlError;
 use crate::events::{CollateralDelisted, CollateralListed, CollateralParamsUpdated, CollateralPauseSet};
 use crate::state::{CollateralAsset, CollateralKind, CollateralParams, Config};
@@ -83,6 +83,16 @@ pub fn handle_list_collateral(
     kind: CollateralKind,
 ) -> Result<()> {
     params.validate(ctx.accounts.config.promo_cap_bps)?;
+
+    // Set by the liquidation path, not the health path — see `MAX_COLLATERAL_DECIMALS`. Listing
+    // is the only place the mint's own decimals enter the program, so it is the only place this
+    // can be refused; past the bound, `seize_for_repayment` overflows and positions holding the
+    // asset cannot be liquidated at all.
+    require!(
+        ctx.accounts.mint.decimals <= MAX_COLLATERAL_DECIMALS,
+        HodlError::InvalidParameters
+    );
+
     require_collateral_mint_on_entry(&ctx.accounts.mint.to_account_info(), kind)?;
 
     let mut asset = CollateralAsset {
