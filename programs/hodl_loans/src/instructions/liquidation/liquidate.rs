@@ -241,7 +241,6 @@ pub fn handle_liquidate<'info>(ctx: Context<'info, Liquidate<'info>>, loan_id: u
         &[seeds],
     )?;
 
-    let position_key = ctx.accounts.position.key();
     let liquidator = ctx.accounts.liquidator.key();
     if remaining_principal == 0 {
         emit!(LoanLiquidated {
