@@ -46,15 +46,21 @@ pub fn handle_set_promo_cap(ctx: Context<SetPromoCap>, promo_cap_bps: u16) -> Re
         .map_err(|_| HodlError::InvalidParameters)?;
         require_keys_eq!(info.key(), expected, HodlError::InvalidParameters);
 
-        require!(
-            asset.ltv_bps as u32 + promo_cap_bps as u32 <= asset.liquidation_threshold_bps as u32,
-            HodlError::InvalidParameters
-        );
+        // Re-run the same rule `CollateralParams::validate` enforces, instead of hand-copying
+        // it: `state/collateral.rs` already documents that a future editor changing
+        // `liquidation_bonus_bps` must reason about `LT + promo_cap_bps`, so `validate` is
+        // where a second cap-dependent rule will land. A hand-copied `require!` here would
+        // silently stop covering it. This is safe and idempotent — `apply_params` is the sole
+        // writer of `ltv_bps`/`liquidation_threshold_bps`/`liquidation_bonus_bps` and validates
+        // at both of its call sites, so every stored asset already satisfies the
+        // cap-independent rules `validate` also re-checks here.
+        asset.params().validate(promo_cap_bps)?;
     }
 
+    let by = ctx.accounts.admin.key();
     let config = &mut ctx.accounts.config;
     let old = config.promo_cap_bps;
     config.promo_cap_bps = promo_cap_bps;
-    emit!(PromoCapSet { old, new: promo_cap_bps });
+    emit!(PromoCapSet { old, new: promo_cap_bps, by });
     Ok(())
 }
