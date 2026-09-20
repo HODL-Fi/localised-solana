@@ -48,7 +48,7 @@ pub struct Liquidate<'info> {
     #[account(
         mut,
         constraint = promo_vault.as_ref().is_none_or(|pv| pv.vault == promo_vault_token.key())
-            @ HodlError::PromoVaultInsufficient
+            @ HodlError::MarketMismatch
     )]
     pub promo_vault_token: Option<Box<InterfaceAccount<'info, TokenAccount>>>,
     #[account(mint::token_program = token_program)]
