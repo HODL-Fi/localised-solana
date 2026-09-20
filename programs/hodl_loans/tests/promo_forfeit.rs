@@ -274,8 +274,8 @@ fn liquidation_at_the_promo_lifted_boundary_never_books_bad_debt() {
     // before the liquidation bonus, which only shrinks recoverable value further — a single
     // seizure can never fully repay it; this is necessarily a partial liquidation.
     env.set_pyth_price(&setup.usdc, 999 * ONE_DOLLAR / 1_000, 0);
-    let market_cash_before = env.market(&setup.cngn).cash;
     let promo_cash_before = env.promo_vault(&setup.cngn).cash;
+    let promo_tokens_before = env.token_balance(&promo_vault_token_pda(&setup.cngn));
     env.liquidate(&liquidator, &setup, &setup.usdc, &seized_to, 0, debt_raw)
         .expect("liquidation must succeed once nudged past the line");
 
@@ -283,11 +283,19 @@ fn liquidation_at_the_promo_lifted_boundary_never_books_bad_debt() {
     // not enough on their own. The lift is bounded by the 20% cap on $1,000 of own collateral,
     // so it is at most $200 — pinned by the `NotLiquidatable` assertion above, which only holds
     // because promo raised the line that far. The recovery is the FULL grant, uncapped: 500,000
-    // cNGN, worth about $312 at the NGN bid. Recovery therefore exceeds lift by roughly $112,
-    // and these two assertions pin that the whole grant really moved rather than the counted
-    // portion.
+    // cNGN, worth about $312 at the NGN bid. Recovery therefore exceeds lift by roughly $112.
+    //
+    // Both assertions are on the promo side on purpose. The market side takes the forfeit AND
+    // the liquidator's repayment in the same call, and the repayment here is about three times
+    // the grant — so `market.cash >= before + grant` would pass even with nothing forfeited at
+    // all. The promo vault's bookkeeping and its actual token balance both falling by the full
+    // grant is what fails if the forfeit is ever capped at the counted portion (~320,000 cNGN)
+    // instead of the whole balance.
     assert_eq!(env.promo_vault(&setup.cngn).cash, promo_cash_before - grant);
-    assert!(env.market(&setup.cngn).cash >= market_cash_before + grant);
+    assert_eq!(
+        env.token_balance(&promo_vault_token_pda(&setup.cngn)),
+        promo_tokens_before - grant
+    );
 
     // `total_bad_debt` is written only by `write_off_loan`, which this test never calls, so on
     // its own this says little — it is here to record that the position never reached the
