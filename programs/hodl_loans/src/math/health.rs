@@ -78,8 +78,13 @@ pub fn compute_health(
         promo_cap_total = add(promo_cap_total, mul_div_floor(value, promo_cap_bps as u128, BPS)?)?;
     }
     // Spec §12: promo is a topping on collateral the borrower owns, never a substitute for it.
-    // The cap is a fraction of `own_value`, so a position with nothing of its own counts none of
-    // it — which is what makes defaulting a loss for the borrower rather than a way to profit.
+    // The cap is `promo_cap_total`, summed per asset in the loop above rather than taken as a
+    // single fraction of the aggregate `own_value` — flooring the aggregate can exceed the sum
+    // of the per-asset floors by up to n-1 base units, which at the zero-slack shipped defaults
+    // (ltv 7000 + cap 2000 == lt 9000) can make a position borrowed to its limit liquidatable the
+    // moment the cap is lowered. A position with nothing of its own still counts none of it
+    // either way — which is what makes defaulting a loss for the borrower rather than a way to
+    // profit.
     let promo_value = token_value(promo_balance as u128, cngn_decimals, ngn.lower())?;
     health.promo_counted = promo_value.min(promo_cap_total);
     health.borrow_limit = add(health.borrow_limit, health.promo_counted)?;
