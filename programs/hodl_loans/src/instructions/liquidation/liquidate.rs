@@ -6,7 +6,7 @@ use crate::errors::HodlError;
 use crate::events::{LoanLiquidated, LoanPartiallyLiquidated};
 use crate::instructions::promos::{forfeit_promo, ForfeitAccounts};
 use crate::math::checked::{add, sub, to_u64};
-use crate::math::liquidation::{principal_share, seize_for_repayment};
+use crate::math::liquidation::{principal_share, seize_for_repayment, SeizureInputs};
 use crate::math::loan::{accrued_lp_interest, loan_balance, lp_contribution, reserve_share};
 use crate::state::{CollateralAsset, Config, Market, Position, PromoVault};
 use crate::token::extensions::require_collateral_mint_on_exit;
@@ -159,16 +159,16 @@ pub fn handle_liquidate<'info>(ctx: Context<'info, Liquidate<'info>>, loan_id: u
         let loan = position.loans[loan_index];
         let balance = loan_balance(&loan.terms(), now)?.total()?;
         let requested = to_u64((amount as u128).min(balance))?;
-        let seizure = seize_for_repayment(
-            requested,
-            valuation.ngn.price,
-            market.decimals,
+        let seizure = seize_for_repayment(&SeizureInputs {
+            repay_amount: requested,
+            ngn_price: valuation.ngn.price,
+            cngn_decimals: market.decimals,
             collateral_price,
-            ctx.accounts.collateral.decimals,
+            collateral_decimals: ctx.accounts.collateral.decimals,
             multiplier,
-            ctx.accounts.collateral.liquidation_bonus_bps,
-            position.collateral[slot_index].amount,
-        )?;
+            bonus_bps: ctx.accounts.collateral.liquidation_bonus_bps,
+            slot_amount: position.collateral[slot_index].amount,
+        })?;
         let paid = seizure.repay_amount;
         require!(paid > 0 && seizure.seize_amount > 0, HodlError::AmountTooSmall);
 

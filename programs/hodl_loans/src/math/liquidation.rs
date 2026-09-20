@@ -11,6 +11,23 @@ pub struct Seizure {
     pub seize_amount: u64,
 }
 
+/// Everything `seize_for_repayment` needs, named.
+///
+/// It used to take these as eight positional arguments behind an
+/// `#[allow(clippy::too_many_arguments)]`. Two of them — `collateral_price` and `multiplier` —
+/// are both `u128` at the same `10^12` scale, so transposing them compiled cleanly and produced
+/// a seizure wrong by the multiplier. Named fields make that particular mistake unrepresentable.
+pub struct SeizureInputs {
+    pub repay_amount: u64,
+    pub ngn_price: u128,
+    pub cngn_decimals: u8,
+    pub collateral_price: u128,
+    pub collateral_decimals: u8,
+    pub multiplier: u128,
+    pub bonus_bps: u16,
+    pub slot_amount: u64,
+}
+
 /// Spec §11 seizure, at plain prices (no confidence or spread adjustment):
 ///
 /// ```text
@@ -34,17 +51,17 @@ pub struct Seizure {
 /// rounds down, so the liquidator never receives more collateral than the formula allows.
 /// When the slot holds less than that, the seizure takes the whole slot and the repayment
 /// shrinks in proportion (spec §11 step 6).
-#[allow(clippy::too_many_arguments)]
-pub fn seize_for_repayment(
-    repay_amount: u64,
-    ngn_price: u128,
-    cngn_decimals: u8,
-    collateral_price: u128,
-    collateral_decimals: u8,
-    multiplier: u128,
-    bonus_bps: u16,
-    slot_amount: u64,
-) -> Result<Seizure> {
+pub fn seize_for_repayment(inputs: &SeizureInputs) -> Result<Seizure> {
+    let &SeizureInputs {
+        repay_amount,
+        ngn_price,
+        cngn_decimals,
+        collateral_price,
+        collateral_decimals,
+        multiplier,
+        bonus_bps,
+        slot_amount,
+    } = inputs;
     require!(collateral_price > 0 && ngn_price > 0, HodlError::InvalidPrice);
     require!(multiplier > 0, HodlError::InvalidPrice);
     let repaid_usd = mul_div_floor(repay_amount as u128, ngn_price, pow10(cngn_decimals as u32)?)?;
@@ -79,45 +96,62 @@ mod tests {
     /// 1,600,000 cNGN, worth $1,000.
     const REPAY: u64 = 1_600_000_000_000;
 
+    /// The common case, so each test states only what it is varying.
+    fn base() -> SeizureInputs {
+        SeizureInputs {
+            repay_amount: REPAY,
+            ngn_price: NGN,
+            cngn_decimals: 6,
+            collateral_price: USD,
+            collateral_decimals: 6,
+            multiplier: MULTIPLIER_ONE,
+            bonus_bps: 500,
+            slot_amount: u64::MAX,
+        }
+    }
+
     #[test]
     fn seizure_pays_the_bonus_on_top_of_the_repaid_value() {
         // 1,050 USDC (6 decimals at $1) for $1,000 of cNGN at a 5% bonus.
-        let s = seize_for_repayment(REPAY, NGN, 6, USD, 6, MULTIPLIER_ONE, 500, u64::MAX).unwrap();
+        let s = seize_for_repayment(&base()).unwrap();
         assert_eq!(s, Seizure { repay_amount: REPAY, seize_amount: 1_050_000_000 });
 
         // The same $1,050 is 7 SOL (9 decimals at $150).
-        let s = seize_for_repayment(REPAY, NGN, 6, 150 * USD, 9, MULTIPLIER_ONE, 500, u64::MAX).unwrap();
+        let s = seize_for_repayment(&SeizureInputs { collateral_price: 150 * USD, collateral_decimals: 9, ..base() })
+            .unwrap();
         assert_eq!(s.seize_amount, 7_000_000_000);
 
         // No bonus seizes exactly the repaid value.
-        let s = seize_for_repayment(REPAY, NGN, 6, USD, 6, MULTIPLIER_ONE, 0, u64::MAX).unwrap();
+        let s = seize_for_repayment(&SeizureInputs { bonus_bps: 0, ..base() }).unwrap();
         assert_eq!(s.seize_amount, 1_000_000_000);
     }
 
     #[test]
     fn a_full_bonus_still_scales_the_seizure() {
         // A 100% bonus doubles the collateral seized for the same repayment.
-        let s = seize_for_repayment(REPAY, NGN, 6, USD, 6, MULTIPLIER_ONE, 10_000, u64::MAX).unwrap();
+        let s = seize_for_repayment(&SeizureInputs { bonus_bps: 10_000, ..base() }).unwrap();
         assert_eq!(s.seize_amount, 2_000_000_000);
     }
 
     #[test]
     fn a_short_slot_caps_both_the_seizure_and_the_repayment() {
         // The slot holds 500 USDC of the 1,050 the full repayment would take.
-        let s = seize_for_repayment(REPAY, NGN, 6, USD, 6, MULTIPLIER_ONE, 500, 500_000_000).unwrap();
+        let s = seize_for_repayment(&SeizureInputs { slot_amount: 500_000_000, ..base() }).unwrap();
         assert_eq!(s.seize_amount, 500_000_000);
         // 1,600,000 × 500 / 1,050 cNGN, rounded down.
         assert_eq!(s.repay_amount, 761_904_761_904);
         // Re-pricing the capped repayment seizes no more than the slot.
-        let again = seize_for_repayment(s.repay_amount, NGN, 6, USD, 6, MULTIPLIER_ONE, 500, 500_000_000).unwrap();
+        let again =
+            seize_for_repayment(&SeizureInputs { repay_amount: s.repay_amount, slot_amount: 500_000_000, ..base() })
+                .unwrap();
         assert!(again.seize_amount <= 500_000_000);
     }
 
     #[test]
     fn seizure_rejects_missing_prices() {
-        assert!(seize_for_repayment(REPAY, NGN, 6, 0, 6, MULTIPLIER_ONE, 500, u64::MAX).is_err());
-        assert!(seize_for_repayment(REPAY, 0, 6, USD, 6, MULTIPLIER_ONE, 500, u64::MAX).is_err());
-        assert!(seize_for_repayment(REPAY, NGN, 6, USD, 6, 0, 500, u64::MAX).is_err());
+        assert!(seize_for_repayment(&SeizureInputs { collateral_price: 0, ..base() }).is_err());
+        assert!(seize_for_repayment(&SeizureInputs { ngn_price: 0, ..base() }).is_err());
+        assert!(seize_for_repayment(&SeizureInputs { multiplier: 0, ..base() }).is_err());
     }
 
     #[test]
@@ -127,7 +161,7 @@ mod tests {
         // amount inexactly. Flooring the raw-unit division is what stops a liquidator from being
         // paid more collateral than the formula allows — a `mul_div_ceil` here would round in
         // the liquidator's favor, at the borrower's expense.
-        let s = seize_for_repayment(REPAY, NGN, 6, USD, 6, 1_000_899_999_999, 500, u64::MAX).unwrap();
+        let s = seize_for_repayment(&SeizureInputs { multiplier: 1_000_899_999_999, ..base() }).unwrap();
         assert_eq!(s.seize_amount, 1_049_055_849);
     }
 
