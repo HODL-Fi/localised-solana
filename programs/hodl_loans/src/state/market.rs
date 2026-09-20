@@ -147,3 +147,21 @@ impl Market {
         self.cash.saturating_sub(self.protocol_reserve)
     }
 }
+
+#[cfg(test)]
+mod layout {
+    use super::*;
+
+    #[test]
+    fn init_space_is_pinned_so_new_fields_come_out_of_the_padding() {
+        // `accrual_remainder` was taken out of the reserved padding in Plan 3, so the account's size did not change. That is the whole
+        // contract: a field added on top of `reserved` rather than out of it grows
+        // `INIT_SPACE`, and every account already on chain is then too small to deserialize
+        // into — with no error until someone touches one.
+        //
+        // `Position` pins the same property with `size_of` (it is zero-copy); these two are
+        // Borsh, so `INIT_SPACE` is the number that matters. If this assertion fails, take the
+        // bytes out of `reserved` instead of appending them.
+        assert_eq!(Market::INIT_SPACE, 555);
+    }
+}
