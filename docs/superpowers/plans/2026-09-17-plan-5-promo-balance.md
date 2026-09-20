@@ -3746,7 +3746,7 @@ Run: `./scripts/test.sh --test promo_cap`
 Expected: 3 tests, all `ok`.
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 228 tests in all — 51 unit and 177 LiteSVM.
+Expected: every binary reports `ok`, 230 tests in all — 52 unit and 178 LiteSVM.
 
 Run: `cargo clippy -p hodl_loans --all-targets -- -D warnings`
 Expected: no warnings.
@@ -3762,7 +3762,7 @@ git commit -m "feat: set_promo_cap, re-checked against every listed asset"
 
 ## Done when
 
-- `./scripts/test.sh` reports 205 passing tests and `cargo clippy -p hodl_loans --all-targets -- -D warnings` is clean.
+- `./scripts/test.sh` reports 230 passing tests and `cargo clippy -p hodl_loans --all-targets -- -D warnings` is clean.
 - `outstanding + unissued ≤ cash` holds after every instruction that touches the promo vault, and the free balance is what bounds both campaign creation and withdrawal.
 - A voucher only works for the wallet, amount, nonce and expiry the promo signer actually signed, only once, and only against an open campaign within its window.
 - Promo lifts both the borrow limit and the liquidation line by the same capped amount, and is worth nothing to a position holding no collateral of its own.
