@@ -44,9 +44,12 @@ pub struct ForfeitAccounts<'a, 'info> {
 /// position leaves the promo vault for the market vault, where it becomes lender cash. It does
 /// not reduce the borrower's debt — it is the protocol taking back what it lent them for free.
 ///
-/// Returns the amount forfeited, which the caller adds to `market.cash`; the market account is
-/// already borrowed mutably at every call site. Routes through `release_promo` — the single
-/// chokepoint through which promo leaves a position — rather than duplicating its accounting.
+/// Returns the amount actually moved into the market vault, which the caller adds to
+/// `market.cash`; the market account is already borrowed mutably at every call site. This can be
+/// less than the position's released promo balance after a clawback (see the comment below) —
+/// `outstanding` still drops by the full balance either way. Routes through `release_promo` —
+/// the single chokepoint through which promo leaves a position — rather than duplicating its
+/// accounting.
 pub fn forfeit_promo(
     position: &mut Position,
     position_key: Pubkey,
@@ -58,19 +61,32 @@ pub fn forfeit_promo(
     }
     let amount = release_promo(position, accounts.promo_vault)?;
 
-    let seeds: &[&[u8]] = &[PROMO_VAULT_SEED, market_key.as_ref(), &[accounts.promo_vault.bump]];
-    transfer_from_vault(
-        accounts.token_program,
-        accounts.mint.to_account_info(),
-        accounts.mint.decimals,
-        accounts.promo_token.to_account_info(),
-        accounts.market_vault.to_account_info(),
-        accounts.promo_vault.to_account_info(),
-        amount,
-        &[seeds],
-    )?;
+    // cNGN carries a PermanentDelegate, so its issuer can move tokens out of the promo vault's
+    // token account without the program's involvement. After such a clawback,
+    // `promo_vault.cash` (this program's ledger) can overstate the vault's real token balance.
+    // Transferring the full nominal `amount` unconditionally would then revert — bricking every
+    // liquidation and write-off of a promo-holding position on this market, a liveness failure
+    // on the protocol's solvency backstop. Clamp the transfer, and the cash debit, to what the
+    // vault actually holds: lenders receive whatever remains instead of the call reverting
+    // outright.
+    let available = accounts.promo_token.amount;
+    let moved = amount.min(available);
 
-    accounts.promo_vault.cash = to_u64(sub(accounts.promo_vault.cash as u128, amount as u128)?)?;
+    if moved > 0 {
+        let seeds: &[&[u8]] = &[PROMO_VAULT_SEED, market_key.as_ref(), &[accounts.promo_vault.bump]];
+        transfer_from_vault(
+            accounts.token_program,
+            accounts.mint.to_account_info(),
+            accounts.mint.decimals,
+            accounts.promo_token.to_account_info(),
+            accounts.market_vault.to_account_info(),
+            accounts.promo_vault.to_account_info(),
+            moved,
+            &[seeds],
+        )?;
+    }
+
+    accounts.promo_vault.cash = to_u64(sub(accounts.promo_vault.cash as u128, moved as u128)?)?;
     accounts.promo_vault.require_invariant()?;
 
     emit!(PromoForfeited {
@@ -79,7 +95,7 @@ pub fn forfeit_promo(
         owner: position.owner,
         amount,
     });
-    Ok(amount)
+    Ok(moved)
 }
 
 #[derive(Accounts)]

@@ -49,6 +49,59 @@ fn liquidating_a_position_hands_its_promo_to_lenders() {
 }
 
 #[test]
+fn forfeit_clamps_to_what_the_vault_actually_holds_after_a_clawback() {
+    // cNGN carries a PermanentDelegate, so its issuer can move tokens out of the promo vault's
+    // token account without the program's involvement — a clawback that leaves
+    // `promo_vault.cash` (this program's ledger) overstating the vault's real token balance. If
+    // `forfeit_promo` still transferred the full nominal amount unconditionally, the CPI would
+    // revert, bricking every liquidation and write-off of a promo-holding position on this
+    // market. It must instead move whatever remains and clamp its own books to that, so the
+    // liquidation still succeeds and lenders get made as whole as the vault allows.
+    let (mut env, setup) = underwater_with_promo();
+    let owner = setup.borrower.pubkey();
+
+    // The issuer (the mint's permanent delegate) pulls almost all the cNGN out of the promo
+    // vault's token account directly, leaving less than the position's promo balance (`GRANT`)
+    // behind — `promo_vault.cash` still says the full `GRANT` (and much more) is backing it.
+    let vault_before = env.promo_vault(&setup.cngn);
+    let remaining = 10_000 * ONE_CNGN;
+    assert!(remaining < GRANT, "the clawback must leave less than the position's promo balance");
+    let before_clawback = env.token_balance(&promo_vault_token_pda(&setup.cngn));
+    env.delegate_burn(&setup.cngn, &promo_vault_token_pda(&setup.cngn), before_clawback - remaining);
+    assert_eq!(env.token_balance(&promo_vault_token_pda(&setup.cngn)), remaining);
+
+    let liquidator = env.new_liquidator(&setup.cngn, 1_000_000 * ONE_CNGN);
+    let seized_to = env.create_token_account(&setup.usdc, &liquidator.pubkey());
+    let cash_before = env.market(&setup.cngn).cash;
+    let market_tokens_before = env.token_balance(&market_vault_pda(&setup.cngn));
+    let repaid_before = env.position(&owner).loans[0].repaid;
+
+    // The liquidation must succeed instead of reverting on the now-unbacked transfer.
+    env.liquidate(&liquidator, &setup, &setup.usdc, &seized_to, 0, 100_000 * ONE_CNGN)
+        .expect("liquidation must succeed even after a promo vault clawback");
+
+    // The position's promo is gone either way — the borrower does not get to keep it just
+    // because the issuer clawed the backing tokens back.
+    assert_eq!(env.position(&owner).promo_balance, 0);
+
+    // Only what actually moved (`remaining`) reaches the market vault and lenders — not the
+    // full `GRANT`.
+    let paid = env.position(&owner).loans[0].repaid - repaid_before;
+    assert_eq!(env.market(&setup.cngn).cash, cash_before + paid + remaining);
+    assert_eq!(env.token_balance(&market_vault_pda(&setup.cngn)), market_tokens_before + paid + remaining);
+
+    // The promo vault's own books stay consistent: `outstanding` drops by the full `GRANT` (the
+    // position's promo is gone), `cash` only by what actually left (`remaining`), and the §12
+    // invariant `outstanding + unissued <= cash` still holds — even though `cash` now overstates
+    // the vault's real (zero) token balance, which is the clawback's doing, not this fix's.
+    let vault = env.promo_vault(&setup.cngn);
+    assert_eq!(vault.outstanding, vault_before.outstanding - GRANT);
+    assert_eq!(vault.cash, vault_before.cash - remaining);
+    assert!(vault.outstanding + vault.unissued <= vault.cash);
+    assert_eq!(env.token_balance(&promo_vault_token_pda(&setup.cngn)), 0);
+}
+
+#[test]
 fn the_forfeit_does_not_reduce_what_the_borrower_owes() {
     // Two identical debts, one backed by promo. Liquidating both by the same amount must leave
     // the two loans in exactly the same state: the promo goes to lenders, not to the borrower's
