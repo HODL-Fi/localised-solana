@@ -83,4 +83,6 @@ pub enum HodlError {
     PromoAccountsRequired,
     #[msg("Promo vault token account does not match the promo vault")]
     PromoVaultMismatch,
+    #[msg("Collateral vault token account does not match the collateral asset")]
+    CollateralVaultMismatch,
 }

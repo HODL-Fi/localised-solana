@@ -61,7 +61,7 @@ pub struct Liquidate<'info> {
         mut,
         seeds = [COLLATERAL_SEED, collateral_mint.key().as_ref()],
         bump = collateral.bump,
-        constraint = collateral.vault == collateral_vault.key() @ HodlError::PriceAccountMismatch
+        constraint = collateral.vault == collateral_vault.key() @ HodlError::CollateralVaultMismatch
     )]
     pub collateral: Box<Account<'info, CollateralAsset>>,
     #[account(mint::token_program = collateral_token_program)]

@@ -329,3 +329,45 @@ fn liquidation_and_write_off_both_succeed_on_a_market_with_no_promo_vault() {
     send(&mut env.svm, &[write_off], &[&env.admin]).expect("write_off must succeed with no promo vault on the market");
     assert!(env.market(&setup.cngn).total_bad_debt > 0);
 }
+
+#[test]
+fn a_liquidation_must_name_the_collateral_assets_own_vault() {
+    // The constraint that pins `collateral_vault` used to report `PriceAccountMismatch`, which
+    // reads as an oracle problem to whoever is debugging a bot. Substituting another listed
+    // asset's vault is a vault substitution and now says so.
+    let (mut env, setup) = underwater();
+    let liquidator = env.new_liquidator(&setup.cngn, LOAN);
+    let collateral_account = env.create_token_account(&setup.usdc, &liquidator.pubkey());
+    let owner = setup.borrower.pubkey();
+    let program = env.mint_program(&setup.usdc);
+
+    // A second listed asset, so the substituted account is a real, initialized collateral vault
+    // rather than something Anchor would reject before the constraint runs.
+    let other = env.list_spl_collateral(6);
+    let real_vault = collateral_vault_pda(&setup.usdc);
+    let other_vault = collateral_vault_pda(&other);
+
+    let prices = env.price_accounts(&owner);
+    let mut swapped = liquidate_ix(
+        &liquidator.pubkey(), &owner, &setup.cngn, &liquidator.cngn, &setup.usdc, &program,
+        &collateral_account, 0, ONE_CNGN, prices,
+    );
+    let mut replaced = 0;
+    for meta in swapped.accounts.iter_mut() {
+        if meta.pubkey == real_vault {
+            meta.pubkey = other_vault;
+            replaced += 1;
+        }
+    }
+    assert_eq!(replaced, 1, "the collateral vault must appear exactly once to be substituted");
+
+    assert_hodl_error(
+        send(&mut env.svm, &[swapped], &[&liquidator.key]),
+        HodlError::CollateralVaultMismatch,
+    );
+
+    // The same call against the position's own vault succeeds, so the rejection is about the
+    // substitution and not about the rest of the setup.
+    env.liquidate(&liquidator, &setup, &setup.usdc, &collateral_account, 0, ONE_CNGN)
+        .expect("the real vault liquidates");
+}
