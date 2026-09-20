@@ -66,7 +66,7 @@ pub fn handle_repay_loan(ctx: Context<RepayLoan>, loan_id: u64, amount: u64) -> 
     market.cash = market.cash.checked_add(paid).ok_or(HodlError::MathOverflow)?;
 
     let slot = &mut position.loans[index];
-    slot.principal -= principal_repaid;
+    slot.principal = slot.principal.checked_sub(principal_repaid).ok_or(HodlError::MathOverflow)?;
     slot.repaid = slot.repaid.checked_add(paid).ok_or(HodlError::MathOverflow)?;
     slot.interest_anchor = now;
     let remaining_principal = slot.principal;

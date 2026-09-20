@@ -35,7 +35,8 @@ pub fn handle_harvest_reserve(ctx: Context<HarvestReserve>, amount: u64) -> Resu
     let market = &mut ctx.accounts.market;
     require!(amount <= market.protocol_reserve, HodlError::InsufficientCash);
     let old_reserve = market.protocol_reserve;
-    market.protocol_reserve -= amount;
+    market.protocol_reserve =
+        market.protocol_reserve.checked_sub(amount).ok_or(HodlError::MathOverflow)?;
     market.cash = market.cash.checked_sub(amount).ok_or(HodlError::MathOverflow)?;
     let new_reserve = market.protocol_reserve;
 
