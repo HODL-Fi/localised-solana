@@ -197,4 +197,21 @@ fn a_default_runs_from_liquidation_to_write_off_with_promo() {
     assert_eq!(market.total_borrows, 0);
     assert!(market.total_bad_debt > 0);
     assert!(!env.position(&owner).has_active_loans());
+
+    // Same shortfall check as the non-promo variant, but reconciled against the full `grant`:
+    // the forfeit fired at liquidation, not at write-off (per the assertion above), so its cNGN
+    // was already in the market vault by the time `total_bad_debt` was booked — the lender's
+    // real shortfall comes in `grant` lower than `total_bad_debt` records, because
+    // `write_off_loan` books the loan's raw shortfall without knowing an earlier instruction
+    // already covered part of it (`write_off_loan`'s own `forfeited` is zero here; Fix 5 only
+    // nets a forfeit that fires inside the SAME write-off call). `shortfall + grant` reconstructs
+    // `total_bad_debt` exactly: what the lender actually lost, plus what already made up for it.
+    env.withdraw(&setup.lender, &setup.cngn, u64::MAX).unwrap();
+    let returned = env.token_balance(&setup.lender.token);
+    let shortfall = POOL_CNGN - returned;
+    assert_eq!(
+        shortfall + grant, market.total_bad_debt as u64,
+        "lender shortfall {shortfall} plus the forfeited promo {grant} does not match the recorded bad debt {}",
+        market.total_bad_debt
+    );
 }

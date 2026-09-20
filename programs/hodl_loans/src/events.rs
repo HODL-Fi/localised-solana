@@ -241,8 +241,13 @@ pub struct LoanWrittenOff {
     pub owner: Pubkey,
     pub loan_id: u64,
     pub principal: u64,
-    /// Principal plus the lender interest released for it.
+    /// Principal plus the lender interest released for it, net of any promo forfeited in the
+    /// same call (`forfeited`). The gross figure is `loss + forfeited`.
     pub loss: u128,
+    /// Promo forfeited to lenders in this same write-off, already netted out of `loss` and
+    /// `total_bad_debt`. Zero when the position held no promo, or when it was already forfeited
+    /// by an earlier liquidation.
+    pub forfeited: u64,
     pub covered_by_reserve: u64,
     pub total_bad_debt: u128,
 }

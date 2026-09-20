@@ -138,6 +138,12 @@ pub fn handle_write_off_loan<'info>(ctx: Context<'info, WriteOffLoan<'info>>, lo
         now,
     )?;
     let loss = add(loan.principal as u128, released)?;
+    // `forfeited` already landed in `market.cash` above, so it already repaid part of this
+    // shortfall — booking the gross `loss` as bad debt on top would double-count it. Net it out
+    // before it reaches `covered` or `total_bad_debt`; it can exceed `loss` (forfeiture releases
+    // the position's whole promo balance, not just enough to cover this one loan), so floor at
+    // zero rather than using checked subtraction.
+    let net_loss = loss.saturating_sub(forfeited as u128);
 
     market.accrued_interest = market.accrued_interest.saturating_sub(released);
     market.total_borrows = market
@@ -150,12 +156,12 @@ pub fn handle_write_off_loan<'info>(ctx: Context<'info, WriteOffLoan<'info>>, lo
     )?;
 
     // The reserve absorbs what it can; the rest reaches lenders as a fall in the share price.
-    let covered = to_u64(loss.min(market.protocol_reserve as u128))?;
+    let covered = to_u64(net_loss.min(market.protocol_reserve as u128))?;
     market.protocol_reserve = market
         .protocol_reserve
         .checked_sub(covered)
         .ok_or(HodlError::MathOverflow)?;
-    market.total_bad_debt = add(market.total_bad_debt, loss)?;
+    market.total_bad_debt = add(market.total_bad_debt, net_loss)?;
 
     position.loans[index] = bytemuck::Zeroable::zeroed();
     let owner = position.owner;
@@ -168,7 +174,8 @@ pub fn handle_write_off_loan<'info>(ctx: Context<'info, WriteOffLoan<'info>>, lo
         owner,
         loan_id,
         principal: loan.principal,
-        loss,
+        loss: net_loss,
+        forfeited,
         covered_by_reserve: covered,
         total_bad_debt,
     });
