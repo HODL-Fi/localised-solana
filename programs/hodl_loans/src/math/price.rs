@@ -25,12 +25,32 @@ impl UsdPrice {
 }
 
 /// Rescale `value × 10^exponent` to `USD_SCALE`. Rounds down when shrinking.
+///
+/// `exponent` comes from the oracle account, so the shift is computed with `checked_add`
+/// rather than `+`: a feed reporting an exponent near `i32::MAX` would otherwise abort the
+/// transaction on an arithmetic overflow instead of returning `InvalidPrice`.
 fn rescale(value: u128, exponent: i32) -> Result<u128> {
-    let shift = exponent + USD_DECIMALS;
+    let shift = exponent.checked_add(USD_DECIMALS).ok_or(HodlError::InvalidPrice)?;
     if shift >= 0 {
         Ok(value.checked_mul(pow10(shift as u32)?).ok_or(HodlError::MathOverflow)?)
     } else {
         Ok(value / pow10((-shift) as u32)?)
+    }
+}
+
+/// `rescale`, rounding **up** when shrinking. Used only for the uncertainty term.
+///
+/// Rounding a confidence or spread down is anti-conservative on both sides at once, which is
+/// easy to miss because the two uses pull in opposite directions: collateral counts at
+/// `price − conf`, so a smaller `conf` values it higher, and debt counts at `price + conf`, so
+/// a smaller `conf` values it lower. Rounding the uncertainty up is the only direction that is
+/// conservative for both.
+fn rescale_ceil(value: u128, exponent: i32) -> Result<u128> {
+    let shift = exponent.checked_add(USD_DECIMALS).ok_or(HodlError::InvalidPrice)?;
+    if shift >= 0 {
+        Ok(value.checked_mul(pow10(shift as u32)?).ok_or(HodlError::MathOverflow)?)
+    } else {
+        Ok(value.div_ceil(pow10((-shift) as u32)?))
     }
 }
 
@@ -39,7 +59,7 @@ pub fn scale_pyth_price(price: i64, conf: u64, exponent: i32) -> Result<UsdPrice
     require!(price > 0, HodlError::InvalidPrice);
     let scaled = rescale(price as u128, exponent)?;
     require!(scaled > 0, HodlError::InvalidPrice);
-    Ok(UsdPrice { price: scaled, conf: rescale(conf as u128, exponent)? })
+    Ok(UsdPrice { price: scaled, conf: rescale_ceil(conf as u128, exponent)? })
 }
 
 /// Convert a Switchboard value and spread (both 18-decimal fixed point) into a `UsdPrice`.
@@ -47,7 +67,7 @@ pub fn scale_switchboard_value(value: i128, spread: i128) -> Result<UsdPrice> {
     require!(value > 0 && spread >= 0, HodlError::InvalidPrice);
     let scaled = rescale(value as u128, -18)?;
     require!(scaled > 0, HodlError::InvalidPrice);
-    Ok(UsdPrice { price: scaled, conf: rescale(spread as u128, -18)? })
+    Ok(UsdPrice { price: scaled, conf: rescale_ceil(spread as u128, -18)? })
 }
 
 /// Reject a price whose uncertainty exceeds `max_bps` of the price.
@@ -83,6 +103,37 @@ mod tests {
         assert_eq!(p.price, 1_000_000_000_000);
         // Positive exponent.
         assert_eq!(scale_pyth_price(3, 0, 2).unwrap().price, 300_000_000_000_000);
+    }
+
+    #[test]
+    fn uncertainty_rounds_up_so_it_can_never_vanish() {
+        // The price rounds down and the uncertainty rounds up; they are not symmetric, and the
+        // asymmetry is the point. Collateral counts at `price - conf` and debt at
+        // `price + conf`, so a conf rounded DOWN values collateral too high and debt too low —
+        // anti-conservative on both sides at once.
+        //
+        // A spread finer than USD_SCALE is where it shows: floored it becomes 0, which claims
+        // the oracle is perfectly certain.
+        let p = scale_switchboard_value(650_000_000_000_000, 1).unwrap();
+        assert_eq!(p.price, 650_000_000);
+        assert_eq!(p.conf, 1, "a sub-scale spread must not round away to zero uncertainty");
+
+        // And it rounds up, not to nearest: 6_250_000_123_456 / 1e6 is 6_250_000.123456.
+        let p = scale_switchboard_value(650_000_000_000_000, 6_250_000_123_456).unwrap();
+        assert_eq!(p.conf, 6_250_001);
+
+        // Same rule on the Pyth path, which takes its shift from the feed's exponent.
+        let p = scale_pyth_price(15_012_345_678, 1, -15).unwrap();
+        assert_eq!(p.conf, 1);
+    }
+
+    #[test]
+    fn an_absurd_feed_exponent_is_an_invalid_price_not_an_abort() {
+        // `exponent` is read from the oracle account. Computing the shift with `+` would
+        // overflow i32 and abort the whole transaction; `checked_add` makes it a normal error
+        // the caller can see.
+        assert!(scale_pyth_price(1, 0, i32::MAX).is_err());
+        assert!(scale_pyth_price(1, 0, i32::MIN).is_err());
     }
 
     #[test]
