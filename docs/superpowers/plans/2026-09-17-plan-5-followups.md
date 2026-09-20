@@ -89,6 +89,17 @@ during execution, not merely noticed; the reasoning is here so nobody re-derives
   reissues a nonce with a later expiry the holder can redeem the first, wait past its expiry,
   close the receipt and redeem the second. Backend nonce discipline is what prevents this; the
   comments now say so rather than claiming the stronger property.
+- **After an issuer clawback, `free()` overstates what the treasury can withdraw.** The forfeit
+  clamp keeps liquidation working, but nothing reconciles `promo_vault.cash` back down to the
+  real token balance afterwards, so `cash` keeps the phantom amount and `free() = cash −
+  outstanding − unissued` reads high. `withdraw_promo_vault` then fails at the token program
+  rather than at our own bound. A liveness wart on an admin path, not a solvency issue —
+  solvency is protected because `outstanding` is what backs positions and that is exact. A
+  `reconcile_promo_vault` admin instruction that writes `cash = token balance` when the balance
+  is lower would close it.
+- **`PromoForfeited` gained a `moved` field, which changes its Borsh layout.** Any off-chain
+  consumer decoding that event needs a rebuild before this ships. It is the only event on the
+  branch whose existing fields shifted.
 - **A per-asset, admin-settable multiplier ceiling**, alongside `deposit_cap` — carried over from
   Plan 4 and re-deferred again. It bounds the scaled-UI authority without the liveness cost of a
   tighter global `MAX_MULTIPLIER`. `CollateralAsset` has reserved padding for the field.
