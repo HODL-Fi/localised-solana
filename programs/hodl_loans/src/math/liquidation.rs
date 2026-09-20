@@ -88,7 +88,7 @@ pub fn principal_share(repay_amount: u64, principal: u64, balance_total: u128) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::MULTIPLIER_ONE;
+    use crate::constants::{MAX_COLLATERAL_DECIMALS, MULTIPLIER_ONE};
 
     const USD: u128 = 1_000_000_000_000;
     /// 1 NGN = $0.000625.
@@ -108,6 +108,31 @@ mod tests {
             bonus_bps: 500,
             slot_amount: u64::MAX,
         }
+    }
+
+    /// The worst repayment the program permits — `u64::MAX` cNGN, a 100% bonus, a $0.01
+    /// collateral price — at a given `collateral_decimals`. Pins the derivation behind
+    /// `MAX_COLLATERAL_DECIMALS` (see `constants.rs`).
+    fn worst_case(collateral_decimals: u8) -> SeizureInputs {
+        SeizureInputs {
+            repay_amount: u64::MAX,
+            bonus_bps: 10_000,
+            collateral_price: 10_000_000_000, // $0.01 at USD_SCALE
+            collateral_decimals,
+            ..base()
+        }
+    }
+
+    #[test]
+    fn the_max_collateral_decimals_bound_is_derived_not_asserted() {
+        // Nothing else in this suite ever calls `seize_for_repayment` at 12 or 15 decimals — the
+        // SVM test only proves the *policy* (13 refused, 12 accepted), not the arithmetic behind
+        // it. Without this test, raising `MAX_COLLATERAL_DECIMALS` in constants.rs is free: the
+        // rest of the suite stays green even past the cliff. If this test starts failing,
+        // re-derive the cliff (see constants.rs's doc comment) — do not just widen the constant
+        // to make it pass.
+        seize_for_repayment(&worst_case(MAX_COLLATERAL_DECIMALS)).unwrap();
+        assert!(seize_for_repayment(&worst_case(15)).is_err());
     }
 
     #[test]
