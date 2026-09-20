@@ -31,6 +31,15 @@ during execution, not merely noticed; the reasoning is here so nobody re-derives
   exposure-increasing operations and deliberately leaves exposure-reducing ones open so users can
   always exit; redemption draws down the promo vault and raises borrowing power, so it belongs
   with `take_loan`. It is an entry check, so unlike an exit check it cannot trap anyone's funds.
+- **`forfeit_promo` clamps its transfer to the balance the vault actually holds.** cNGN carries
+  `PermanentDelegate`, so its issuer can move tokens out of the promo vault without the program's
+  involvement. Before the clamp, `promo_vault.cash` would then exceed the real balance and the
+  forfeit transfer would revert — bricking every liquidation and write-off of a promo-holding
+  position on that market, a liveness failure on the solvency backstop. The clamp turns that into
+  a partial recovery: lenders get what remains, `cash` falls by what moved, `outstanding` falls by
+  the full amount, and the invariant survives because `amount >= moved`. An earlier draft of this
+  document claimed there was no clean defence against a permanent delegate. That was wrong; the
+  whole-branch review supplied one in three lines.
 - **`close_voucher_receipt`'s `>` must stay strict.** `redeem` uses `now <= voucher_expiry` and
   close uses `now > voucher_expiry`; they are exact complements, and that complementarity is the
   only thing preventing cross-transaction replay. A `>=` here makes the voucher replayable in a
@@ -68,13 +77,9 @@ during execution, not merely noticed; the reasoning is here so nobody re-derives
   not even with a lookup table, freezing the cap until assets are delisted. `MAX_COLLATERAL_SLOTS`
   (8) bounds a position's slots, not the protocol's asset list, so it is the wrong bound to
   reuse — this needs its own number.
-- **A permanent-delegate clawback from the promo vault now blocks liquidation.** cNGN carries
-  `PermanentDelegate` and the issuer's power is an accepted risk, but before forfeiture existed
-  `liquidate` never touched the promo vault. Now, if the issuer moves tokens out of it,
-  `promo_vault.cash` exceeds the balance and the forfeit transfer reverts, so every liquidation
-  of a promo-holding position on that market fails. The trust assumption was pre-accepted; its
-  blast radius silently widened from "promo stops working" to "liquidation stops working", and
-  there is no clean defence against a permanent delegate.
+- **`Health.promo_counted` is write-only** — confirmed by the whole-branch review: nothing
+  outside `compute_health` and its unit tests reads it. If it is meant for observability it
+  should be emitted in an event; if not, it should be a local.
 - **`voucher_expiry` is unbounded above.** A voucher signed with a far-future expiry produces a
   receipt that can never be closed and whose rent is locked indefinitely. The promo signer's
   choice, so not a vulnerability — but a `max_voucher_lifetime` bound would make the rent
@@ -87,8 +92,17 @@ during execution, not merely noticed; the reasoning is here so nobody re-derives
 - **A per-asset, admin-settable multiplier ceiling**, alongside `deposit_cap` — carried over from
   Plan 4 and re-deferred again. It bounds the scaled-UI authority without the liveness cost of a
   tighter global `MAX_MULTIPLIER`. `CollateralAsset` has reserved padding for the field.
-- **`Health.promo_counted` is write-only.** No reader anywhere in the program or its tests. If it
-  is meant for observability it should be emitted in an event; if not, it should be a local.
+- **`market` is seed-pinned in six promo account structs and left bare in six others.** All
+  twelve are safe — the bare ones are pinned transitively through the promo vault's seeds plus
+  `has_one = market` — but Plans 1-4 pin uniformly. Adding six PDA derivations costs compute on
+  paths the branch just found tighter than advertised, for no safety gain, so it is a
+  consistency item rather than a correctness one.
+- **Bad-debt reporting depends on when the forfeit happened.** `write_off_loan` nets a
+  same-call forfeit out of `total_bad_debt`, because that cNGN repaid this very shortfall. A
+  forfeit that happened earlier, at liquidation, is not netted — it was a cash injection against
+  a position that may have carried several loans, so attributing it to one loan's bad debt would
+  be arbitrary. Defensible, but it means the figure's meaning varies with timing; worth settling
+  deliberately if `total_bad_debt` ever gets a consumer beyond the event.
 
 ## Measurements worth keeping
 

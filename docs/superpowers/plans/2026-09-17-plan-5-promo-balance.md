@@ -28,6 +28,17 @@
 
 ## Global Constraints
 
+> **The tree is authoritative where this plan and the code disagree.** Eight task reviews, their
+> fix rounds and a final whole-branch review all changed code after this plan was generated from
+> it. Most of those changes are improvements the plan simply predates — a dedicated error variant,
+> an invariant call moved inside a helper, an extra field on an event — and following the plan
+> verbatim would produce working software without them. Two were different in kind, because
+> following the plan would have reintroduced a real defect, and both have been written back into
+> the text above: `compute_health` floors the promo cap **per asset**, never once on the
+> aggregate, and `forfeit_promo` **clamps** its transfer to the balance the vault actually holds.
+> The reasoning for both is in `2026-09-17-plan-5-followups.md` under "Settled on this branch".
+
+
 Carried from Plans 1–4:
 
 - Anchor `1.2.0` for `anchor-lang` and `anchor-spl`; LiteSVM `0.10.0`; Rust `1.89` or newer; build with `cargo build-sbf --tools-version v1.52` (through `scripts/test.sh`).
@@ -35,7 +46,7 @@ Carried from Plans 1–4:
 - Rounding: borrower debt rounds up; lender accrual and minted shares round down; burned shares round up. A display amount rounds down.
 - Constants: `BPS = 10_000`, `YEAR = 31_536_000` seconds, `VIRTUAL_SHARES = 1_000`, `VIRTUAL_ASSETS = 1`, `MIN_TENURE = 86_400`, `MAX_COLLATERAL_SLOTS = 8`, `MAX_LOAN_SLOTS = 10`, `USD_SCALE = 10^12`, `MAX_PRICE_AGE_SECONDS = 60`, `MAX_BAD_DEBT_DUST_USD = 1_000 × USD_SCALE`, `MULTIPLIER_SCALE = 10^12`, `MAX_MULTIPLIER = 10^6 × MULTIPLIER_SCALE`.
 - Every account starts with `version: u8` and `bump: u8` and ends with reserved padding; new fields come out of that padding, so account sizes don't change. **This plan adds no fields to an existing account** — `Position.promo_balance` and `promo_last_activity_at`, `Config.promo_cap_bps` and `promo_signer`, and both `MarketParams` promo fields already exist, unused, from Plans 1 and 2.
-- One `#[error_code] HodlError` enum. **Append new variants only**, since codes are `6000 + position`. **This plan adds none**: `InvalidVoucherSignature`, `VoucherExpired`, `CampaignInactive`, `CampaignBudgetExceeded`, `PromoCapExceeded`, `PromoNotExpired` and `PromoVaultInsufficient` were all reserved in Plan 1.
+- One `#[error_code] HodlError` enum. **Append new variants only**, since codes are `6000 + position`. **This plan adds two**, both out of review rather than the original design: `PromoAccountsRequired` (a required-but-optional promo account was not supplied — distinct from a vault that is genuinely short) and `PromoVaultMismatch` (the promo token account named does not belong to the vault). The rest were reserved in Plan 1: `InvalidVoucherSignature`, `VoucherExpired`, `CampaignInactive`, `CampaignBudgetExceeded`, `PromoCapExceeded`, `PromoNotExpired` and `PromoVaultInsufficient`.
 - Collateral counts at `price − confidence` (round down); debt counts at `NGN price + spread` (round up).
 - Commits made by Claude end with the attribution trailer from the session instructions.
 
@@ -48,11 +59,11 @@ New in this plan:
 
 ## Facts verified while writing this plan (2026-09-18)
 
-- **The whole plan was built and tested before it was written:** 205 tests pass (47 unit, 158 LiteSVM), `cargo clippy -p hodl_loans --all-targets -- -D warnings` is clean, every task's end state was rebuilt from Plan 4's head and passes its own suite and clippy, and each task's failing-test step was run to capture its real errors.
+- **The whole plan was built and tested before it was written:** 234 tests pass (52 unit, 182 LiteSVM), `cargo clippy -p hodl_loans --all-targets -- -D warnings` is clean, every task's end state was rebuilt from Plan 4's head and passes its own suite and clippy, and each task's failing-test step was run to capture its real errors.
 - **`liquidate` overflows the SBF stack before it overflows compute.** Adding the promo accounts made it fail with `Access violation in stack frame 5 at address 0x200005ff8`, having burned only 12,719 CU — an account-construction failure, not a compute one. Boxing `Config` fixed it; grouping the forfeiture helper's arguments into a struct was not enough on its own.
 - **LiteSVM does not load the native Ed25519 program by default.** Without `features = ["precompiles"]` every voucher redemption fails with `InvalidProgramForExecution`, which looks like a program bug and is not one.
 - **Anchor 1.2.0's `solana_program` shim re-exports neither `ed25519_program` nor the instructions-sysvar loaders.** `solana-instructions-sysvar` 3 is already in the lockfile through `anchor-lang`, so depending on it directly costs no version churn; the Ed25519 program address is pinned as a constant and matches `solana_sdk_ids::ed25519_program::ID`.
-- **Compute at full load, measured in LiteSVM** (8 collateral slots, 9–10 loans): `take_loan` 74,071 CU, `withdraw_collateral` 73,509, `liquidate` 93,917, `repay_loan` 19,245, and `take_loan` against 8 xStock slots 84,978 — all against the 200,000 default. Promo adds roughly 4,000 CU to a health check and 11,000 to a liquidation, which moves tokens. `tests/budget.rs` records each figure.
+- **Compute at full load is measured in `tests/budget.rs`, and the numbers are not repeated here.** They moved five times during execution and every copy outside that file went stale; the file records each figure beside the assertion that guards it. Two things worth knowing that the figures alone do not say: the measurements are **not deterministic** — the harness keys its mints randomly, so where a target sorts into the collateral slot array shifts the scan and the cost moves in steps of about 1,500 CU, which is why they are recorded as ranges — and compute is not the binding constraint anywhere. Transaction *size* is: `liquidate` sits within ~50 bytes of the 1,232-byte legacy limit at 8 standard slots.
 - **A `min` is what caps promo, not a `require`.** `promo_counted = min(promo_value, own_value × promo_cap_bps / BPS)`, so a borrower holding more promo than their collateral supports is not rejected — the surplus simply does not count. That is what makes `promo_is_worth_nothing_to_a_position_holding_no_collateral` pass rather than error.
 
 ## Plan-level refinements to the spec
@@ -90,8 +101,8 @@ src/instructions/liquidation/liquidate.rs     + Config, promo accounts, forfeitu
 src/instructions/liquidation/write_off.rs     + token accounts, promo accounts, forfeiture
 src/math/health.rs                            Health.promo_counted
 src/valuation.rs                              ValuationRequest
-src/events.rs                                 + 10 events
-src/lib.rs                                    + 10 entry points
+src/events.rs                                 + 11 events
+src/lib.rs                                    + 11 entry points
 tests/common/mod.rs                           harness: promo vault, campaigns, vouchers, lifecycle
 tests/budget.rs, tests/loans.rs, tests/liquidation.rs   updated for the new account sets
 tests/promo_vault.rs, tests/campaign.rs, tests/promo_redeem.rs, tests/promo_health.rs,
@@ -2348,6 +2359,7 @@ pub fn compute_health(
     promo_cap_bps: u16,
 ) -> Result<Health> {
     let mut health = Health::default();
+    let mut promo_cap_total: u128 = 0;
     for c in collateral {
         let value = token_value(c.display_amount()?, c.decimals, c.price.lower())?;
         health.own_value = add(health.own_value, value)?;
@@ -2356,13 +2368,26 @@ pub fn compute_health(
             health.liquidation_line,
             mul_div_floor(value, c.liquidation_threshold_bps as u128, BPS)?,
         )?;
+        // Floor the promo cap PER ASSET, inside this same loop, instead of once on the
+        // aggregate `own_value` below. `floor(sum(v_i) * bps / BPS)` can exceed
+        // `sum(floor(v_i * bps / BPS))` by up to n-1 base units; at the shipped defaults
+        // (ltv 7000 + cap 2000 == lt 9000, zero slack) that gap alone was enough to push a
+        // maxed-out multi-asset position's `borrow_limit` a hair above `liquidation_line` the
+        // moment the cap changed — instant liquidation with no price move. Sum-of-floors ≤
+        // floor-of-sum always, so accumulating here is conservative: promo counts for slightly
+        // less, never more.
+        promo_cap_total = add(promo_cap_total, mul_div_floor(value, promo_cap_bps as u128, BPS)?)?;
     }
     // Spec §12: promo is a topping on collateral the borrower owns, never a substitute for it.
-    // The cap is a fraction of `own_value`, so a position with nothing of its own counts none of
-    // it — which is what makes defaulting a loss for the borrower rather than a way to profit.
+    // The cap is `promo_cap_total`, summed per asset in the loop above rather than taken as a
+    // single fraction of the aggregate `own_value` — flooring the aggregate can exceed the sum
+    // of the per-asset floors by up to n-1 base units, which at the zero-slack shipped defaults
+    // (ltv 7000 + cap 2000 == lt 9000) can make a position borrowed to its limit liquidatable the
+    // moment the cap is lowered. A position with nothing of its own still counts none of it
+    // either way — which is what makes defaulting a loss for the borrower rather than a way to
+    // profit.
     let promo_value = token_value(promo_balance as u128, cngn_decimals, ngn.lower())?;
-    let cap = mul_div_floor(health.own_value, promo_cap_bps as u128, BPS)?;
-    health.promo_counted = promo_value.min(cap);
+    health.promo_counted = promo_value.min(promo_cap_total);
     health.borrow_limit = add(health.borrow_limit, health.promo_counted)?;
     health.liquidation_line = add(health.liquidation_line, health.promo_counted)?;
 
@@ -3399,34 +3424,47 @@ pub fn forfeit_promo(
     market_key: Pubkey,
     accounts: &mut ForfeitAccounts,
 ) -> Result<u64> {
-    let amount = position.promo_balance;
-    if amount == 0 {
+    if position.promo_balance == 0 {
         return Ok(0);
     }
-    let seeds: &[&[u8]] = &[PROMO_VAULT_SEED, market_key.as_ref(), &[accounts.promo_vault.bump]];
-    transfer_from_vault(
-        accounts.token_program,
-        accounts.mint.to_account_info(),
-        accounts.mint.decimals,
-        accounts.promo_token.to_account_info(),
-        accounts.market_vault.to_account_info(),
-        accounts.promo_vault.to_account_info(),
-        amount,
-        &[seeds],
-    )?;
+    let amount = release_promo(position, accounts.promo_vault)?;
 
-    accounts.promo_vault.cash = to_u64(sub(accounts.promo_vault.cash as u128, amount as u128)?)?;
-    accounts.promo_vault.release(amount)?;
+    // cNGN carries a PermanentDelegate, so its issuer can move tokens out of the promo vault's
+    // token account without the program's involvement. After such a clawback,
+    // `promo_vault.cash` (this program's ledger) can overstate the vault's real token balance.
+    // Transferring the full nominal `amount` unconditionally would then revert — bricking every
+    // liquidation and write-off of a promo-holding position on this market, a liveness failure
+    // on the protocol's solvency backstop. Clamp the transfer, and the cash debit, to what the
+    // vault actually holds: lenders receive whatever remains instead of the call reverting
+    // outright.
+    let available = accounts.promo_token.amount;
+    let moved = amount.min(available);
+
+    if moved > 0 {
+        let seeds: &[&[u8]] = &[PROMO_VAULT_SEED, market_key.as_ref(), &[accounts.promo_vault.bump]];
+        transfer_from_vault(
+            accounts.token_program,
+            accounts.mint.to_account_info(),
+            accounts.mint.decimals,
+            accounts.promo_token.to_account_info(),
+            accounts.market_vault.to_account_info(),
+            accounts.promo_vault.to_account_info(),
+            moved,
+            &[seeds],
+        )?;
+    }
+
+    accounts.promo_vault.cash = to_u64(sub(accounts.promo_vault.cash as u128, moved as u128)?)?;
     accounts.promo_vault.require_invariant()?;
-    position.promo_balance = 0;
 
     emit!(PromoForfeited {
         market: market_key,
         position: position_key,
         owner: position.owner,
         amount,
+        moved,
     });
-    Ok(amount)
+    Ok(moved)
 }
 ```
 
@@ -3746,7 +3784,7 @@ Run: `./scripts/test.sh --test promo_cap`
 Expected: 3 tests, all `ok`.
 
 Run: `./scripts/test.sh`
-Expected: every binary reports `ok`, 230 tests in all — 52 unit and 178 LiteSVM.
+Expected: every binary reports `ok`, 234 tests in all — 52 unit and 182 LiteSVM.
 
 Run: `cargo clippy -p hodl_loans --all-targets -- -D warnings`
 Expected: no warnings.
@@ -3762,7 +3800,7 @@ git commit -m "feat: set_promo_cap, re-checked against every listed asset"
 
 ## Done when
 
-- `./scripts/test.sh` reports 230 passing tests and `cargo clippy -p hodl_loans --all-targets -- -D warnings` is clean.
+- `./scripts/test.sh` reports 234 passing tests and `cargo clippy -p hodl_loans --all-targets -- -D warnings` is clean.
 - `outstanding + unissued ≤ cash` holds after every instruction that touches the promo vault, and the free balance is what bounds both campaign creation and withdrawal.
 - A voucher only works for the wallet, amount, nonce and expiry the promo signer actually signed, only once, and only against an open campaign within its window.
 - Promo lifts both the borrow limit and the liquidation line by the same capped amount, and is worth nothing to a position holding no collateral of its own.
