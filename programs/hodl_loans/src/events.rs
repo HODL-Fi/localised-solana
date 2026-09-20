@@ -272,6 +272,7 @@ pub struct PromoVaultWithdrawn {
 pub struct PromoCapSet {
     pub old: u16,
     pub new: u16,
+    pub by: Pubkey,
 }
 
 #[event]
