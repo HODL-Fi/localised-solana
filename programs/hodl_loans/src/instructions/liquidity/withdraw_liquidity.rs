@@ -58,7 +58,7 @@ pub fn handle_withdraw_liquidity(ctx: Context<WithdrawLiquidity>, amount: u64) -
     let burned = shares_to_burn(amount, market.total_shares, total_assets)?;
     require!(burned <= lender_shares, HodlError::InsufficientShares);
     market.total_shares = sub(market.total_shares, burned)?;
-    market.cash -= amount;
+    market.cash = market.cash.checked_sub(amount).ok_or(HodlError::MathOverflow)?;
     ctx.accounts.lender.shares = sub(lender_shares, burned)?;
 
     let mint_key = ctx.accounts.mint.key();

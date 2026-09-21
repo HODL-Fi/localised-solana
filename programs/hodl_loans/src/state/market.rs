@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-use crate::constants::{MAX_BAD_DEBT_DUST_USD, MAX_BPS, MIN_TENURE};
+use crate::constants::{MAX_BAD_DEBT_DUST_USD, MAX_BPS, MAX_NGN_STALE_SLOTS, MIN_TENURE};
 use crate::errors::HodlError;
 use crate::math::checked::{add, sub};
 use crate::math::interest::accrue_lp_interest;
@@ -73,7 +73,10 @@ impl MarketParams {
         require!(self.max_utilization_bps <= MAX_BPS, HodlError::InvalidParameters);
         require!(self.max_tenure_seconds >= MIN_TENURE, HodlError::InvalidParameters);
         require!(self.ngn_feed != Pubkey::default(), HodlError::InvalidParameters);
-        require!(self.ngn_max_stale_slots > 0, HodlError::InvalidParameters);
+        require!(
+            self.ngn_max_stale_slots > 0 && self.ngn_max_stale_slots <= MAX_NGN_STALE_SLOTS,
+            HodlError::InvalidParameters
+        );
         require!(self.ngn_min_samples >= 1, HodlError::InvalidParameters);
         require!(self.ngn_max_spread_bps <= MAX_BPS, HodlError::InvalidParameters);
         // `0` would mean promo is expirable in the same slot as the redemption that granted it —
@@ -142,5 +145,23 @@ impl Market {
     /// Cash lenders may withdraw or borrowers may draw.
     pub fn available_cash(&self) -> u64 {
         self.cash.saturating_sub(self.protocol_reserve)
+    }
+}
+
+#[cfg(test)]
+mod layout {
+    use super::*;
+
+    #[test]
+    fn init_space_is_pinned_so_new_fields_come_out_of_the_padding() {
+        // `accrual_remainder` was taken out of the reserved padding in Plan 3, so the account's size did not change. That is the whole
+        // contract: a field added on top of `reserved` rather than out of it grows
+        // `INIT_SPACE`, and every account already on chain is then too small to deserialize
+        // into — with no error until someone touches one.
+        //
+        // `Position` pins the same property with `size_of` (it is zero-copy); these two are
+        // Borsh, so `INIT_SPACE` is the number that matters. If this assertion fails, take the
+        // bytes out of `reserved` instead of appending them.
+        assert_eq!(Market::INIT_SPACE, 555);
     }
 }

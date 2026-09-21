@@ -24,6 +24,13 @@ pub fn sub(a: u128, b: u128) -> Result<u128> {
     Ok(a.checked_sub(b).ok_or(HodlError::MathOverflow)?)
 }
 
+/// `10^exp`. The only power-of-ten helper in the program: `math/price.rs` and
+/// `math/liquidation.rs` each had their own, with different parameter types (`u32` and `u8`),
+/// which is how the same bound came to be reasoned about twice. Callers holding a `u8` widen.
+pub fn pow10(exp: u32) -> Result<u128> {
+    Ok(10u128.checked_pow(exp).ok_or(HodlError::MathOverflow)?)
+}
+
 pub fn to_u64(value: u128) -> Result<u64> {
     Ok(u64::try_from(value).map_err(|_| HodlError::MathOverflow)?)
 }

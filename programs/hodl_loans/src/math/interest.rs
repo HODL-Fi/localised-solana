@@ -2,10 +2,18 @@ use anchor_lang::prelude::*;
 
 use crate::constants::{BPS, YEAR};
 use crate::errors::HodlError;
-use crate::math::checked::{add, mul_div_floor};
+use crate::math::checked::add;
+#[cfg(test)]
+use crate::math::checked::mul_div_floor;
 
 /// Lender interest accrued over `elapsed_seconds` for the market's `lp_rate_product`
 /// (Σ principal × rate_bps × (BPS − reserve_factor_bps)). Rounds down.
+///
+/// Test-only. `Market::accrue` uses `accrue_lp_interest`, which carries the division remainder
+/// between calls; this is the closed-form version the tests check that one against. Keeping it
+/// compiled into the program would ship a second, subtly different interest formula that
+/// nothing calls.
+#[cfg(test)]
 pub fn lp_interest(lp_rate_product: u128, elapsed_seconds: u64) -> Result<u128> {
     mul_div_floor(lp_rate_product, elapsed_seconds as u128, BPS * BPS * YEAR)
 }

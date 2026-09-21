@@ -151,7 +151,7 @@ pub fn handle_take_loan<'info>(
         market.lp_rate_product,
         lp_contribution(amount, rate_bps, reserve_factor_bps)?,
     )?;
-    market.cash -= amount;
+    market.cash = market.cash.checked_sub(amount).ok_or(HodlError::MathOverflow)?;
 
     let mint_key = ctx.accounts.mint.key();
     let seeds: &[&[u8]] = &[MARKET_SEED, mint_key.as_ref(), &[ctx.accounts.market.bump]];

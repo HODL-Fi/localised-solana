@@ -49,7 +49,7 @@ pub fn handle_withdraw_collateral<'info>(ctx: Context<'info, WithdrawCollateral<
         let index = position.collateral_index(&mint_key).ok_or(HodlError::InsufficientCollateral)?;
         let slot = &mut position.collateral[index];
         require!(slot.amount >= amount, HodlError::InsufficientCollateral);
-        slot.amount -= amount;
+        slot.amount = slot.amount.checked_sub(amount).ok_or(HodlError::MathOverflow)?;
         let slot_amount = slot.amount;
 
         if position.has_active_loans() {
