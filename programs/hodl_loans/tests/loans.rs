@@ -364,3 +364,29 @@ fn a_borrow_paused_asset_lends_no_borrowing_power() {
     );
     env.take_loan(&setup.borrower, &setup, 2_237_762 * ONE_CNGN, 30 * DAY).unwrap();
 }
+
+#[test]
+fn a_wrong_market_borrow_reports_the_mismatch_not_that_markets_own_state() {
+    let (mut env, setup) = Env::loan_ready();
+    let owner = setup.borrower.pubkey();
+    // Bind the position to market A.
+    env.take_loan(&setup.borrower, &setup, 1_000 * ONE_CNGN, 30 * DAY).unwrap();
+
+    // Market B is real and promo-equipped but holds no lender liquidity, so its own
+    // utilization and cash checks would reject any borrow on their own merits. Spec §10 puts
+    // `MarketMismatch` in step 1, ahead of the step-3 accrual and the step-4 cap, so that is
+    // what the caller is told: market B's emptiness is true but is not what is wrong with
+    // this call. Before the checks were ordered to match the spec this reported
+    // `InsufficientCash`.
+    let empty = env.create_mint(MintKind::CngnLike, 6);
+    env.create_market_with_promo(&empty);
+    assert_eq!(env.market(&empty).cash, 0);
+
+    let account = env.create_token_account(&empty, &owner);
+    let prices = env.price_accounts(&owner);
+    let borrow = take_loan_ix(&owner, &empty, &account, 1_000 * ONE_CNGN, 30 * DAY, prices);
+    assert_hodl_error(
+        send(&mut env.svm, &[borrow], &[&env.admin, &setup.borrower.key]),
+        HodlError::MarketMismatch,
+    );
+}
