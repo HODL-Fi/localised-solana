@@ -44,7 +44,13 @@ pub struct Market {
     /// Division remainder carried between accruals (numerator units of `lp_rate_product × seconds`).
     /// Taken from the reserved padding, so the account size is unchanged.
     pub accrual_remainder: u128,
-    pub reserved: [u8; 240],
+    /// When the promo inactivity clock last restarted, because the market was unpaused.
+    /// The clock is meant to measure a *borrower's* inactivity, and a paused market is one
+    /// the borrower cannot act on, so time spent paused must not count towards expiry.
+    /// Expiry therefore runs from `max(promo_last_activity_at, promo_clock_resumed_at)`.
+    /// Taken from the reserved padding, so the account size is unchanged.
+    pub promo_clock_resumed_at: i64,
+    pub reserved: [u8; 232],
 }
 
 /// Admin-settable market parameters, used by `create_market` and `update_market_params`.

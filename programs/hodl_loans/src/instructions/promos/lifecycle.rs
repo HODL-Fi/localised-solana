@@ -116,18 +116,29 @@ pub struct ExpirePromo<'info> {
 /// Spec §12. Anyone may reclaim promo a borrower has left idle, which is what stops granted
 /// promo sitting on the books forever. The clock runs from the last redemption, the last loan
 /// taken, or the moment the last loan closed.
+/// Spec §12. Anyone may reclaim promo a borrower has left idle, which is what stops granted
+/// promo sitting on the books forever. The clock runs from the last redemption, the last loan
+/// taken, or the moment the last loan closed.
 pub fn handle_expire_promo(ctx: Context<ExpirePromo>) -> Result<()> {
     let now = Clock::get()?.unix_timestamp;
     let market_key = ctx.accounts.market.key();
     let inactivity = ctx.accounts.market.promo_inactivity_seconds;
+    // Expiry is the one promo operation barred by a pause, which looks backwards next to the
+    // rule that pauses stop exposure-*increasing* work and leave the rest open. It is not an
+    // exception to that rule but to a different one: this instruction's precondition is a
+    // measurement of how long the borrower has been inactive, and a paused market is one the
+    // borrower cannot act on. The measurement is invalid during a pause, not the operation
+    // unsafe. `revoke_promo` stays open — it makes no such measurement.
+    require!(!ctx.accounts.market.paused, HodlError::MarketPaused);
+    let resumed_at = ctx.accounts.market.promo_clock_resumed_at;
     let mut position = ctx.accounts.position.load_mut()?;
+    // The clock runs from the borrower's last activity or the market's last unpause,
+    // whichever is later: see `Market::promo_clock_resumed_at`.
     // `saturating_add` can only push the deadline later (never wrap it earlier), so this fails
     // safe on overflow — it depends on `MarketParams::validate` requiring `inactivity > 0`, so
     // the two must not drift apart.
-    require!(
-        now >= position.promo_last_activity_at.saturating_add(inactivity),
-        HodlError::PromoNotExpired
-    );
+    let since = position.promo_last_activity_at.max(resumed_at);
+    require!(now >= since.saturating_add(inactivity), HodlError::PromoNotExpired);
     let amount = release_from_idle_position(&mut position, &mut ctx.accounts.promo_vault)?;
     emit!(PromoExpired {
         market: market_key,

@@ -84,7 +84,8 @@ pub fn handle_create_market(ctx: Context<CreateMarket>, params: MarketParams) ->
         max_promo_per_position: 0,
         paused: false,
         accrual_remainder: 0,
-        reserved: [0; 240],
+        promo_clock_resumed_at: 0,
+        reserved: [0; 232],
     };
     market.apply_params(&params);
     ctx.accounts.market.set_inner(market);
@@ -121,6 +122,28 @@ pub fn handle_set_market_paused(ctx: Context<SetMarketPaused>, paused: bool) -> 
     let market_key = ctx.accounts.market.key();
     let old_paused = ctx.accounts.market.paused;
     ctx.accounts.market.paused = paused;
+
+    // Unpausing restarts the promo inactivity clock. Gating `expire_promo` on the pause alone
+    // would only defer the harvest: a pause outlasting `promo_inactivity_seconds` would leave
+    // every idle promo expirable the instant it lifted, which is the same charge for the
+    // protocol's own downtime, collected a moment later. Restarting the clock gives every
+    // borrower a full window to act once they can act again. Only on the true→false edge —
+    // though note that guards little, since setting `paused = true` on an already-paused
+    // market was never going to reach this line anyway.
+    //
+    // What it does not bound: the clock is market-global and every genuine pause→unpause
+    // cycle resets it for every position. Two unrelated incidents inside one
+    // `promo_inactivity_seconds` window mean nothing on the market ever expires, so
+    // `outstanding` stays high and `free()` stays low until the admin intervenes. That is
+    // the protocol's own promo budget staying committed — self-harm, not a user-facing
+    // loss — and the alternative, accumulating paused time per position, costs state on
+    // every position to protect against the admin's own downtime. Left as is deliberately;
+    // `two_pause_cycles_each_restart_the_clock_for_every_position` pins the behaviour so it
+    // stays a decision rather than a surprise.
+    if old_paused && !paused {
+        ctx.accounts.market.promo_clock_resumed_at = Clock::get()?.unix_timestamp;
+    }
+
     emit!(MarketPauseSet { market: market_key, old_paused, paused, by: signer });
     Ok(())
 }

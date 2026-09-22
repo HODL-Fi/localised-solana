@@ -314,3 +314,92 @@ fn close_position_release_promo_chokepoint_rejects_cross_market_vault() {
     assert_eq!(env.position(&owner).promo_balance, GRANT);
     assert_eq!(env.promo_vault(&other).outstanding, other_outstanding_before);
 }
+
+#[test]
+fn a_pause_stops_the_inactivity_clock_rather_than_merely_deferring_the_harvest() {
+    let (mut env, setup) = Env::promo_ready();
+    let borrower = &setup.borrower;
+    let owner = borrower.pubkey();
+    env.redeem_promo(borrower, &setup.cngn, 1, GRANT, 7).unwrap();
+    let admin = env.admin.pubkey();
+    let guardian = env.guardian.pubkey();
+
+    // The guardian pauses the market, then leaves it paused for longer than the whole
+    // inactivity window. The borrower cannot act on a paused market, so none of this is
+    // inactivity the protocol may charge them for.
+    send(&mut env.svm, &[set_market_paused_ix(&guardian, &setup.cngn, true)], &[&env.guardian]).unwrap();
+    env.warp_seconds(INACTIVITY + DAY);
+
+    // Expiry is barred outright while paused.
+    let stranger = env.funded_keypair();
+    let during = expire_promo_ix(&setup.cngn, &owner);
+    assert_hodl_error(send(&mut env.svm, &[during], &[&stranger]), HodlError::MarketPaused);
+
+    // And barring it during the pause is not on its own enough: the clock also restarts, so
+    // lifting the pause does not leave the promo instantly expirable. Without the restart
+    // this call would succeed, charging the borrower for the protocol's own downtime one
+    // moment later than before.
+    send(&mut env.svm, &[set_market_paused_ix(&admin, &setup.cngn, false)], &[&env.admin]).unwrap();
+    let right_after = expire_promo_ix(&setup.cngn, &owner);
+    assert_hodl_error(send(&mut env.svm, &[right_after], &[&stranger]), HodlError::PromoNotExpired);
+    assert_eq!(env.position(&owner).promo_balance, GRANT);
+
+    // The borrower gets a full fresh window, and no more than one.
+    env.warp_seconds(INACTIVITY - 1);
+    let one_short = expire_promo_ix(&setup.cngn, &owner);
+    assert_hodl_error(send(&mut env.svm, &[one_short], &[&stranger]), HodlError::PromoNotExpired);
+    env.warp_seconds(1);
+    send(&mut env.svm, &[expire_promo_ix(&setup.cngn, &owner)], &[&stranger]).unwrap();
+    assert_eq!(env.position(&owner).promo_balance, 0);
+}
+
+#[test]
+fn revoke_stays_open_during_a_pause_because_it_measures_nothing() {
+    let (mut env, setup) = Env::promo_ready();
+    let borrower = &setup.borrower;
+    let owner = borrower.pubkey();
+    env.redeem_promo(borrower, &setup.cngn, 1, GRANT, 7).unwrap();
+    let admin = env.admin.pubkey();
+    let guardian = env.guardian.pubkey();
+
+    send(&mut env.svm, &[set_market_paused_ix(&guardian, &setup.cngn, true)], &[&env.guardian]).unwrap();
+    // Unlike expiry, revocation asserts nothing about how long the borrower has been idle —
+    // it is the admin retracting a grant — so a pause does not invalidate it.
+    send(&mut env.svm, &[revoke_promo_ix(&admin, &setup.cngn, &owner)], &[&env.admin]).unwrap();
+    assert_eq!(env.position(&owner).promo_balance, 0);
+    assert_eq!(env.promo_vault(&setup.cngn).outstanding, 0);
+}
+
+#[test]
+fn two_pause_cycles_each_restart_the_clock_for_every_position() {
+    // The clock is market-global, so every unpause resets it for every position. Two
+    // unrelated incidents inside one inactivity window therefore mean nothing expires at all.
+    // Pinned rather than fixed: it keeps the protocol's own promo budget committed — the
+    // admin's downtime, the admin's cost — and the alternative is per-position accounting of
+    // paused time. This test is what makes that a decision instead of a surprise.
+    let (mut env, setup) = Env::promo_ready();
+    let borrower = &setup.borrower;
+    let owner = borrower.pubkey();
+    env.redeem_promo(borrower, &setup.cngn, 1, GRANT, 7).unwrap();
+    let admin = env.admin.pubkey();
+    let guardian = env.guardian.pubkey();
+    let stranger = env.funded_keypair();
+
+    for _ in 0..2 {
+        send(&mut env.svm, &[set_market_paused_ix(&guardian, &setup.cngn, true)], &[&env.guardian]).unwrap();
+        env.warp_seconds(INACTIVITY - DAY);
+        send(&mut env.svm, &[set_market_paused_ix(&admin, &setup.cngn, false)], &[&env.admin]).unwrap();
+        env.warp_seconds(DAY);
+    }
+
+    // Well over two inactivity windows have passed in wall-clock terms, and the promo is
+    // still not expirable: each unpause moved the deadline out by a full window.
+    let after = expire_promo_ix(&setup.cngn, &owner);
+    assert_hodl_error(send(&mut env.svm, &[after], &[&stranger]), HodlError::PromoNotExpired);
+    assert_eq!(env.position(&owner).promo_balance, GRANT);
+
+    // Left alone for one uninterrupted window, it expires as normal.
+    env.warp_seconds(INACTIVITY);
+    send(&mut env.svm, &[expire_promo_ix(&setup.cngn, &owner)], &[&stranger]).unwrap();
+    assert_eq!(env.position(&owner).promo_balance, 0);
+}
