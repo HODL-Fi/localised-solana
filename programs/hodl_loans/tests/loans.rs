@@ -311,3 +311,29 @@ fn the_health_walk_rejects_a_collateral_asset_at_a_forged_address() {
     // address and not about the amount.
     env.take_loan(&setup.borrower, &setup, 100_000 * ONE_CNGN, 30 * DAY).unwrap();
 }
+
+#[test]
+fn the_ngn_feed_must_be_owned_by_the_switchboard_program() {
+    // `Market::ngn_feed` is a bare `Pubkey` the admin sets, with no constraint behind it. The
+    // address check alone therefore proves only that the caller passed the account the admin
+    // named — not that the account is a Switchboard feed. A discriminator is eight bytes anyone
+    // can write, so without the owner check a mis-set `ngn_feed` turns 3.2 KB of arbitrary data
+    // into a price.
+    let (mut env, setup) = Env::loan_ready();
+    let owner = setup.borrower.pubkey();
+
+    // Same bytes the real harness writes, and a plausible-looking owner that is not Switchboard.
+    env.set_ngn_price_owned_by(&hodl_loans::ID, NGN_USD, NGN_SPREAD);
+
+    let prices = env.price_accounts(&owner);
+    let borrow = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 100_000 * ONE_CNGN, 30 * DAY, prices);
+    assert_hodl_error(
+        send(&mut env.svm, &[borrow], &[&env.admin, &setup.borrower.key]),
+        HodlError::PriceAccountMismatch,
+    );
+
+    // Restoring the real owner, with the same data, lets the identical borrow through — so the
+    // rejection is about the owner and nothing else.
+    env.set_ngn_price(NGN_USD, NGN_SPREAD);
+    env.take_loan(&setup.borrower, &setup, 100_000 * ONE_CNGN, 30 * DAY).unwrap();
+}

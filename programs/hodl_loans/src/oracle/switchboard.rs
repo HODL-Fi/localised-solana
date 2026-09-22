@@ -7,15 +7,30 @@ use crate::state::Market;
 
 /// Read the market's Switchboard On-Demand NGN/USD pull feed.
 ///
-/// The account address is pinned to `market.ngn_feed`, which the admin sets, and the data must
-/// carry the `PullFeedAccountData` discriminator and full length. There is no check that the
-/// account is owned by the Switchboard On-Demand program: this trusts the admin's choice of
-/// feed and, transitively, whichever authority controls that feed's writes. Adding an owner
-/// check against the Switchboard On-Demand program ID is deferred to Plan 6 hardening. Only the
-/// 128-byte aggregated `result` is copied out (by offset, unaligned), keeping the 3.2 KB feed
-/// off the stack. `value` is the price and `std_dev` the spread.
+/// The account address is pinned to `market.ngn_feed`, which the admin sets, the account must
+/// be owned by the Switchboard On-Demand program, and the data must carry the
+/// `PullFeedAccountData` discriminator and full length.
+///
+/// The owner check matters because `ngn_feed` is a bare `Pubkey` on `Market` with no
+/// constraint behind it: without it, an admin who set the field to any account at all would
+/// have the program read 3.2 KB of arbitrary bytes as a price feed, and a discriminator is
+/// eight bytes an attacker can simply write. It does **not** remove the residual trust in
+/// whichever authority controls the real feed's writes — that is a genuine assumption, recorded
+/// in spec §20 item 4, and an owner check cannot address it.
+///
+/// Pinned to the MAINNET program id. A devnet deployment reads a feed owned by
+/// `ON_DEMAND_DEVNET_PID` and would be refused here; that is a deliberate trade, since this
+/// program's own id is mainnet too, and it is recorded for the devnet plan.
+///
+/// Only the 128-byte aggregated `result` is copied out (by offset, unaligned), keeping the
+/// 3.2 KB feed off the stack. `value` is the price and `std_dev` the spread.
 pub fn read_ngn_price(account: &AccountInfo, market: &Market, clock: &Clock) -> Result<UsdPrice> {
     require_keys_eq!(account.key(), market.ngn_feed, HodlError::PriceAccountMismatch);
+    require_keys_eq!(
+        *account.owner,
+        switchboard_on_demand::ON_DEMAND_MAINNET_PID,
+        HodlError::PriceAccountMismatch
+    );
     let data = account.try_borrow_data()?;
     require!(
         data.len() >= 8 + std::mem::size_of::<PullFeedAccountData>()
@@ -61,7 +76,16 @@ pub mod tests {
     }
 
     fn read(key: Pubkey, data: &mut [u8], m: &Market, slot: u64) -> Result<UsdPrice> {
-        let owner = Pubkey::new_unique();
+        read_owned_by(key, data, m, slot, switchboard_on_demand::ON_DEMAND_MAINNET_PID)
+    }
+
+    fn read_owned_by(
+        key: Pubkey,
+        data: &mut [u8],
+        m: &Market,
+        slot: u64,
+        owner: Pubkey,
+    ) -> Result<UsdPrice> {
         let mut lamports = 1_000_000u64;
         let info = AccountInfo::new(&key, false, false, &mut lamports, data, &owner, false);
         let clock = Clock { slot, ..Clock::default() };
@@ -87,6 +111,12 @@ pub mod tests {
         let m = market(key);
         let err = |r: Result<UsdPrice>| r.unwrap_err();
         assert_eq!(err(read(Pubkey::new_unique(), &mut pull_feed_data(VALUE, 0, 1_000, 5), &m, 1_000)), HodlError::PriceAccountMismatch.into());
+        // Right address, right discriminator, wrong owner. `ngn_feed` is a bare `Pubkey` the
+        // admin sets, so without this the program would read any account it named as a price.
+        assert_eq!(
+            err(read_owned_by(key, &mut pull_feed_data(VALUE, 0, 1_000, 5), &m, 1_000, Pubkey::new_unique())),
+            HodlError::PriceAccountMismatch.into()
+        );
         let mut garbage = vec![0u8; 3_208];
         assert_eq!(err(read(key, &mut garbage, &m, 1_000)), HodlError::PriceAccountMismatch.into());
         assert_eq!(err(read(key, &mut pull_feed_data(VALUE, 0, 1_000, 5), &m, 1_151)), HodlError::StalePrice.into());

@@ -948,6 +948,13 @@ impl Env {
         self.set_account_data(&ngn_feed(), &switchboard_on_demand::ON_DEMAND_MAINNET_PID, pull_feed_data(value, std_dev, slot, 5));
     }
 
+    /// The same NGN feed bytes `set_ngn_price` writes, but owned by an account of the
+    /// caller's choosing. Only a test that wants the owner check to fire has any use for this.
+    pub fn set_ngn_price_owned_by(&mut self, owner: &Pubkey, value: i128, std_dev: i128) {
+        let slot = self.svm.get_sysvar::<Clock>().slot;
+        self.set_account_data(&ngn_feed(), owner, pull_feed_data(value, std_dev, slot, 5));
+    }
+
     /// The health accounts for every used collateral slot, in slot order: a pair per
     /// `Standard` asset, and the mint as well for an `XStock`.
     pub fn price_accounts(&self, owner: &Pubkey) -> Vec<AccountMeta> {
