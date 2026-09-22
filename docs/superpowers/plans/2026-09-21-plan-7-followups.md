@@ -133,6 +133,33 @@ read almost identically: the spec was written to already describe this change (i
 plan's own commit before Task 8 ran), and Task 8's implementation was checked against it rather
 than the other way around.
 
+- **A borrow pause makes promo unrevokable on every position with a live loan.** Tasks 3 and
+  8 compose into this and neither could see it alone: `revoke_promo` requires health *after*
+  the release, a borrow-paused asset contributes nothing to `borrow_limit`, so on a
+  single-asset position any live loan fails the check. The pause is exactly the emergency in
+  which an admin most wants to claw promo back.
+
+  Pinned rather than fixed, because it is **not a regression**: the rule it replaced blocked
+  revocation for *any* live loan, paused or not, so the paused case is no worse than before
+  and every unpaused case is better. `repay_loan` consults neither pause, so the borrower's
+  exit stays open, and lifting the pause restores revocation.
+  `a_borrow_paused_asset_makes_promo_unrevokable_while_a_loan_is_live` pins it. The open
+  question is whether revocation should evaluate health with the pause *ignored* — asking
+  "could this position stand if we were not paused?", since revocation is not
+  exposure-increasing — which is a design decision, not a merge-time fix.
+
+- **`set_promo_cap` at a full asset list has never been measured against compute.**
+  `MAX_LISTED_COLLATERAL = 96` is derived entirely from `MAX_TX_ACCOUNT_LOCKS`; the
+  instruction's per-asset body is a Borsh deserialize of a 294-byte account plus a
+  `create_program_address` (~1,587 CU measured) plus `validate()`. At 96 assets that plausibly
+  exceeds the 200,000 default budget and needs an explicit
+  `ComputeBudgetInstruction::set_compute_unit_limit`, which an operator who does not know to
+  send one would discover as exactly the lockout the bound exists to prevent. It fits well
+  under the 1.4M maximum and the extra program key leaves ~100 of 128 locks, so the bound is
+  not wrong — but in a repo with a file dedicated to CU ceilings, the one instruction whose
+  cost scales with an admin-controlled list has no CU test. Measure it, and record whether a
+  ComputeBudget instruction is required.
+
 ## Needs action outside this repo
 
 - **`CollateralParams` gained a field, so `list_collateral` and `update_collateral_params`

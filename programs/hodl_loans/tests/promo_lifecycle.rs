@@ -446,3 +446,42 @@ fn two_pause_cycles_each_restart_the_clock_for_every_position() {
     send(&mut env.svm, &[expire_promo_ix(&setup.cngn, &owner)], &[&stranger]).unwrap();
     assert_eq!(env.position(&owner).promo_balance, 0);
 }
+
+#[test]
+fn a_borrow_paused_asset_makes_promo_unrevokable_while_a_loan_is_live() {
+    // Tasks 3 and 8 compose into this and neither could see it alone. `revoke_promo` requires
+    // the position to be healthy *after* the release; a borrow-paused asset contributes nothing
+    // to `borrow_limit`; so on a single-asset position every live loan makes revocation fail.
+    //
+    // Pinned rather than fixed, and the reason matters: this is not a regression. The rule it
+    // replaced blocked revocation for **any** live loan, paused or not, so the paused case is
+    // no worse than before and every unpaused case is better. The borrower's exit is open too —
+    // `repay_loan` consults neither pause. Changing the health basis for revocation (asking
+    // "could this position stand if we were not paused?", since revocation is not
+    // exposure-increasing) is a real design question and deserves its own decision, not a
+    // merge-time fix.
+    let (mut env, setup) = Env::promo_ready();
+    let borrower = &setup.borrower;
+    let owner = borrower.pubkey();
+    let admin = env.admin.pubkey();
+    env.redeem_promo(borrower, &setup.cngn, 1, GRANT, 7).unwrap();
+    env.take_loan(borrower, &setup, 1_000 * ONE_CNGN, 365 * DAY).unwrap();
+
+    // The pause is the only thing standing in the way: unpaused, this position stands easily
+    // without the promo, which is Task 8's whole point.
+    let prices = price_pairs(&[setup.usdc]);
+    let pause = set_collateral_borrow_paused_ix(&env.guardian.pubkey(), &setup.usdc, true);
+    send(&mut env.svm, &[pause], &[&env.guardian]).unwrap();
+
+    // Paused, it cannot: the borrow limit is zero, so any debt at all fails the check.
+    let blocked = revoke_promo_priced_ix(&admin, &setup.cngn, &owner, true, prices.clone());
+    assert_hodl_error(send(&mut env.svm, &[blocked], &[&env.admin]), HodlError::Unhealthy);
+    assert_eq!(env.position(&owner).promo_balance, GRANT);
+
+    // The way out is open: lifting the pause restores it.
+    let unpause = set_collateral_borrow_paused_ix(&admin, &setup.usdc, false);
+    send(&mut env.svm, &[unpause], &[&env.admin]).unwrap();
+    let allowed = revoke_promo_priced_ix(&admin, &setup.cngn, &owner, true, prices);
+    send(&mut env.svm, &[allowed], &[&env.admin]).unwrap();
+    assert_eq!(env.position(&owner).promo_balance, 0);
+}
