@@ -150,7 +150,7 @@ Expected: PASS, and now for the stated reason. Confirm by reverting the block, r
 
 The walk now costs one `create_program_address` syscall per collateral slot. Do not estimate this; measure it. Temporarily turn each `assert!(cu < N, ...)` in `tests/budget.rs` into a `println!`, run the budget test 20+ times, and take min–max per figure. Restore the assertions afterwards.
 
-Three thresholds no longer hold and move to `115_000`:
+Three thresholds move to `115_000`. Note that **not all three need it yet**: the author's figures were measured on the finished plan, and Task 3 pushes these paths up again. At this task's state you may well find the two standard-collateral cases still inside the old `95_000`. Raise all three anyway — they are headroom markers, and moving them once here is better than a later task discovering it must.
 
 ```rust
     assert!(cu < 115_000, "take_loan at 8 collateral slots / 9 existing overdue loans used {cu} CU");
@@ -160,7 +160,7 @@ Three thresholds no longer hold and move to `115_000`:
 
 - [ ] **Step 6: Record what you measured and why it moved**
 
-Replace the note above the first figure in `full_position_stays_under_the_default_compute_budget`:
+Rewrite the note above the first figure in `full_position_stays_under_the_default_compute_budget`. The version below is the author's, from the **finished** plan — do not paste it. Its shape is what to copy: what moved, by how much, the per-slot attribution, and `repay_loan` as the control that walks no collateral. Its numbers are for the end state and will not match yours here.
 
 ```rust
     // These figures are NOT deterministic: the harness keys its mints randomly, so where a
@@ -980,7 +980,21 @@ Expected: all pass. `CollateralAsset::INIT_SPACE` is still 294 — the unit guar
 
 Verify the mechanism is load-bearing in three separate ways, rebuilding with `cargo build-sbf --tools-version v1.52` before each: neuter the flag (`lends_borrowing_power: true` always) and the borrow/withdraw tests fail; make the pause also zero `liquidation_threshold_bps` and the liquidation test fails; replace the ceiling's withholding with a hard `require!` on the price and the xStock test fails. The second and third are the ones that prove the tests pin the *design* and not just the presence of a check.
 
-- [ ] **Step 12: Commit**
+- [ ] **Step 12: Re-measure the compute figures**
+
+This task moves them again, and nothing later does. `lends_borrowing_power`
+adds a branch per slot and shifts inlining across the crate, which in the
+author's measurement moved the liquidate paths ~364 CU and even `repay_loan`,
+which walks no collateral, by ~55. Small — but the figures in `tests/budget.rs`
+are the only place compute is written down, and a recorded number nobody
+measured is worse than no number.
+
+Repeat Task 1's procedure: assertions to `println!`, 20+ runs, min–max per
+figure, restore. Update all seven ranges and the run count. If `repay_loan`
+moved too, say so and stop calling it unchanged — it is the control, and the
+honest version of that sentence is what makes the attribution credible.
+
+- [ ] **Step 13: Commit**
 
 ```bash
 git add -A
