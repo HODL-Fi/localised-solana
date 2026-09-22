@@ -5,6 +5,39 @@ that will read as defects to someone meeting them cold, and the items Plan 8 inh
 
 ## Settled on this branch — do not re-open
 
+- **Zeroing an asset's `ltv_bps` does not withhold its borrowing power, and this is the most
+  important thing on the branch.** `compute_health` (`math/health.rs`) accumulates two
+  independent things from each holding's value: the LTV term, and `promo_cap_total` — a
+  fraction of the holding's *value* that never consulted `ltv_bps` — and `promo_counted` is
+  then added straight back into `borrow_limit`. A first draft of the borrow pause and the
+  multiplier ceiling gated only the LTV term, so a fully borrow-paused asset still unlocked up
+  to `min(promo_value, promo_cap_bps × value)` of borrowing power: 1,000 USDC paused with $150
+  of promo held still let a $150 loan through, against the asset the guardian had just paused.
+  Worse for the multiplier ceiling, where `own_value` is computed at the true inflated
+  multiplier by design, so the scaled-UI authority could inflate the promo cap through the very
+  channel the ceiling exists to close. Lenders were never short — the extra borrowing is backed
+  1:1 by promo-vault cNGN — but an emergency brake did not brake, worst exactly when it matters,
+  since the admin pauses *because* the feed is unreliable.
+
+  `CollateralValue::lends_borrowing_power` is read at both sites and nowhere else.
+  **It is a property of two call sites, not of the type:** anything new that raises
+  `borrow_limit` must be gated too, and no test enumerates the gate sites, so nothing will
+  catch a third contributor added ungated. `own_value` and `liquidation_line` deliberately
+  still count a withheld holding in full — that is what stops a pause making a live loan
+  liquidatable, and `own_value` also decides whether `write_off_loan` may treat a position as
+  dust. The promo-free fixtures cannot see this: `a_borrow_paused_asset_unlocks_no_promo_either`
+  (`promo_health.rs`) and the `compute_health` unit test are the two that can.
+
+- **`MAX_LISTED_COLLATERAL` is derived from `MAX_TX_ACCOUNT_LOCKS` (128), not the `u8` account
+  index (256).** Address lookup tables relieve message *size*, not the lock limit, so the index
+  ceiling is never reached; minus the three accounts `set_promo_cap` always needs, the real
+  ceiling is 125 and the bound is 96. The first draft used the index limit and landed on 128 —
+  *above* the real ceiling, which would have permitted an asset list that makes `set_promo_cap`
+  permanently unsendable, the exact state the bound exists to prevent, with no way back since
+  `collateral_count` falls only on delisting.
+  `the_asset_list_bound_keeps_set_promo_cap_inside_the_lock_limit` (`constants.rs`) pins the
+  arithmetic so it cannot drift back.
+
 - **`expire_promo` is the one promo operation a pause blocks, and it is not an exception to
   the exposure-increasing rule — it reads backwards against it.** Every other pause guard in
   this codebase exists to stop a borrower from taking on more exposure while the market is
@@ -86,3 +119,43 @@ weakened guarantee explicitly rather than only describing the new happy path, wh
 read almost identically: the spec was written to already describe this change (it landed in the
 plan's own commit before Task 8 ran), and Task 8's implementation was checked against it rather
 than the other way around.
+
+## Needs action outside this repo
+
+- **`CollateralParams` gained a field, so `list_collateral` and `update_collateral_params`
+  instruction data grew by 16 bytes.** Append-only Borsh ordering protects *account* layout —
+  which is what the `reserved` arithmetic is for — but it does not make an instruction-argument
+  change non-breaking: a deployed caller sending eight-field params now fails to deserialize
+  because the buffer is short. There are no in-tree consumers (no `*.ts`, no checked-in IDL
+  outside `target/`), so nothing here needs updating, but deploy and admin tooling does.
+
+## Plan 8 (coverage, fuzzing, devnet)
+
+- **The liquidate paths' per-slot delta came in a few hundred CU below the other walking
+  paths** — ~1,506-1,510 against ~1,587 — repeatably across 55-run samples, and nobody has
+  explained it mechanistically. Small, but it is an unexplained difference in the one place
+  compute is written down.
+- **No test in the repo asserts any event.** Not a regression — it is the existing convention,
+  confirmed by grep — but Plan 7 added two (`CollateralBorrowPauseSet`, `PromoVaultReconciled`)
+  and neither is covered.
+- **Seed the harness keypairs.** Compute figures move in ~1,500 CU steps because mints are keyed
+  randomly, and Plan 7 spent real effort on bucket-coverage arguments that a seeded harness
+  makes unnecessary — including one review finding that was itself an artifact of comparing
+  samples with unequal bucket coverage.
+- **`cargo fmt` remains unadopted** — 2,106 `Diff in` hunks repo-wide, overwhelmingly
+  pre-existing and inherited from Plan 1. Worth a commit that does nothing else, so a real
+  change is never buried in reformatting noise.
+- Carried from the Plan 6 follow-ups and still open: `rescale`/`rescale_ceil` are
+  near-duplicates; `accrue_lp_interest` and `accrued_lp_interest` are one letter apart and both
+  reachable from liquidation; `MAX_NGN_STALE_SLOTS = 150` is a parameter decision rather than a
+  code one.
+
+## Not in Plan 7 — needs its own plan
+
+- **The overdue-penalty continuous accrual.** Spec §11's accepted-risk note records that the
+  penalty reaches lenders as a step released at repayment or liquidation, and that `liquidate`
+  having no access check lets a lender deposit, trigger the step through someone else's
+  liquidation, and withdraw in one transaction — diluting honest lenders' share of penalty
+  income without threatening solvency. Fixing it means accruing the penalty into
+  `lp_rate_product` continuously, or amortising the release. That changes how interest reaches
+  lenders, which is too large to attach to a hardening plan.
