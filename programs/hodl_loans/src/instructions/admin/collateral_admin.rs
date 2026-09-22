@@ -1,9 +1,11 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{self, CloseAccount, Mint, TokenAccount, TokenInterface};
 
-use crate::constants::{ACCOUNT_VERSION, COLLATERAL_SEED, COLLATERAL_VAULT_SEED, CONFIG_SEED, MAX_COLLATERAL_DECIMALS};
+use crate::constants::{ACCOUNT_VERSION, COLLATERAL_SEED, COLLATERAL_VAULT_SEED, CONFIG_SEED, MAX_COLLATERAL_DECIMALS, MAX_LISTED_COLLATERAL};
 use crate::errors::HodlError;
-use crate::events::{CollateralDelisted, CollateralListed, CollateralParamsUpdated, CollateralPauseSet};
+use crate::events::{
+    CollateralBorrowPauseSet, CollateralDelisted, CollateralListed, CollateralParamsUpdated, CollateralPauseSet,
+};
 use crate::state::{CollateralAsset, CollateralKind, CollateralParams, Config};
 use crate::token::extensions::require_collateral_mint_on_entry;
 
@@ -116,12 +118,18 @@ pub fn handle_list_collateral(
         deposit_cap: 0,
         total_deposited: 0,
         paused: false,
-        reserved: [0; 96],
+        borrow_paused: false,
+        max_multiplier: 0,
+        reserved: [0; 79],
     };
     asset.apply_params(&params);
     ctx.accounts.collateral.set_inner(asset);
 
     let config = &mut ctx.accounts.config;
+    // `set_promo_cap` must name every listed asset in one transaction, so the list has a
+    // ceiling; see `MAX_LISTED_COLLATERAL`. Checked here rather than in `set_promo_cap`
+    // because by then it is too late — listing is the only thing that grows the count.
+    require!(config.collateral_count < MAX_LISTED_COLLATERAL, HodlError::CollateralLimitReached);
     config.collateral_count = config.collateral_count.checked_add(1).ok_or(HodlError::MathOverflow)?;
 
     emit!(CollateralListed {
@@ -158,6 +166,44 @@ pub fn handle_set_collateral_paused(ctx: Context<SetCollateralPaused>, paused: b
     let old_paused = ctx.accounts.collateral.paused;
     ctx.accounts.collateral.paused = paused;
     emit!(CollateralPauseSet { collateral: collateral_key, old_paused, paused, by: signer });
+    Ok(())
+}
+
+/// Stops new borrowing backed by one asset without touching deposits, withdrawals or
+/// liquidation. Separate from `set_collateral_paused` because the two answer different
+/// questions: that one says "take no more of this", this one says "lend nothing new against
+/// what is already here". An asset whose price feed has become unreliable wants the second
+/// while borrowers keep the first.
+///
+/// "Lend nothing new" means both routes from a holding to `borrow_limit` — its LTV term and
+/// the promo cap its value unlocks. Debt already drawn is untouched: this cannot make a live
+/// loan liquidatable, because `own_value` and the liquidation line still count the asset.
+#[derive(Accounts)]
+pub struct SetCollateralBorrowPaused<'info> {
+    pub signer: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, Config>,
+    #[account(mut, seeds = [COLLATERAL_SEED, collateral.mint.as_ref()], bump = collateral.bump)]
+    pub collateral: Box<Account<'info, CollateralAsset>>,
+}
+
+pub fn handle_set_collateral_borrow_paused(
+    ctx: Context<SetCollateralBorrowPaused>,
+    paused: bool,
+) -> Result<()> {
+    let signer = ctx.accounts.signer.key();
+    let config = &ctx.accounts.config;
+    // The same asymmetry the deposit pause uses: the guardian can stop the bleeding, only the
+    // admin can start it again.
+    if paused {
+        require!(signer == config.admin || signer == config.guardian, HodlError::Unauthorized);
+    } else {
+        require!(signer == config.admin, HodlError::Unauthorized);
+    }
+    let collateral_key = ctx.accounts.collateral.key();
+    let old_paused = ctx.accounts.collateral.borrow_paused;
+    ctx.accounts.collateral.borrow_paused = paused;
+    emit!(CollateralBorrowPauseSet { collateral: collateral_key, old_paused, paused, by: signer });
     Ok(())
 }
 

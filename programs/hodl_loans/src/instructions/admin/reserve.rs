@@ -29,6 +29,15 @@ pub struct HarvestReserve<'info> {
 }
 
 /// Sends `amount` of the protocol reserve to the treasury. `cash` and `protocol_reserve` both fall.
+///
+/// Deliberately does **not** call `Market::accrue` first, unlike every instruction that
+/// settles a loan or reads `total_assets`. Accrual moves only `accrued_interest`,
+/// `accrual_remainder` and `last_accrual_ts`; `protocol_reserve` grows solely in `repay_loan`
+/// and `cash` solely on real token movement, so accruing here could not change what this
+/// instruction reads or writes. Harvesting drops `cash` and `protocol_reserve` by the same
+/// amount, leaving `available_cash` and `total_assets` untouched, so lenders are unaffected
+/// either way. Spec §9 names this exception; adding the call would cost compute and buy
+/// nothing.
 pub fn handle_harvest_reserve(ctx: Context<HarvestReserve>, amount: u64) -> Result<()> {
     require!(amount > 0, HodlError::AmountTooSmall);
     let market_key = ctx.accounts.market.key();

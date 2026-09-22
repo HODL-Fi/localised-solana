@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-use crate::constants::{BPS, MAX_BPS, MAX_PRICE_AGE_SECONDS};
+use crate::constants::{BPS, MAX_BPS, MAX_MULTIPLIER, MAX_PRICE_AGE_SECONDS, MULTIPLIER_ONE};
 use crate::errors::HodlError;
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, Debug, InitSpace)]
@@ -38,7 +38,29 @@ pub struct CollateralAsset {
     pub total_deposited: u64,
     /// Blocks new deposits of this asset only.
     pub paused: bool,
-    pub reserved: [u8; 96],
+    /// Blocks new *borrowing* backed by this asset. While set, the holding's
+    /// `lends_borrowing_power` is false, which suppresses both ways it could raise
+    /// `borrow_limit`: its own LTV term and the promo cap its value would otherwise unlock.
+    /// It still counts in full at `own_value` and at the liquidation line — including the
+    /// promo lift, which takes its own ungated cap — so pausing an asset can neither make a
+    /// live loan liquidatable nor make a position that was liquidatable a moment ago suddenly
+    /// safe. Deposits and seizure are unaffected.
+    ///
+    /// **Withdrawal is not.** `withdraw_collateral` gates on the same `is_healthy()` the
+    /// borrow does, so while a loan is live a borrow-paused asset backs no withdrawal at all;
+    /// `a_borrow_paused_asset_backs_no_withdrawal_while_a_loan_is_live` pins that. Withdrawing
+    /// is exposure-increasing in the same way borrowing is, so this is intended — but it means
+    /// a pause does strand collateral behind a live loan until the loan is repaid or the pause
+    /// lifted.
+    /// Taken from the reserved padding, so the account size is unchanged.
+    pub borrow_paused: bool,
+    /// Per-asset ceiling on the mint's scaled-UI multiplier, in `MULTIPLIER_SCALE` fixed
+    /// point. `0` means no per-asset ceiling — only the global `MAX_MULTIPLIER` applies.
+    /// Exceeding it does not fail the price read: the asset simply stops lending borrowing
+    /// power, exactly as `borrow_paused` does. See the walk in `valuation.rs`.
+    /// Taken from the reserved padding, so the account size is unchanged.
+    pub max_multiplier: u128,
+    pub reserved: [u8; 79],
 }
 
 /// Admin-settable collateral parameters, used by `list_collateral` and `update_collateral_params`.
@@ -53,6 +75,8 @@ pub struct CollateralParams {
     pub liquidation_threshold_bps: u16,
     pub liquidation_bonus_bps: u16,
     pub deposit_cap: u64,
+    /// See `CollateralAsset::max_multiplier`. Appended, so existing field order is unchanged.
+    pub max_multiplier: u128,
 }
 
 impl CollateralParams {
@@ -82,6 +106,19 @@ impl CollateralParams {
             self.liquidation_threshold_bps as u128 * (BPS + self.liquidation_bonus_bps as u128) <= BPS * BPS,
             HodlError::InvalidParameters
         );
+        // `max_multiplier` is `MULTIPLIER_SCALE` fixed point, so a ceiling below `1.0` is
+        // almost certainly an admin who meant "cap at 1x" and wrote `1`. Left unchecked that
+        // reads as 10^-12 and puts *every* asset over its ceiling — a `Standard` asset
+        // included, whose multiplier is the constant `MULTIPLIER_ONE`. The asset would then
+        // silently lend no borrowing power, which also freezes every existing borrower out of
+        // withdrawing collateral, with no event and no error at the moment it was set.
+        // Above `MAX_MULTIPLIER` the ceiling can never bind, since the price read rejects
+        // those multipliers first; accepting it would advertise a bound that does nothing.
+        require!(
+            self.max_multiplier == 0
+                || (self.max_multiplier >= MULTIPLIER_ONE && self.max_multiplier <= MAX_MULTIPLIER),
+            HodlError::InvalidParameters
+        );
         Ok(())
     }
 }
@@ -97,6 +134,7 @@ impl CollateralAsset {
             liquidation_threshold_bps: self.liquidation_threshold_bps,
             liquidation_bonus_bps: self.liquidation_bonus_bps,
             deposit_cap: self.deposit_cap,
+            max_multiplier: self.max_multiplier,
         }
     }
 
@@ -109,6 +147,7 @@ impl CollateralAsset {
         self.liquidation_threshold_bps = p.liquidation_threshold_bps;
         self.liquidation_bonus_bps = p.liquidation_bonus_bps;
         self.deposit_cap = p.deposit_cap;
+        self.max_multiplier = p.max_multiplier;
     }
 }
 
@@ -126,6 +165,7 @@ mod tests {
             liquidation_threshold_bps: 9_000,
             liquidation_bonus_bps: 1_000,
             deposit_cap: u64::MAX,
+            max_multiplier: 0,
         }
     }
 
@@ -150,12 +190,20 @@ mod tests {
             CollateralParams { ltv_bps: 8_000, ..sol() },
             // 90% threshold × 1.12 bonus exceeds 100%.
             CollateralParams { liquidation_bonus_bps: 1_200, ..sol() },
+            // One unit below the lower bound: `0` is the escape hatch (no ceiling), but anything
+            // strictly between `0` and `MULTIPLIER_ONE` is the "meant 1x, wrote 1" trap the rule
+            // exists to catch. Pins the boundary itself, not just an extreme low value.
+            CollateralParams { max_multiplier: MULTIPLIER_ONE - 1, ..sol() },
         ];
         for case in cases {
             assert!(case.validate(2_000).is_err(), "{case:?}");
         }
         // The promo cap is part of the rule: 80% LTV is fine with a 10% cap.
         CollateralParams { ltv_bps: 8_000, ..sol() }.validate(1_000).unwrap();
+        // `max_multiplier`'s upper bound is inclusive: exactly `MAX_MULTIPLIER` still passes,
+        // since a ceiling equal to the arithmetic cap is a real (if permissive) ceiling, not
+        // the "can never bind" case `validate` rejects.
+        CollateralParams { max_multiplier: MAX_MULTIPLIER, ..sol() }.validate(2_000).unwrap();
     }
 }
 

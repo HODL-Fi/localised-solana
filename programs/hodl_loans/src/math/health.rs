@@ -16,6 +16,18 @@ pub struct CollateralValue {
     pub price: UsdPrice,
     pub ltv_bps: u16,
     pub liquidation_threshold_bps: u16,
+    /// False when the asset is barred from supporting new exposure — the admin's borrow pause,
+    /// or a mint that has scaled its multiplier past the asset's ceiling. It suppresses *both*
+    /// ways this holding can raise `borrow_limit`: its own LTV term, and the promo cap it
+    /// would otherwise unlock. Zeroing `ltv_bps` alone is not enough, because `promo_cap_total`
+    /// is a fraction of the holding's *value* and never looked at `ltv_bps`.
+    ///
+    /// `own_value` and `liquidation_line` still count the holding in full, including its
+    /// share of the promo lift: the collateral is really there, a paused asset must not make a
+    /// live loan liquidatable, and `own_value` decides whether `write_off_loan` may treat a
+    /// position as dust. Note the promo cap is accumulated **twice** in `compute_health` for
+    /// exactly this reason — see the two totals there.
+    pub lends_borrowing_power: bool,
 }
 
 impl CollateralValue {
@@ -58,11 +70,22 @@ pub fn compute_health(
     promo_cap_bps: u16,
 ) -> Result<Health> {
     let mut health = Health::default();
-    let mut promo_cap_total: u128 = 0;
+    // Two promo caps, not one. A holding that lends no borrowing power must stop unlocking
+    // promo for `borrow_limit` — but it must keep unlocking it for `liquidation_line`, because
+    // the line's promo lift is justified by forfeiture (seizure returns the position's full,
+    // *uncapped* promo balance, so recovery covers the lift) and nothing about that argument
+    // depends on whether the collateral is borrow-paused. Sharing one total made pausing an
+    // asset drop the line, which is a liquidation an admin — or the token's own scaled-UI
+    // authority, through `max_multiplier` — could cause with no price movement.
+    let mut promo_cap_lending: u128 = 0;
+    let mut promo_cap_all: u128 = 0;
     for c in collateral {
         let value = token_value(c.display_amount()?, c.decimals, c.price.lower())?;
         health.own_value = add(health.own_value, value)?;
-        health.borrow_limit = add(health.borrow_limit, mul_div_floor(value, c.ltv_bps as u128, BPS)?)?;
+        if c.lends_borrowing_power {
+            health.borrow_limit =
+                add(health.borrow_limit, mul_div_floor(value, c.ltv_bps as u128, BPS)?)?;
+        }
         health.liquidation_line = add(
             health.liquidation_line,
             mul_div_floor(value, c.liquidation_threshold_bps as u128, BPS)?,
@@ -75,7 +98,17 @@ pub fn compute_health(
         // moment the cap changed — instant liquidation with no price move. Sum-of-floors ≤
         // floor-of-sum always, so accumulating here is conservative: promo counts for slightly
         // less, never more.
-        promo_cap_total = add(promo_cap_total, mul_div_floor(value, promo_cap_bps as u128, BPS)?)?;
+        //
+        // The lending total is gated on the same flag as the LTV term above, for the same
+        // reason: promo is a topping on collateral the borrower can borrow against, so an
+        // asset we refuse to lend against must not unlock promo either. Ungated, a
+        // borrow-paused asset still raised `borrow_limit` by up to `promo_cap_bps` of its
+        // value — the brake on, and the position still able to borrow.
+        let cap = mul_div_floor(value, promo_cap_bps as u128, BPS)?;
+        promo_cap_all = add(promo_cap_all, cap)?;
+        if c.lends_borrowing_power {
+            promo_cap_lending = add(promo_cap_lending, cap)?;
+        }
     }
     // Spec §12: promo is a topping on collateral the borrower owns, never a substitute for it.
     // The cap is `promo_cap_total`, summed per asset in the loop above rather than taken as a
@@ -86,9 +119,14 @@ pub fn compute_health(
     // either way — which is what makes defaulting a loss for the borrower rather than a way to
     // profit.
     let promo_value = token_value(promo_balance as u128, cngn_decimals, ngn.lower())?;
-    health.promo_counted = promo_value.min(promo_cap_total);
+    // `promo_counted` is the borrowing figure — what the position may actually borrow against.
+    // The line takes the ungated cap, so withholding an asset never lowers it.
+    // `promo_cap_lending <= promo_cap_all` by construction and every gated LTV term has a
+    // liquidation-threshold term at least as large, so `borrow_limit <= liquidation_line`
+    // still holds, which is what stops a position being liquidatable the moment it is healthy.
+    health.promo_counted = promo_value.min(promo_cap_lending);
     health.borrow_limit = add(health.borrow_limit, health.promo_counted)?;
-    health.liquidation_line = add(health.liquidation_line, health.promo_counted)?;
+    health.liquidation_line = add(health.liquidation_line, promo_value.min(promo_cap_all))?;
 
     health.debt = token_value_ceil(debt_cngn, cngn_decimals, ngn.upper()?)?;
     Ok(health)
@@ -116,6 +154,7 @@ mod tests {
                 price: UsdPrice { price: 150 * USD, conf: USD },
                 ltv_bps: 7_000,
                 liquidation_threshold_bps: 9_000,
+                lends_borrowing_power: true,
             },
             // 500 USDC (6 decimals) at $1.
             CollateralValue {
@@ -125,6 +164,7 @@ mod tests {
                 price: UsdPrice { price: USD, conf: 0 },
                 ltv_bps: 7_000,
                 liquidation_threshold_bps: 9_000,
+                lends_borrowing_power: true,
             },
         ];
         // Debt: 1,600,000 cNGN = $1,000.
@@ -146,6 +186,7 @@ mod tests {
             price: UsdPrice { price: USD, conf: 0 },
             ltv_bps: 7_000,
             liquidation_threshold_bps: 9_000,
+            lends_borrowing_power: true,
         }];
         // $700 of debt exactly at the 70% limit is healthy.
         let at_limit = compute_health(&collateral, 1_120_000_000_000, 6, ngn(), 0, 0).unwrap();
@@ -168,6 +209,7 @@ mod tests {
             price: UsdPrice { price: 200 * USD, conf: 0 },
             ltv_bps: 5_000,
             liquidation_threshold_bps: 7_500,
+            lends_borrowing_power: true,
         }];
         let h = compute_health(&split, 0, 6, ngn(), 0, 0).unwrap();
         assert_eq!(h.own_value, 30_000 * USD);
@@ -190,6 +232,7 @@ mod tests {
             price: UsdPrice { price: 200 * USD, conf: 0 },
             ltv_bps: 5_000,
             liquidation_threshold_bps: 7_500,
+            lends_borrowing_power: true,
         };
         assert_eq!(c.display_amount().unwrap(), 3);
     }
@@ -217,6 +260,7 @@ mod tests {
             price: UsdPrice { price: 1, conf: 0 },
             ltv_bps: 5_000,
             liquidation_threshold_bps: 7_500,
+            lends_borrowing_power: true,
         }];
         // 1 unit of promo is worth 625 (from `ngn()`'s bid) — comfortably above either
         // candidate cap, so the assertion below isolates the cap's own rounding.
@@ -235,6 +279,7 @@ mod tests {
             price: UsdPrice { price: USD, conf: 0 },
             ltv_bps: 7_000,
             liquidation_threshold_bps: 9_000,
+            lends_borrowing_power: true,
         }];
         // 500,000 cNGN is worth $312.50 at the bid — well past the $200 cap.
         let h = compute_health(&collateral, 0, 6, ngn(), 500_000_000_000, 2_000).unwrap();
@@ -252,6 +297,7 @@ mod tests {
             price: UsdPrice { price: USD, conf: 0 },
             ltv_bps: 7_000,
             liquidation_threshold_bps: 9_000,
+            lends_borrowing_power: true,
         }];
         let h = compute_health(&collateral, 0, 6, ngn(), 100_000_000_000, 2_000).unwrap();
         assert_eq!(h.promo_counted, 62_500_000_000_000);
@@ -277,6 +323,7 @@ mod tests {
             price: UsdPrice { price: 1, conf: 0 },
             ltv_bps: 7_000,
             liquidation_threshold_bps: 9_000,
+            lends_borrowing_power: true,
         };
         let collateral = [asset(), asset()];
         // Plenty of promo to saturate the cap either way; 1:1 NGN pricing keeps the numbers
@@ -297,5 +344,47 @@ mod tests {
         assert_eq!(h.liquidation_line, 18_000_000_000_004);
         assert_eq!(h.debt, debt);
         assert!(!h.is_liquidatable());
+    }
+
+    #[test]
+    fn a_holding_that_lends_no_borrowing_power_unlocks_no_promo_either() {
+        // The whole point of the flag. An asset the admin has borrow-paused, or whose mint has
+        // scaled past its ceiling, must not raise `borrow_limit` by *either* route. Gating
+        // only the LTV term leaves the promo cap — a fraction of the holding's value, which
+        // never looked at `ltv_bps` — still unlocking borrowing power against an asset the
+        // brake is supposedly on.
+        let holding = |lends| {
+            [CollateralValue {
+                amount: 1_000_000_000,
+                decimals: 6,
+                multiplier: MULTIPLIER_SCALE,
+                price: UsdPrice { price: USD, conf: 0 },
+                ltv_bps: 7_000,
+                liquidation_threshold_bps: 9_000,
+                lends_borrowing_power: lends,
+            }]
+        };
+        // 1,000 USDC at $1 with a 20% promo cap and promo worth more than the cap allows.
+        let promo = 400_000_000_000u64;
+        let lending = compute_health(&holding(true), 0, 6, ngn(), promo, 2_000).unwrap();
+        assert_eq!(lending.own_value, 1_000 * USD);
+        assert_eq!(lending.promo_counted, 200 * USD);
+        assert_eq!(lending.borrow_limit, 900 * USD);
+
+        let withheld = compute_health(&holding(false), 0, 6, ngn(), promo, 2_000).unwrap();
+        assert_eq!(withheld.borrow_limit, 0, "a withheld holding must unlock no promo");
+        assert_eq!(withheld.promo_counted, 0);
+        // The collateral is still really there, and so is the promo: neither the dust check
+        // nor the liquidation line may pretend otherwise. The line keeps the **full** promo
+        // lift — 900 of collateral plus the 200 the cap allows — because forfeiture still
+        // returns the whole uncapped balance on seizure. An earlier version of this test
+        // asserted 900 here, which encoded the opposite: withholding an asset dropped the
+        // line by the promo lift and made a live loan liquidatable with no price movement.
+        assert_eq!(withheld.own_value, 1_000 * USD);
+        assert_eq!(withheld.liquidation_line, 1_100 * USD);
+        assert!(
+            withheld.borrow_limit <= withheld.liquidation_line,
+            "the borrow limit may never exceed the liquidation line"
+        );
     }
 }

@@ -85,4 +85,8 @@ pub enum HodlError {
     PromoVaultMismatch,
     #[msg("Collateral vault token account does not match the collateral asset")]
     CollateralVaultMismatch,
+    #[msg("The protocol already lists the maximum number of collateral assets")]
+    CollateralLimitReached,
+    #[msg("Voucher expiry is later than its campaign's redeem_until")]
+    VoucherOutlivesCampaign,
 }

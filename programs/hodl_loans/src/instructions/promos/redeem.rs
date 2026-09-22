@@ -96,6 +96,21 @@ pub fn handle_redeem_promo(
     require!(ctx.accounts.campaign.active, HodlError::CampaignInactive);
     require!(now <= ctx.accounts.campaign.redeem_until, HodlError::CampaignInactive);
 
+    // A voucher may not outlive the campaign it draws on. Without this the promo signer alone
+    // decides how long the receipt this redemption creates holds its rent: expiry is not part
+    // of the receipt's seeds, so `close_voucher_receipt` waits for `now > voucher_expiry` and
+    // a far-future expiry locks the rent indefinitely. Tying it to `redeem_until` — itself
+    // bounded by `MAX_CAMPAIGN_LIFETIME` — puts that bound back under admin control, where
+    // the campaign's budget and lifetime already sit.
+    //
+    // This is a real behavioural change, not a free one. `voucher_expiry` and `now` are
+    // different quantities: a voucher expiring after `redeem_until` is perfectly redeemable
+    // at any `now <= redeem_until`, and both prior checks pass for it. A backend issuing
+    // rolling 30-day vouchers signs such a voucher every day of a campaign's last 30, and
+    // every one of them stops working here. Those vouchers must be re-signed with expiries
+    // clamped to the campaign — the migration note for this change.
+    require!(voucher_expiry <= ctx.accounts.campaign.redeem_until, HodlError::VoucherOutlivesCampaign);
+
     let granted = add(ctx.accounts.campaign.granted as u128, amount as u128)?;
     require!(granted <= ctx.accounts.campaign.budget as u128, HodlError::CampaignBudgetExceeded);
 

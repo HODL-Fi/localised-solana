@@ -269,3 +269,124 @@ fn a_pinned_price_account_is_the_only_one_accepted() {
     send(&mut env.svm, &[take(prices)], &[&env.admin, &setup.borrower.key]).unwrap();
     assert_eq!(env.token_balance(&setup.borrower_cngn), 2_000_000 * ONE_CNGN);
 }
+
+#[test]
+fn the_health_walk_rejects_a_collateral_asset_at_a_forged_address() {
+    // The walk admits an asset by owner, discriminator and stored `mint`. Those narrow it to
+    // "a CollateralAsset this program created for this mint" — but only because listing is the
+    // sole creation path, which is an argument about the whole program rather than about this
+    // account. Since Plan 4 the same account's `kind` also decides how many accounts the walk
+    // consumes, so more rests on it. Re-deriving the PDA makes the argument local, and this is
+    // the test that fails if someone removes it.
+    let (mut env, setup) = Env::loan_ready();
+    let owner = setup.borrower.pubkey();
+
+    // A copy of the real asset with a far more generous LTV, planted program-owned at an
+    // unrelated address. `mint` and `bump` are the real ones, so every check except the
+    // re-derivation passes: the owner is this program, the discriminator deserializes, and
+    // `asset.mint == slot.mint` holds.
+    let real: hodl_loans::CollateralAsset = env.fetch(&collateral_pda(&setup.usdc));
+    let forged = hodl_loans::CollateralAsset { ltv_bps: 9_000, ..real };
+    let forged_key = Keypair::new().pubkey();
+    env.set_account_data(&forged_key, &hodl_loans::ID, collateral_asset_bytes(&forged));
+
+    let mut prices = env.price_accounts(&owner);
+    let real_key = collateral_pda(&setup.usdc);
+    let mut swapped = 0;
+    for meta in prices.iter_mut() {
+        if meta.pubkey == real_key {
+            meta.pubkey = forged_key;
+            swapped += 1;
+        }
+    }
+    assert_eq!(swapped, 1, "the collateral asset must appear once for the swap to mean anything");
+
+    let borrow = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 100_000 * ONE_CNGN, 30 * DAY, prices);
+    assert_hodl_error(
+        send(&mut env.svm, &[borrow], &[&env.admin, &setup.borrower.key]),
+        HodlError::PriceAccountMismatch,
+    );
+
+    // The same borrow against the real asset succeeds, so the rejection is about the forged
+    // address and not about the amount.
+    env.take_loan(&setup.borrower, &setup, 100_000 * ONE_CNGN, 30 * DAY).unwrap();
+}
+
+#[test]
+fn the_ngn_feed_must_be_owned_by_the_switchboard_program() {
+    // `Market::ngn_feed` is a bare `Pubkey` the admin sets, with no constraint behind it. The
+    // address check alone therefore proves only that the caller passed the account the admin
+    // named — not that the account is a Switchboard feed. A discriminator is eight bytes anyone
+    // can write, so without the owner check a mis-set `ngn_feed` turns 3.2 KB of arbitrary data
+    // into a price.
+    let (mut env, setup) = Env::loan_ready();
+    let owner = setup.borrower.pubkey();
+
+    // Same bytes the real harness writes, and a plausible-looking owner that is not Switchboard.
+    env.set_ngn_price_owned_by(&hodl_loans::ID, NGN_USD, NGN_SPREAD);
+
+    let prices = env.price_accounts(&owner);
+    let borrow = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 100_000 * ONE_CNGN, 30 * DAY, prices);
+    assert_hodl_error(
+        send(&mut env.svm, &[borrow], &[&env.admin, &setup.borrower.key]),
+        HodlError::PriceAccountMismatch,
+    );
+
+    // Restoring the real owner, with the same data, lets the identical borrow through — so the
+    // rejection is about the owner and nothing else.
+    env.set_ngn_price(NGN_USD, NGN_SPREAD);
+    env.take_loan(&setup.borrower, &setup, 100_000 * ONE_CNGN, 30 * DAY).unwrap();
+}
+
+#[test]
+fn a_borrow_paused_asset_lends_no_borrowing_power() {
+    let (mut env, setup) = Env::loan_ready();
+    let pause = set_collateral_borrow_paused_ix(&env.guardian.pubkey(), &setup.usdc, true);
+    send(&mut env.svm, &[pause], &[&env.guardian]).unwrap();
+
+    // The $700 limit is gone entirely, not merely reduced: the market's smallest permitted
+    // loan is refused. Anything under `min_loan_amount` would trip `AmountTooSmall` first and
+    // prove nothing about health.
+    assert_hodl_error(env.take_loan(&setup.borrower, &setup, 1_000 * ONE_CNGN, 30 * DAY), HodlError::Unhealthy);
+    // Depositing more of the asset buys none of it back, and is still permitted — the pause
+    // stops borrowing against the asset, not holding it.
+    env.deposit_collateral(&setup.borrower, &setup.usdc, 1_000 * ONE_USDC);
+    assert_eq!(env.position(&setup.borrower.pubkey()).collateral[0].amount, 2_000 * ONE_USDC);
+    assert_hodl_error(env.take_loan(&setup.borrower, &setup, 1_000 * ONE_CNGN, 30 * DAY), HodlError::Unhealthy);
+
+    // Lifting it restores the limit over everything deposited: 2,000 USDC is twice the
+    // 1,118,881 cNGN of `borrow_limit_is_seventy_percent_of_collateral_at_the_ngn_ask`.
+    let unpause = set_collateral_borrow_paused_ix(&env.admin.pubkey(), &setup.usdc, false);
+    send(&mut env.svm, &[unpause], &[&env.admin]).unwrap();
+    assert_hodl_error(
+        env.take_loan(&setup.borrower, &setup, 2_237_763 * ONE_CNGN, 30 * DAY),
+        HodlError::Unhealthy,
+    );
+    env.take_loan(&setup.borrower, &setup, 2_237_762 * ONE_CNGN, 30 * DAY).unwrap();
+}
+
+#[test]
+fn a_wrong_market_borrow_reports_the_mismatch_not_that_markets_own_state() {
+    let (mut env, setup) = Env::loan_ready();
+    let owner = setup.borrower.pubkey();
+    // Bind the position to market A.
+    env.take_loan(&setup.borrower, &setup, 1_000 * ONE_CNGN, 30 * DAY).unwrap();
+
+    // Market B is real and promo-equipped but holds no lender liquidity, so its own
+    // utilization and cash checks would reject any borrow on their own merits. Spec §10 puts
+    // `MarketMismatch` in step 1, ahead of the step-3 accrual and the step-4 cap, so that is
+    // what the caller is told: market B's emptiness is true but is not what is wrong with
+    // this call. Before the checks were ordered to match the spec this reported
+    // `InsufficientCash`.
+    let empty = env.create_mint(MintKind::CngnLike, 6);
+    env.create_market_with_promo(&empty);
+    assert_eq!(env.market(&empty).cash, 0);
+
+    let account = env.create_token_account(&empty, &owner);
+    let prices = env.price_accounts(&owner);
+    let borrow = take_loan_ix(&owner, &empty, &account, 1_000 * ONE_CNGN, 30 * DAY, prices);
+    assert_hodl_error(
+        send(&mut env.svm, &[borrow], &[&env.admin, &setup.borrower.key]),
+        HodlError::MarketMismatch,
+    );
+}

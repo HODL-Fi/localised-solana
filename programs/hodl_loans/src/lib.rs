@@ -95,6 +95,13 @@ pub mod hodl_loans {
         instructions::handle_set_collateral_paused(ctx, paused)
     }
 
+    pub fn set_collateral_borrow_paused(
+        ctx: Context<SetCollateralBorrowPaused>,
+        paused: bool,
+    ) -> Result<()> {
+        instructions::handle_set_collateral_borrow_paused(ctx, paused)
+    }
+
     pub fn delist_collateral(ctx: Context<DelistCollateral>) -> Result<()> {
         instructions::handle_delist_collateral(ctx)
     }
@@ -117,6 +124,10 @@ pub mod hodl_loans {
 
     pub fn sweep_promo_excess(ctx: Context<SweepPromoExcess>) -> Result<()> {
         instructions::handle_sweep_promo_excess(ctx)
+    }
+
+    pub fn reconcile_promo_vault(ctx: Context<ReconcilePromoVault>) -> Result<()> {
+        instructions::handle_reconcile_promo_vault(ctx)
     }
 
     pub fn set_promo_cap(ctx: Context<SetPromoCap>, promo_cap_bps: u16) -> Result<()> {
@@ -153,7 +164,7 @@ pub mod hodl_loans {
         instructions::handle_expire_promo(ctx)
     }
 
-    pub fn revoke_promo(ctx: Context<RevokePromo>) -> Result<()> {
+    pub fn revoke_promo<'info>(ctx: Context<'info, RevokePromo<'info>>) -> Result<()> {
         instructions::handle_revoke_promo(ctx)
     }
 

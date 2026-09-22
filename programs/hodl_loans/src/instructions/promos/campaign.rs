@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-use crate::constants::{ACCOUNT_VERSION, CAMPAIGN_SEED, CONFIG_SEED, PROMO_VAULT_SEED};
+use crate::constants::{ACCOUNT_VERSION, CAMPAIGN_SEED, CONFIG_SEED, PROMO_VAULT_SEED, MAX_CAMPAIGN_LIFETIME};
 use crate::errors::HodlError;
 use crate::events::{CampaignClosed, CampaignCreated};
 use crate::math::checked::{add, sub, to_u64};
@@ -42,7 +42,12 @@ pub fn handle_create_campaign(
     redeem_until: i64,
 ) -> Result<()> {
     require!(budget > 0, HodlError::AmountTooSmall);
-    require!(redeem_until > Clock::get()?.unix_timestamp, HodlError::InvalidParameters);
+    let now = Clock::get()?.unix_timestamp;
+    require!(redeem_until > now, HodlError::InvalidParameters);
+    // Bounded above as well, because a campaign's end is what bounds its vouchers' expiry,
+    // and a voucher's expiry is what holds its receipt's rent. See `MAX_CAMPAIGN_LIFETIME`.
+    // `saturating_add` cannot wrap the ceiling backwards, so an absurd clock fails closed.
+    require!(redeem_until <= now.saturating_add(MAX_CAMPAIGN_LIFETIME), HodlError::InvalidParameters);
     require!(budget <= ctx.accounts.promo_vault.free()?, HodlError::PromoVaultInsufficient);
 
     let promo_vault = &mut ctx.accounts.promo_vault;

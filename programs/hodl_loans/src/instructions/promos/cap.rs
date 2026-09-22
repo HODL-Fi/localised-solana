@@ -57,9 +57,12 @@ pub fn handle_set_promo_cap(ctx: Context<SetPromoCap>, promo_cap_bps: u16) -> Re
         // `liquidation_bonus_bps` must reason about `LT + promo_cap_bps`, so `validate` is
         // where a second cap-dependent rule will land. A hand-copied `require!` here would
         // silently stop covering it. This is safe and idempotent — `apply_params` is the sole
-        // writer of `ltv_bps`/`liquidation_threshold_bps`/`liquidation_bonus_bps` and validates
-        // at both of its call sites, so every stored asset already satisfies the
-        // cap-independent rules `validate` also re-checks here.
+        // writer of `ltv_bps`/`liquidation_threshold_bps`/`liquidation_bonus_bps`/`max_multiplier`
+        // and validates at both of its call sites, so every stored asset already satisfies the
+        // cap-independent rules `validate` also re-checks here. `max_multiplier` is safe here
+        // specifically because `0` — what an account listed before the field existed reads back
+        // from its zeroed `reserved` padding — is inside `validate`'s allowed set (it means "no
+        // per-asset ceiling"); a legacy asset re-validated by this loop does not spuriously fail.
         asset.params().validate(promo_cap_bps)?;
     }
 

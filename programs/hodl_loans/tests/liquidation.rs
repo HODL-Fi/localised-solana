@@ -371,3 +371,38 @@ fn a_liquidation_must_name_the_collateral_assets_own_vault() {
     env.liquidate(&liquidator, &setup, &setup.usdc, &collateral_account, 0, ONE_CNGN)
         .expect("the real vault liquidates");
 }
+
+#[test]
+fn pausing_borrowing_leaves_the_liquidation_line_where_it_was() {
+    let (mut env, setup) = Env::loan_ready();
+    env.take_loan(&setup.borrower, &setup, LOAN, 365 * DAY).unwrap();
+    let pause = set_collateral_borrow_paused_ix(&env.guardian.pubkey(), &setup.usdc, true);
+    send(&mut env.svm, &[pause], &[&env.guardian]).unwrap();
+
+    let liquidator = env.new_liquidator(&setup.cngn, LOAN);
+    let collateral_account = env.create_token_account(&setup.usdc, &liquidator.pubkey());
+
+    // The position is still healthy. The pause removed borrowing power, not the collateral
+    // standing behind debt already taken — otherwise every live loan against the asset would
+    // become liquidatable the instant an admin paused it.
+    //
+    // What holds that in place is *which* accumulations in `compute_health` consult
+    // `lends_borrowing_power`: the LTV term, and the promo cap **for borrowing only**. The
+    // liquidation line's own promo lift takes an ungated cap, so withholding an asset never
+    // lowers it.
+    //
+    // This position holds no promo, so what it pins is the collateral half — the
+    // liquidation-threshold term is untouched by the flag. The promo half cannot be seen from
+    // here at all: `promo_counted` is 0 on both sides of the pause.
+    // `pausing_borrowing_must_not_drop_the_liquidation_line_of_a_promo_holding_position`
+    // (`promo_health.rs`) is the one that covers it, and it exists because an earlier version
+    // of this branch shipped a single shared promo cap — which made a guardian pause drop the
+    // line and liquidate a healthy position with no price movement, while this test stayed
+    // green.
+    let result = env.liquidate(&liquidator, &setup, &setup.usdc, &collateral_account, 0, ONE_CNGN);
+    assert_hodl_error(result, HodlError::NotLiquidatable);
+
+    // And once the price does fall, the pause is no obstacle to seizing it.
+    env.set_pyth_price(&setup.usdc, USDC_CRASHED, 0);
+    env.liquidate(&liquidator, &setup, &setup.usdc, &collateral_account, 0, ONE_CNGN).unwrap();
+}

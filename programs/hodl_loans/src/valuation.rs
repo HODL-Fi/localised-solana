@@ -7,7 +7,7 @@ use crate::math::price::UsdPrice;
 use crate::math::loan::loan_balance;
 use crate::oracle::pyth::read_pyth_price;
 use crate::oracle::switchboard::read_ngn_price;
-use crate::constants::MULTIPLIER_ONE;
+use crate::constants::{COLLATERAL_SEED, MULTIPLIER_ONE};
 use crate::state::{CollateralAsset, CollateralKind, Market, Position};
 use crate::token::scaled_ui::read_xstock_multiplier;
 
@@ -16,6 +16,13 @@ use crate::token::scaled_ui::read_xstock_multiplier;
 /// scaled-UI multiplier lives on the mint.
 pub const ACCOUNTS_PER_COLLATERAL: usize = 2;
 pub const ACCOUNTS_PER_XSTOCK: usize = 3;
+
+/// Whether the mint's live multiplier has run past the ceiling the admin set for this asset.
+/// `0` disables the ceiling, which is what every asset listed before the field existed carries
+/// and what a `Standard` asset — whose multiplier is always `MULTIPLIER_ONE` — wants anyway.
+fn over_multiplier_ceiling(asset: &CollateralAsset, multiplier: u128) -> bool {
+    asset.max_multiplier != 0 && multiplier > asset.max_multiplier
+}
 
 /// Value every used collateral slot, in slot order, from `remaining` pairs.
 ///
@@ -41,6 +48,18 @@ pub fn load_collateral_values(
             CollateralAsset::try_deserialize(&mut &data[..]).map_err(|_| HodlError::PriceAccountMismatch)?
         };
         require_keys_eq!(asset.mint, slot.mint, HodlError::PriceAccountMismatch);
+        // Re-derive the PDA the account claims to be. Owner + discriminator + `mint` already
+        // narrow it to "a CollateralAsset this program created for this mint", and listing is
+        // the only path that creates one — but that is a whole-program argument, and since
+        // Plan 4 this same account's `kind` also decides how many accounts the walk consumes,
+        // so more rests on it than when Plan 2 first wrote it down. One hash makes the argument
+        // local: this is the canonical `["collateral", mint]` address or the walk stops.
+        let expected = Pubkey::create_program_address(
+            &[COLLATERAL_SEED, asset.mint.as_ref(), &[asset.bump]],
+            program_id,
+        )
+        .map_err(|_| HodlError::PriceAccountMismatch)?;
+        require_keys_eq!(asset_info.key(), expected, HodlError::PriceAccountMismatch);
         if asset.price_account != Pubkey::default() {
             require_keys_eq!(price_info.key(), asset.price_account, HodlError::PriceAccountMismatch);
         }
@@ -71,6 +90,26 @@ pub fn load_collateral_values(
             price,
             ltv_bps: asset.ltv_bps,
             liquidation_threshold_bps: asset.liquidation_threshold_bps,
+            // Two reasons an asset stops supporting new exposure: the admin's borrow pause,
+            // and a mint that has scaled its multiplier past the ceiling set for it. Both are
+            // the same answer to different questions, so they share one flag.
+            //
+            // The ceiling is the reason the flag exists rather than a hard rejection:
+            // refusing the price would seal the position against liquidation and write-off
+            // too, trading a remote economic risk for a likely liveness failure — which is
+            // why `MAX_MULTIPLIER` is deliberately loose. Withholding only borrowing power
+            // bounds what the scaled-UI authority can conjure while every exit path keeps
+            // working at the true multiplier.
+            //
+            // `compute_health` reads the flag at the two places a holding can raise
+            // `borrow_limit` — its LTV term, and the promo cap it unlocks for borrowing. It
+            // does **not** reach `own_value`, the liquidation-threshold term, or the promo
+            // lift on `liquidation_line`, which takes its own ungated cap. That separation is
+            // what keeps a pause from making a live loan liquidatable, and it is easy to lose:
+            // `promo_counted` used to feed both limits from one gated total, so withholding an
+            // asset dropped the line too.
+            lends_borrowing_power: !asset.borrow_paused
+                && !over_multiplier_ceiling(&asset, multiplier),
         });
     }
     // Every account supplied must have been consumed: an extra one is a mismatch.

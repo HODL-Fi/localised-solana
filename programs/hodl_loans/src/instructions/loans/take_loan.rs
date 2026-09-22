@@ -69,6 +69,21 @@ pub fn handle_take_loan<'info>(
         (MIN_TENURE..=market.max_tenure_seconds).contains(&tenure_seconds),
         HodlError::TenureOutOfRange
     );
+
+    // Spec §10 puts both position preconditions in steps 1-2, before step 3 accrues. Taken
+    // later, a borrow against the wrong market at full utilization reported
+    // `UtilizationCapExceeded` — true of the market, but not what was wrong with the call.
+    // Only the reported error changes: both are read-only, and neither can succeed here and
+    // fail below, because nothing between the two points writes to the position.
+    let free_index = {
+        let position = ctx.accounts.position.load()?;
+        require!(
+            position.market == Pubkey::default() || position.market == market_key,
+            HodlError::MarketMismatch
+        );
+        position.free_loan_index().ok_or(HodlError::NoFreeLoanSlot)?
+    };
+
     market.accrue(now)?;
 
     let available = market.available_cash();
@@ -82,11 +97,7 @@ pub fn handle_take_loan<'info>(
 
     let (loan_id, rate_bps, penalty_rate_bps, reserve_factor_bps) = {
         let mut position = ctx.accounts.position.load_mut()?;
-        require!(
-            position.market == Pubkey::default() || position.market == market_key,
-            HodlError::MarketMismatch
-        );
-        let index = position.free_loan_index().ok_or(HodlError::NoFreeLoanSlot)?;
+        let index = free_index;
 
         // Spec §10 step 3: a quiet position's promo expires before it can support a new loan.
         // `saturating_add` can only push the deadline later (never wrap it earlier), so this

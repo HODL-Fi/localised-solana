@@ -102,7 +102,9 @@ fn an_admin_can_revoke_promo_without_waiting() {
     // Same conservation property as every other release path: `free()` rises by GRANT.
     assert_eq!(vault.free().unwrap(), free_before + GRANT);
 
-    // Revocation is still barred while a loan is live, so it cannot force a liquidation.
+    // Revocation is no longer barred outright while a loan is live — only when releasing the
+    // promo would leave the position unhealthy. `other`'s loan is small next to its own
+    // collateral, so it does not need the promo to stand.
     let other = env.new_borrower();
     env.deposit_collateral(&other, &setup.usdc, 1_000 * ONE_USDC);
     let other_cngn = env.create_token_account(&setup.cngn, &other.pubkey());
@@ -110,8 +112,49 @@ fn an_admin_can_revoke_promo_without_waiting() {
     let prices = env.price_accounts(&other.pubkey());
     let borrow = take_loan_ix(&other.pubkey(), &setup.cngn, &other_cngn, 1_000 * ONE_CNGN, 365 * DAY, prices);
     send(&mut env.svm, &[borrow], &[&env.admin, &other.key]).unwrap();
-    let live = revoke_promo_ix(&admin, &setup.cngn, &other.pubkey());
-    assert_hodl_error(send(&mut env.svm, &[live], &[&env.admin]), HodlError::PositionNotEmpty);
+
+    // A bare call carries no `ngn_feed` at all, and a feed-less priced call withholds only the
+    // feed while still supplying `remaining_accounts` — both fail the same way, because the
+    // health check the live loan now requires has no price to run on.
+    let bare = revoke_promo_ix(&admin, &setup.cngn, &other.pubkey());
+    assert_hodl_error(send(&mut env.svm, &[bare], &[&env.admin]), HodlError::PriceAccountMismatch);
+    let feedless = revoke_promo_priced_ix(&admin, &setup.cngn, &other.pubkey(), false, price_pairs(&[setup.usdc]));
+    assert_hodl_error(send(&mut env.svm, &[feedless], &[&env.admin]), HodlError::PriceAccountMismatch);
+
+    // Priced, it succeeds: `other`'s loan does not need the promo to stay healthy.
+    let priced = revoke_promo_priced_ix(&admin, &setup.cngn, &other.pubkey(), true, price_pairs(&[setup.usdc]));
+    send(&mut env.svm, &[priced], &[&env.admin]).unwrap();
+    assert_eq!(env.position(&other.pubkey()).promo_balance, 0);
+    assert_eq!(env.promo_vault(&setup.cngn).outstanding, 0);
+}
+
+#[test]
+fn revoking_under_a_live_loan_is_refused_when_the_promo_is_holding_the_position_up() {
+    let (mut env, setup) = Env::promo_ready();
+    let borrower = &setup.borrower;
+    let owner = borrower.pubkey();
+    let admin = env.admin.pubkey();
+    env.redeem_promo(borrower, &setup.cngn, 1, GRANT, 7).unwrap();
+
+    // Borrow past what the collateral alone supports: `OWN_CEILING` is the limit without the
+    // promo, and the promo lifts it to `WITH_PROMO_CEILING`. Anything above the first is debt
+    // the promo is carrying.
+    env.take_loan(borrower, &setup, OWN_CEILING + ONE_CNGN, 365 * DAY).unwrap();
+
+    // Taking the promo away would put the position under its own borrow limit, so revocation
+    // is refused — the guarantee the old `!has_active_loans()` rule was reaching for, now
+    // stated as the thing it actually protects rather than as a blanket ban.
+    let priced = revoke_promo_priced_ix(&admin, &setup.cngn, &owner, true, price_pairs(&[setup.usdc]));
+    assert_hodl_error(send(&mut env.svm, &[priced], &[&env.admin]), HodlError::Unhealthy);
+    assert_eq!(env.position(&owner).promo_balance, GRANT);
+    assert_eq!(env.promo_vault(&setup.cngn).outstanding, GRANT);
+
+    // Repaying back under the unaided ceiling makes the same call succeed: the borrower can
+    // no longer be hurt by it.
+    env.repay(&setup, 0, 2 * ONE_CNGN).unwrap();
+    let priced = revoke_promo_priced_ix(&admin, &setup.cngn, &owner, true, price_pairs(&[setup.usdc]));
+    send(&mut env.svm, &[priced], &[&env.admin]).unwrap();
+    assert_eq!(env.position(&owner).promo_balance, 0);
 }
 
 #[test]
@@ -313,4 +356,132 @@ fn close_position_release_promo_chokepoint_rejects_cross_market_vault() {
     // is untouched.
     assert_eq!(env.position(&owner).promo_balance, GRANT);
     assert_eq!(env.promo_vault(&other).outstanding, other_outstanding_before);
+}
+
+#[test]
+fn a_pause_stops_the_inactivity_clock_rather_than_merely_deferring_the_harvest() {
+    let (mut env, setup) = Env::promo_ready();
+    let borrower = &setup.borrower;
+    let owner = borrower.pubkey();
+    env.redeem_promo(borrower, &setup.cngn, 1, GRANT, 7).unwrap();
+    let admin = env.admin.pubkey();
+    let guardian = env.guardian.pubkey();
+
+    // The guardian pauses the market, then leaves it paused for longer than the whole
+    // inactivity window. The borrower cannot act on a paused market, so none of this is
+    // inactivity the protocol may charge them for.
+    send(&mut env.svm, &[set_market_paused_ix(&guardian, &setup.cngn, true)], &[&env.guardian]).unwrap();
+    env.warp_seconds(INACTIVITY + DAY);
+
+    // Expiry is barred outright while paused.
+    let stranger = env.funded_keypair();
+    let during = expire_promo_ix(&setup.cngn, &owner);
+    assert_hodl_error(send(&mut env.svm, &[during], &[&stranger]), HodlError::MarketPaused);
+
+    // And barring it during the pause is not on its own enough: the clock also restarts, so
+    // lifting the pause does not leave the promo instantly expirable. Without the restart
+    // this call would succeed, charging the borrower for the protocol's own downtime one
+    // moment later than before.
+    send(&mut env.svm, &[set_market_paused_ix(&admin, &setup.cngn, false)], &[&env.admin]).unwrap();
+    let right_after = expire_promo_ix(&setup.cngn, &owner);
+    assert_hodl_error(send(&mut env.svm, &[right_after], &[&stranger]), HodlError::PromoNotExpired);
+    assert_eq!(env.position(&owner).promo_balance, GRANT);
+
+    // The borrower gets a full fresh window, and no more than one.
+    env.warp_seconds(INACTIVITY - 1);
+    let one_short = expire_promo_ix(&setup.cngn, &owner);
+    assert_hodl_error(send(&mut env.svm, &[one_short], &[&stranger]), HodlError::PromoNotExpired);
+    env.warp_seconds(1);
+    send(&mut env.svm, &[expire_promo_ix(&setup.cngn, &owner)], &[&stranger]).unwrap();
+    assert_eq!(env.position(&owner).promo_balance, 0);
+}
+
+#[test]
+fn revoke_stays_open_during_a_pause_because_it_measures_nothing() {
+    let (mut env, setup) = Env::promo_ready();
+    let borrower = &setup.borrower;
+    let owner = borrower.pubkey();
+    env.redeem_promo(borrower, &setup.cngn, 1, GRANT, 7).unwrap();
+    let admin = env.admin.pubkey();
+    let guardian = env.guardian.pubkey();
+
+    send(&mut env.svm, &[set_market_paused_ix(&guardian, &setup.cngn, true)], &[&env.guardian]).unwrap();
+    // Unlike expiry, revocation asserts nothing about how long the borrower has been idle —
+    // it is the admin retracting a grant — so a pause does not invalidate it.
+    send(&mut env.svm, &[revoke_promo_ix(&admin, &setup.cngn, &owner)], &[&env.admin]).unwrap();
+    assert_eq!(env.position(&owner).promo_balance, 0);
+    assert_eq!(env.promo_vault(&setup.cngn).outstanding, 0);
+}
+
+#[test]
+fn two_pause_cycles_each_restart_the_clock_for_every_position() {
+    // The clock is market-global, so every unpause resets it for every position. Two
+    // unrelated incidents inside one inactivity window therefore mean nothing expires at all.
+    // Pinned rather than fixed: it keeps the protocol's own promo budget committed — the
+    // admin's downtime, the admin's cost — and the alternative is per-position accounting of
+    // paused time. This test is what makes that a decision instead of a surprise.
+    let (mut env, setup) = Env::promo_ready();
+    let borrower = &setup.borrower;
+    let owner = borrower.pubkey();
+    env.redeem_promo(borrower, &setup.cngn, 1, GRANT, 7).unwrap();
+    let admin = env.admin.pubkey();
+    let guardian = env.guardian.pubkey();
+    let stranger = env.funded_keypair();
+
+    for _ in 0..2 {
+        send(&mut env.svm, &[set_market_paused_ix(&guardian, &setup.cngn, true)], &[&env.guardian]).unwrap();
+        env.warp_seconds(INACTIVITY - DAY);
+        send(&mut env.svm, &[set_market_paused_ix(&admin, &setup.cngn, false)], &[&env.admin]).unwrap();
+        env.warp_seconds(DAY);
+    }
+
+    // Well over two inactivity windows have passed in wall-clock terms, and the promo is
+    // still not expirable: each unpause moved the deadline out by a full window.
+    let after = expire_promo_ix(&setup.cngn, &owner);
+    assert_hodl_error(send(&mut env.svm, &[after], &[&stranger]), HodlError::PromoNotExpired);
+    assert_eq!(env.position(&owner).promo_balance, GRANT);
+
+    // Left alone for one uninterrupted window, it expires as normal.
+    env.warp_seconds(INACTIVITY);
+    send(&mut env.svm, &[expire_promo_ix(&setup.cngn, &owner)], &[&stranger]).unwrap();
+    assert_eq!(env.position(&owner).promo_balance, 0);
+}
+
+#[test]
+fn a_borrow_paused_asset_makes_promo_unrevokable_while_a_loan_is_live() {
+    // Tasks 3 and 8 compose into this and neither could see it alone. `revoke_promo` requires
+    // the position to be healthy *after* the release; a borrow-paused asset contributes nothing
+    // to `borrow_limit`; so on a single-asset position every live loan makes revocation fail.
+    //
+    // Pinned rather than fixed, and the reason matters: this is not a regression. The rule it
+    // replaced blocked revocation for **any** live loan, paused or not, so the paused case is
+    // no worse than before and every unpaused case is better. The borrower's exit is open too —
+    // `repay_loan` consults neither pause. Changing the health basis for revocation (asking
+    // "could this position stand if we were not paused?", since revocation is not
+    // exposure-increasing) is a real design question and deserves its own decision, not a
+    // merge-time fix.
+    let (mut env, setup) = Env::promo_ready();
+    let borrower = &setup.borrower;
+    let owner = borrower.pubkey();
+    let admin = env.admin.pubkey();
+    env.redeem_promo(borrower, &setup.cngn, 1, GRANT, 7).unwrap();
+    env.take_loan(borrower, &setup, 1_000 * ONE_CNGN, 365 * DAY).unwrap();
+
+    // The pause is the only thing standing in the way: unpaused, this position stands easily
+    // without the promo, which is Task 8's whole point.
+    let prices = price_pairs(&[setup.usdc]);
+    let pause = set_collateral_borrow_paused_ix(&env.guardian.pubkey(), &setup.usdc, true);
+    send(&mut env.svm, &[pause], &[&env.guardian]).unwrap();
+
+    // Paused, it cannot: the borrow limit is zero, so any debt at all fails the check.
+    let blocked = revoke_promo_priced_ix(&admin, &setup.cngn, &owner, true, prices.clone());
+    assert_hodl_error(send(&mut env.svm, &[blocked], &[&env.admin]), HodlError::Unhealthy);
+    assert_eq!(env.position(&owner).promo_balance, GRANT);
+
+    // The way out is open: lifting the pause restores it.
+    let unpause = set_collateral_borrow_paused_ix(&admin, &setup.usdc, false);
+    send(&mut env.svm, &[unpause], &[&env.admin]).unwrap();
+    let allowed = revoke_promo_priced_ix(&admin, &setup.cngn, &owner, true, prices);
+    send(&mut env.svm, &[allowed], &[&env.admin]).unwrap();
+    assert_eq!(env.position(&owner).promo_balance, 0);
 }

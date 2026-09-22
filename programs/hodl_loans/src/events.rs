@@ -347,3 +347,19 @@ pub struct PromoForfeited {
     /// `amount`.
     pub moved: u64,
 }
+
+#[event]
+pub struct CollateralBorrowPauseSet {
+    pub collateral: Pubkey,
+    pub old_paused: bool,
+    pub paused: bool,
+    pub by: Pubkey,
+}
+
+#[event]
+pub struct PromoVaultReconciled {
+    pub market: Pubkey,
+    pub old_cash: u64,
+    pub cash: u64,
+    pub by: Pubkey,
+}

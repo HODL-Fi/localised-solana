@@ -53,6 +53,34 @@ pub const MAX_COLLATERAL_DECIMALS: u8 = 12;
 /// the debt side of every health check and can drift further behind than the collateral feeds.
 pub const MAX_NGN_STALE_SLOTS: u64 = 150;
 
+/// Upper bound on `Config::collateral_count`, derived from `set_promo_cap`, the one
+/// instruction that must name **every** listed asset at once: its `remaining_accounts` count
+/// has to equal `collateral_count` exactly.
+///
+/// The binding limit is **`MAX_TX_ACCOUNT_LOCKS = 128`** — the total accounts a transaction
+/// may lock, read-only included. Address lookup tables relieve the *message size* limit (32
+/// bytes per key), not the lock limit: an ALT-loaded address still takes a lock. The `u8`
+/// account index caps a message at 256 keys, but that ceiling is never reached because the
+/// lock limit bites at half of it. `SetPromoCap` spends three locks on the admin, the config
+/// and the program id, leaving **125**.
+///
+/// 96 leaves 29 spare, for accounts a future `SetPromoCap` might need and for anything a
+/// client's own lookup-table usage costs. The bound matters because there is no way back:
+/// `collateral_count` only falls when an asset is delisted, and delisting requires the asset
+/// to be unused, so a protocol that listed its way past the ceiling would have `set_promo_cap`
+/// frozen until positions unwound. `the_asset_list_bound_keeps_set_promo_cap_inside_the_lock_limit`
+/// pins the arithmetic so the constant cannot drift past it.
+pub const MAX_LISTED_COLLATERAL: u16 = 96;
+/// Upper bound on how far ahead of creation a campaign's `redeem_until` may sit, and so —
+/// via the voucher-outlives-campaign rule in `redeem_promo` — on how long a voucher receipt
+/// can hold its rent before `close_voucher_receipt` will take it.
+///
+/// Unlike `MAX_COLLATERAL_DECIMALS` this is a policy bound, not a derived one: no arithmetic
+/// fails past it. A promo campaign still running a year after it was created is a decision
+/// worth re-making by opening a new campaign, rather than one that should quietly keep
+/// rent locked in receipts nobody can close.
+pub const MAX_CAMPAIGN_LIFETIME: i64 = 365 * 86_400;
+
 /// Fixed-point scale for an xStock's scaled-UI multiplier (10^12 per whole multiple).
 pub const MULTIPLIER_SCALE: u128 = 1_000_000_000_000;
 /// The multiplier a `Standard` asset always carries.
@@ -73,8 +101,10 @@ pub const MULTIPLIER_ONE: u128 = MULTIPLIER_SCALE;
 /// `read_xstock_multiplier` return `InvalidPrice`, which fails *every* health check that
 /// touches the asset — borrow, withdraw against a loan, liquidate, write off — and seals the
 /// position the same way an over-eager exit check would. That trades a remote economic risk
-/// for a more likely liveness failure. The shape that would bound the authority without the
-/// liveness cost is a per-asset, admin-settable ceiling, which spec §14 defers.
+/// for a more likely liveness failure. The shape that bounds the authority without that cost
+/// is a per-asset, admin-settable ceiling which withholds *borrowing power* instead of
+/// rejecting the price: `CollateralAsset::max_multiplier`, added in Plan 7. This constant
+/// stays loose on purpose — it is the arithmetic backstop, not the policy knob.
 pub const MAX_MULTIPLIER: u128 = 1_000_000 * MULTIPLIER_SCALE;
 
 /// Largest `bad_debt_dust_usd` an admin may set (spec §11: a write-off's loss is bounded by
@@ -140,5 +170,28 @@ mod tests {
         }
         assert_eq!(BPS, MAX_BPS as u128);
         assert_eq!(USD_SCALE, 10u128.pow(USD_DECIMALS as u32));
+    }
+
+    #[test]
+    fn the_asset_list_bound_keeps_set_promo_cap_inside_the_lock_limit() {
+        // `set_promo_cap` must name every listed asset in one transaction, so the asset list
+        // is bounded by how many accounts a transaction may lock — not by how many a message
+        // can index. Solana's `MAX_TX_ACCOUNT_LOCKS` is 128 (solana-transaction 3.1.0,
+        // `sanitized.rs`); it is not importable from an on-chain crate, so it is restated
+        // here and this test is what keeps the two in step.
+        //
+        // The first draft of `MAX_LISTED_COLLATERAL` was 128, derived from the 256-key `u8`
+        // index limit, which is not the binding one — it would have permitted an asset list
+        // that makes `set_promo_cap` permanently unsendable, the exact state the bound exists
+        // to prevent. This assertion is why that cannot recur silently.
+        const MAX_TX_ACCOUNT_LOCKS: usize = 128;
+        // admin, config, program id.
+        const SET_PROMO_CAP_FIXED_ACCOUNTS: usize = 3;
+        assert!(
+            MAX_LISTED_COLLATERAL as usize + SET_PROMO_CAP_FIXED_ACCOUNTS <= MAX_TX_ACCOUNT_LOCKS,
+            "MAX_LISTED_COLLATERAL ({MAX_LISTED_COLLATERAL}) + {SET_PROMO_CAP_FIXED_ACCOUNTS} \
+             exceeds MAX_TX_ACCOUNT_LOCKS ({MAX_TX_ACCOUNT_LOCKS}): set_promo_cap would be \
+             unsendable at a full asset list"
+        );
     }
 }

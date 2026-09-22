@@ -10,6 +10,13 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-17-solana-fixed-loans-design.md`
 
+> **Amended after the whole-branch review.** This plan was executed once and then corrected.
+> The review found that gating the promo cap on `lends_borrowing_power` also lowered
+> `liquidation_line`, so a borrow pause — or the scaled-UI authority crossing its ceiling, with
+> no protocol action at all — could make a live loan liquidatable with no price movement. Task 3
+> now carries the two-cap form and the test that catches it; Task 8 pins the interaction the two
+> tasks compose into. The counts below are the amended plan's, not the original run's.
+
 **Sources:** `docs/superpowers/plans/2026-09-17-plan-{2,3,4,5}-followups.md` and `2026-09-20-plan-6-followups.md`. This plan takes the "trust boundaries and admin authority" group; coverage, fuzzing and devnet are Plan 8. The overdue-penalty continuous accrual is explicitly **not** here — it changes how interest reaches lenders and needs its own plan.
 
 ## Global Constraints
@@ -24,7 +31,11 @@
 - Compute figures in `tests/budget.rs` are **not deterministic**: the harness keys mints randomly, so slot sort order shifts the cost in ~1,500 CU steps. Record ranges over many runs, never a single sample. Adding code to the crate also shifts inlining and moves figures by tens of CU on paths you did not touch.
 - Every commit message ends with:
   `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>`
-- The suite is **241 tests** (57 unit, 184 LiteSVM) at the start of this plan and **264** (59 unit, 205 LiteSVM) at the end.
+- The suite is **241 tests** (57 unit, 184 LiteSVM) at the start of this plan and **266**
+  (59 unit, 207 LiteSVM) at the end. Per task: 242, 243, 252, 253, 257, 260, 264, 266. If your
+  count does not match the task you are on, **report it — do not delete a test to reach the
+  number.** One of these figures was wrong on the first pass and the implementer who found it
+  was right to refuse.
 
 ## File Structure
 
@@ -150,7 +161,7 @@ Expected: PASS, and now for the stated reason. Confirm by reverting the block, r
 
 The walk now costs one `create_program_address` syscall per collateral slot. Do not estimate this; measure it. Temporarily turn each `assert!(cu < N, ...)` in `tests/budget.rs` into a `println!`, run the budget test 20+ times, and take min–max per figure. Restore the assertions afterwards.
 
-Three thresholds no longer hold and move to `115_000`:
+Three thresholds move to `115_000`. Note that **not all three need it yet**: the author's figures were measured on the finished plan, and Task 3 pushes these paths up again. At this task's state you may well find the two standard-collateral cases still inside the old `95_000`. Raise all three anyway — they are headroom markers, and moving them once here is better than a later task discovering it must.
 
 ```rust
     assert!(cu < 115_000, "take_loan at 8 collateral slots / 9 existing overdue loans used {cu} CU");
@@ -160,23 +171,84 @@ Three thresholds no longer hold and move to `115_000`:
 
 - [ ] **Step 6: Record what you measured and why it moved**
 
-Replace the note above the first figure in `full_position_stays_under_the_default_compute_budget`:
+Rewrite the note above the first figure in `full_position_stays_under_the_default_compute_budget`. The version below is the author's, from the **finished** plan — do not paste it. Its shape is what to copy: what moved, by how much, the per-slot attribution, and `repay_loan` as the control that walks no collateral. Its numbers are for the end state and will not match yours here.
 
 ```rust
-    // These figures are NOT deterministic: the harness keys its mints randomly, so where a
-    // target sorts into the collateral slot array shifts the scan, moving the cost in steps of
-    // ~1,500 CU. Each range below is min-max observed over 34 runs, and the tail is not fully
-    // characterised — separate batches produce different maxima. Compare against the max,
-    // never a single sample.
+    // These figures are NOT deterministic, and the cause is the **borrower keypair**, not the
+    // collateral. `TakeLoan` and `WithdrawCollateral` declare the position with
+    // `seeds = [POSITION_SEED, owner.key().as_ref()], bump` — a *bare* bump, so Anchor emits
+    // `find_program_address`, which tries candidate bumps from 255 downward at ~1,500 CU each.
+    // A randomly-keyed borrower's canonical bump is 255 with p≈1/2, 254 with p≈1/4, and so on:
+    // a geometric ladder of ~1,500 CU steps, with an unbounded tail rather than one bounded by
+    // the slot count. `Liquidate` and `RepayLoan` take the position with no seeds constraint at
+    // all, which is why their spreads are ~31-62 CU while these are thousands.
     //
-    // **Every walking figure below rose ~12,500-13,200 CU in Plan 7**, when the walk began
-    // re-deriving each `CollateralAsset`'s PDA. That is one `create_program_address` syscall
-    // per collateral slot — ~1,600 CU each, ~12,700 at eight slots — and it accounts for
-    // nearly all of the increase. It is not quite all of it: `repay_loan`, which walks no
-    // collateral, still moved ~55 CU, and the liquidate paths ~364 beyond the walk's share.
-    // Adding code to the crate shifts inlining decisions across it, so figures drift by tens
-    // of CU on changes that do not touch the measured path at all. Treat a drift of that
-    // order as noise and anything near 1,500 as the slot-order variance above.
+    // Each range below is min-max over 55 runs and the tail is not fully characterised.
+    // Compare against the max, never a single sample — and note the max grows with sample
+    // size, which is exactly why the derivation below uses min-to-min.
+    //
+    // **The `create_program_address` syscall this walk added costs ~1,587-1,588 CU per
+    // collateral slot, stable — ~12,700 CU at eight slots.** This is a Task 1 finding, measured
+    // against Task 1's OWN 55-run sample — the figures this paragraph cites below are the "was
+    // ... after Task 1" parentheticals on the headlines above and on the xStock `take_loan` test
+    // further down, not the current top-line ranges, which this task's own later change has
+    // since moved further (see the Task 3 addendum after this analysis). That is min-to-min
+    // against the pre-Plan-7 baselines: (87,461-74,763)/8 = 1,587.25 for `take_loan` at Task 1,
+    // (86,883-74,182)/8 = 1,587.6 for `withdraw_collateral` at Task 1.
+    //
+    // Subtracting the recorded range ENDPOINTS instead does not give that number, and the gap is
+    // not noise: max-to-max at Task 1 is (93,461-79,263)/8 = 1,774.75, and (92,883-78,682)/8 =
+    // 1,775.125 for `withdraw_collateral` — both a real ~190 CU/slot higher, not a rounding
+    // difference. The cause is unequal bucket coverage, not a variable cost: Task 1's 55-run
+    // samples hit 5 distinct ~1,500-CU-spaced slot-order buckets for both figures (confirmed in
+    // the raw per-run data — 87,461/88,961/90,461/91,961/93,461 and
+    // 86,883/88,383/89,883/91,383/92,883, each with ±30 CU of sub-noise on top; checked against
+    // the raw runs, not just the two recorded endpoints), while the pre-Plan-7 baseline's
+    // 17 runs only span a 4,500 CU range — 4 buckets at the same 1,500 CU step, inferred from its
+    // documented spread since that raw data is git history, not something anyone holds to
+    // re-measure. A 5-bucket max minus a 4-bucket max charges the syscall for one extra,
+    // unsampled step it didn't cause; min-to-min avoids this because bucket 0 (cheapest slot
+    // order) is common enough to land in both a 17-run and a 55-run batch. The xStock
+    // `take_loan` case is the control that shows the mechanism cleanly, using only figures still
+    // written down elsewhere in this file: pre-Plan-7 (17 runs, 82,670-88,670, on that test
+    // below) and post-Task-1 (55 runs, 95,364-101,364, the "was ... after Task 1" parenthetical
+    // on that same test) both happen to span 5 buckets, so min-to-min and max-to-max agree
+    // exactly — 12,694 either way. That is Task 1's own delta; it is not this task's, which adds
+    // a further, separate shift on top (see the addendum below).
+    //
+    // The two `liquidate` paths below (with and without a promo forfeit) are a separate, genuine
+    // effect, not this same artifact: both are stable (essentially single-valued, no stepped
+    // bucketing) on both sides of the change, so no coverage correction applies, and — at Task 1
+    // — their measured delta was still only ~12,046-12,077 CU across the same eight slots
+    // (~1,506-1,510 CU/slot), about 81 CU per slot below the ~1,587-1,588 figure above (~650
+    // across all eight). Worth stating plainly: every CU/slot number here is one 8-slot total
+    // divided by 8, and nothing in this file varies the slot count — so none of it separates a
+    // true per-slot term from a fixed per-instruction one, and that is the likeliest home for
+    // the ~650 gap.
+    // `repay_loan`, which walks no collateral, moved only +30 CU at Task 1's observed max
+    // (19,247-19,278 CU vs. 19,248 CU before pre-Plan-7). Adding code to the crate shifts
+    // inlining decisions across it, so figures drift by tens of CU on changes that do not touch
+    // the measured path at all. Treat a drift of that order as noise and anything near 1,500 as
+    // the slot-order variance above. (All of the above is Task 1's own measurement, kept as
+    // written at the time; the addendum below is this task's, on top of it.)
+    //
+    // **Task 3 adds another shift on top of everything above.** `lends_borrowing_power` gates
+    // two accumulations per collateral slot inside `compute_health` (the LTV term and the
+    // promo-cap term) and adds a call to `over_multiplier_ceiling` per slot in this walk, and —
+    // like Task 1's syscall — also shifts inlining decisions elsewhere in the crate. Re-measured
+    // over a fresh 55 runs (a new sample, not Task 1's): all SIX eight-slot paths moved, not
+    // five — `take_loan` here by +634 min-to-min (87,461 → 88,095), `withdraw_collateral` below
+    // by +763 (86,883 → 87,646), the no-forfeit `liquidate` below by +763
+    // (108,208 → 108,971), the forfeit `liquidate` in the sibling test by +763
+    // (112,938 → 113,701), the all-xStock `take_loan` by +626 (95,364 → 95,990), and the
+    // all-xStock forfeit `liquidate` further down by +755 (119,469 → 120,224). That spans
+    // +626 to +763 CU (a 137 CU spread across the six) — small against the ~1,500 CU
+    // slot-order bucket step, but not uniform, and not worth calling uniform: it is one new
+    // per-slot branch's cost plus whatever that branch does to inlining nearby, not a fixed
+    // constant. `repay_loan`, which walks no collateral, DID move too — by +3 CU at the min
+    // (19,247 → 19,250) and +20 CU at the max (19,278 → 19,298) — small enough to be ordinary
+    // inlining drift rather than the gate itself, but it is not exactly unchanged, so the
+    // comment below does not call it that.
     //
     // The cost buys a local admission argument in place of a whole-program one, and these
     // markers exist to make a change of this size visible rather than to veto it; nothing
@@ -187,9 +259,9 @@ Replace the note above the first figure in `full_position_stays_under_the_defaul
 The measured ranges in the final tree are below. **Yours will differ** — record what you measured, not these. They are here so you can tell a plausible result from an implausible one.
 
 ```rust
-    // the 9 existing overdue loans. Measured 88,192-97,192 CU over 34 runs.
-    // and now 10 loans. Measured 87,656-96,656 CU over 34 runs; see the note above.
-    // token CPI on top of the no-promo case's two. Measured 113,756-113,787 CU over 34 runs.
+    // the 9 existing overdue loans. Measured 88,095-98,595 CU over 55 runs (was 74,763-79,263 CU
+    // and now 10 loans. Measured 87,646-98,146 CU over 55 runs (was 74,182-78,682 CU over 17
+    // token CPI on top of the no-promo case's two. Measured 113,701-113,732 CU over 55 runs, up
 ```
 
 - [ ] **Step 7: Commit**
@@ -438,10 +510,18 @@ This is the one that catches the promo-cap leak, and it is cheaper than any SVM 
         let withheld = compute_health(&holding(false), 0, 6, ngn(), promo, 2_000).unwrap();
         assert_eq!(withheld.borrow_limit, 0, "a withheld holding must unlock no promo");
         assert_eq!(withheld.promo_counted, 0);
-        // The collateral is still really there: neither the dust check nor the liquidation
-        // line may pretend otherwise.
+        // The collateral is still really there, and so is the promo: neither the dust check
+        // nor the liquidation line may pretend otherwise. The line keeps the **full** promo
+        // lift — 900 of collateral plus the 200 the cap allows — because forfeiture still
+        // returns the whole uncapped balance on seizure. An earlier version of this test
+        // asserted 900 here, which encoded the opposite: withholding an asset dropped the
+        // line by the promo lift and made a live loan liquidatable with no price movement.
         assert_eq!(withheld.own_value, 1_000 * USD);
-        assert_eq!(withheld.liquidation_line, 900 * USD);
+        assert_eq!(withheld.liquidation_line, 1_100 * USD);
+        assert!(
+            withheld.borrow_limit <= withheld.liquidation_line,
+            "the borrow limit may never exceed the liquidation line"
+        );
     }
 ```
 
@@ -461,9 +541,11 @@ In `programs/hodl_loans/src/math/health.rs`, add the field to `CollateralValue` 
     /// would otherwise unlock. Zeroing `ltv_bps` alone is not enough, because `promo_cap_total`
     /// is a fraction of the holding's *value* and never looked at `ltv_bps`.
     ///
-    /// `own_value` and `liquidation_line` still count the holding in full: the collateral is
-    /// really there, a paused asset must not make a live loan liquidatable, and `own_value`
-    /// decides whether `write_off_loan` may treat a position as dust.
+    /// `own_value` and `liquidation_line` still count the holding in full, including its
+    /// share of the promo lift: the collateral is really there, a paused asset must not make a
+    /// live loan liquidatable, and `own_value` decides whether `write_off_loan` may treat a
+    /// position as dust. Note the promo cap is accumulated **twice** in `compute_health` for
+    /// exactly this reason — see the two totals there.
     pub lends_borrowing_power: bool,
 ```
 
@@ -480,7 +562,15 @@ pub fn compute_health(
     promo_cap_bps: u16,
 ) -> Result<Health> {
     let mut health = Health::default();
-    let mut promo_cap_total: u128 = 0;
+    // Two promo caps, not one. A holding that lends no borrowing power must stop unlocking
+    // promo for `borrow_limit` — but it must keep unlocking it for `liquidation_line`, because
+    // the line's promo lift is justified by forfeiture (seizure returns the position's full,
+    // *uncapped* promo balance, so recovery covers the lift) and nothing about that argument
+    // depends on whether the collateral is borrow-paused. Sharing one total made pausing an
+    // asset drop the line, which is a liquidation an admin — or the token's own scaled-UI
+    // authority, through `max_multiplier` — could cause with no price movement.
+    let mut promo_cap_lending: u128 = 0;
+    let mut promo_cap_all: u128 = 0;
     for c in collateral {
         let value = token_value(c.display_amount()?, c.decimals, c.price.lower())?;
         health.own_value = add(health.own_value, value)?;
@@ -501,14 +591,15 @@ pub fn compute_health(
         // floor-of-sum always, so accumulating here is conservative: promo counts for slightly
         // less, never more.
         //
-        // Gated on the same flag as the LTV term above, and for the same reason: promo is a
-        // topping on collateral the borrower can borrow against, so an asset we refuse to lend
-        // against must not unlock promo either. Without this gate a borrow-paused asset still
-        // raised `borrow_limit` by up to `promo_cap_bps` of its value — the brake would be on
-        // and the position could still borrow.
+        // The lending total is gated on the same flag as the LTV term above, for the same
+        // reason: promo is a topping on collateral the borrower can borrow against, so an
+        // asset we refuse to lend against must not unlock promo either. Ungated, a
+        // borrow-paused asset still raised `borrow_limit` by up to `promo_cap_bps` of its
+        // value — the brake on, and the position still able to borrow.
+        let cap = mul_div_floor(value, promo_cap_bps as u128, BPS)?;
+        promo_cap_all = add(promo_cap_all, cap)?;
         if c.lends_borrowing_power {
-            promo_cap_total =
-                add(promo_cap_total, mul_div_floor(value, promo_cap_bps as u128, BPS)?)?;
+            promo_cap_lending = add(promo_cap_lending, cap)?;
         }
     }
     // Spec §12: promo is a topping on collateral the borrower owns, never a substitute for it.
@@ -520,9 +611,14 @@ pub fn compute_health(
     // either way — which is what makes defaulting a loss for the borrower rather than a way to
     // profit.
     let promo_value = token_value(promo_balance as u128, cngn_decimals, ngn.lower())?;
-    health.promo_counted = promo_value.min(promo_cap_total);
+    // `promo_counted` is the borrowing figure — what the position may actually borrow against.
+    // The line takes the ungated cap, so withholding an asset never lowers it.
+    // `promo_cap_lending <= promo_cap_all` by construction and every gated LTV term has a
+    // liquidation-threshold term at least as large, so `borrow_limit <= liquidation_line`
+    // still holds, which is what stops a position being liquidatable the moment it is healthy.
+    health.promo_counted = promo_value.min(promo_cap_lending);
     health.borrow_limit = add(health.borrow_limit, health.promo_counted)?;
-    health.liquidation_line = add(health.liquidation_line, health.promo_counted)?;
+    health.liquidation_line = add(health.liquidation_line, promo_value.min(promo_cap_all))?;
 
     health.debt = token_value_ceil(debt_cngn, cngn_decimals, ngn.upper()?)?;
     Ok(health)
@@ -534,7 +630,7 @@ Every existing `CollateralValue` literal in the unit tests takes `lends_borrowin
 - [ ] **Step 4: Run the unit suite**
 
 Run: `cargo test --lib`
-Expected: PASS, 58 tests. Confirm the new one is load-bearing by ungating `promo_cap_total` and watching it fail.
+Expected: PASS, 58 unit tests. Confirm the new one is load-bearing by ungating `promo_cap_total` and watching it fail.
 
 - [ ] **Step 5: Add both fields to the asset**
 
@@ -544,10 +640,17 @@ In `programs/hodl_loans/src/state/collateral.rs`, out of `reserved` — the size
     /// Blocks new *borrowing* backed by this asset. While set, the holding's
     /// `lends_borrowing_power` is false, which suppresses both ways it could raise
     /// `borrow_limit`: its own LTV term and the promo cap its value would otherwise unlock.
-    /// It still counts in full at `own_value` and the liquidation line, and it can still be
-    /// deposited, withdrawn and seized — pausing an asset must not strand the collateral
-    /// already behind it, and must not make a position that was liquidatable a moment ago
-    /// suddenly safe.
+    /// It still counts in full at `own_value` and at the liquidation line — including the
+    /// promo lift, which takes its own ungated cap — so pausing an asset can neither make a
+    /// live loan liquidatable nor make a position that was liquidatable a moment ago suddenly
+    /// safe. Deposits and seizure are unaffected.
+    ///
+    /// **Withdrawal is not.** `withdraw_collateral` gates on the same `is_healthy()` the
+    /// borrow does, so while a loan is live a borrow-paused asset backs no withdrawal at all;
+    /// `a_borrow_paused_asset_backs_no_withdrawal_while_a_loan_is_live` pins that. Withdrawing
+    /// is exposure-increasing in the same way borrowing is, so this is intended — but it means
+    /// a pause does strand collateral behind a live loan until the loan is repaid or the pause
+    /// lifted.
     /// Taken from the reserved padding, so the account size is unchanged.
     pub borrow_paused: bool,
     /// Per-asset ceiling on the mint's scaled-UI multiplier, in `MULTIPLIER_SCALE` fixed
@@ -580,6 +683,8 @@ pub struct CollateralParams {
 ```
 
 `apply_params` and `params()` each gain the matching `max_multiplier` line, so the struct round-trips.
+
+Three construction sites must gain the field or nothing compiles: `handle_list_collateral`'s `CollateralAsset` literal (`borrow_paused: false`, `max_multiplier: 0`, `reserved: [0; 79]`), the `CollateralParams` fixture in `state/collateral.rs`'s own unit tests, and `default_collateral_params` in `tests/common/mod.rs`.
 
 - [ ] **Step 6: Validate `max_multiplier`**
 
@@ -630,10 +735,13 @@ Then replace the `ltv_bps` line in the `CollateralValue` the walk pushes:
             // bounds what the scaled-UI authority can conjure while every exit path keeps
             // working at the true multiplier.
             //
-            // `compute_health` reads the flag at both places a holding can raise
-            // `borrow_limit` — its LTV term and the promo cap it unlocks — and nowhere else,
-            // so `own_value` and `liquidation_line` still count the holding in full. That is
-            // what keeps a pause from making a live loan liquidatable.
+            // `compute_health` reads the flag at the two places a holding can raise
+            // `borrow_limit` — its LTV term, and the promo cap it unlocks for borrowing. It
+            // does **not** reach `own_value`, the liquidation-threshold term, or the promo
+            // lift on `liquidation_line`, which takes its own ungated cap. That separation is
+            // what keeps a pause from making a live loan liquidatable, and it is easy to lose:
+            // `promo_counted` used to feed both limits from one gated total, so withholding an
+            // asset dropped the line too.
             lends_borrowing_power: !asset.borrow_paused
                 && !over_multiplier_ceiling(&asset, multiplier),
 ```
@@ -716,7 +824,9 @@ pub fn handle_set_collateral_borrow_paused(
 /// stays loose on purpose — it is the arithmetic backstop, not the policy knob.
 ```
 
-In spec §14, replace the `**Deferred:**` sentence on the scaled-UI authority with the `**Resolved in Plan 7:**` paragraph describing `CollateralAsset::max_multiplier` — that it withholds borrowing power rather than rejecting the price, that this suppresses **both** routes to `borrow_limit`, and that `own_value` and `liquidation_line` keep counting the holding at its true multiplier.
+**The spec is already amended.** Its changes for the whole of Plan 7 landed in the plan's own commit, so this step is a *check*, not an edit: read the section named below and confirm it describes what you just built. If it does not, the mismatch is a finding — say which is wrong, the code or the spec, and stop rather than quietly editing either.
+
+Spec §14 should carry a `**Resolved in Plan 7:**` paragraph on the scaled-UI authority, saying that `CollateralAsset::max_multiplier` withholds borrowing power rather than rejecting the price, that this suppresses **both** routes to `borrow_limit`, and that `own_value` and `liquidation_line` keep counting the holding at its true multiplier. Only `constants.rs`'s `MAX_MULTIPLIER` note needs editing in this step.
 
 - [ ] **Step 10: Write the behavioural tests**
 
@@ -795,7 +905,58 @@ fn a_borrow_paused_asset_lends_no_borrowing_power() {
 }
 ```
 
-**And on a position that actually holds promo** — the fixture above holds none, so it cannot tell a gated promo cap from an ungated one. In `tests/promo_health.rs`:
+**And the two that only a promo-holding position can see.** The first is why this task gates the promo cap at all; the second is why it must gate it *only* for borrowing. A first pass shared one cap between `borrow_limit` and `liquidation_line`, so withholding an asset dropped the line too — and a guardian pause, or the scaled-UI authority crossing its ceiling with no protocol action at all, made a live loan liquidatable with no price movement.
+
+```rust
+#[test]
+fn pausing_borrowing_must_not_drop_the_liquidation_line_of_a_promo_holding_position() {
+    // The pause withholds borrowing power. It must not also lower the line that decides
+    // liquidation — otherwise an admin (or, through the multiplier ceiling, the token's own
+    // scaled-UI authority) can make a live loan liquidatable with no price movement at all,
+    // and a liquidator takes the bonus while `forfeit_promo` hands the borrower's promo to
+    // the market vault.
+    //
+    // The promo lift on the liquidation line is justified by forfeiture: seizure returns the
+    // position's full *uncapped* promo balance, so recovery covers the lift. Nothing about
+    // that argument depends on whether the collateral is borrow-paused.
+    let (mut env, setup) = Env::promo_ready();
+    let promoed = env.new_borrower();
+    let owner = promoed.pubkey();
+    env.deposit_collateral(&promoed, &setup.usdc, 1_000 * ONE_USDC);
+    let promoed_cngn = env.create_token_account(&setup.cngn, &owner);
+    env.redeem_promo(&promoed, &setup.cngn, 1, 50_000 * ONE_CNGN, 7).unwrap();
+    let prices = env.price_accounts(&owner);
+    let borrow = take_loan_ix(&owner, &setup.cngn, &promoed_cngn, 700_000 * ONE_CNGN, 365 * DAY, prices);
+    send(&mut env.svm, &[borrow], &[&env.admin, &promoed.key]).unwrap();
+
+    // Exactly the price from `promo_lifts_the_liquidation_line_with_the_borrow_limit`: the
+    // position sits just above its line at $438.47 against $437.94 of debt, held there by
+    // $31.21875 of counted promo.
+    env.set_pyth_price(&setup.usdc, 45_250_000, 0);
+    let liquidator = env.new_liquidator(&setup.cngn, 1_000_000 * ONE_CNGN);
+    let seized_to = env.create_token_account(&setup.usdc, &liquidator.pubkey());
+    let seize = |env: &Env, owner: &Pubkey| {
+        liquidate_ix(
+            &liquidator.pubkey(), owner, &setup.cngn, &liquidator.cngn, &setup.usdc, &SPL_TOKEN,
+            &seized_to, 0, 1_000 * ONE_CNGN, env.price_accounts(owner),
+        )
+    };
+    let before = seize(&env, &owner);
+    assert_hodl_error(send(&mut env.svm, &[before], &[&liquidator.key]), HodlError::NotLiquidatable);
+
+    // The guardian pauses borrowing against the collateral. Nothing else changes — no price
+    // moves, no debt is drawn, the promo is untouched and still forfeitable.
+    let pause = set_collateral_borrow_paused_ix(&env.guardian.pubkey(), &setup.usdc, true);
+    send(&mut env.svm, &[pause], &[&env.guardian]).unwrap();
+
+    // The position must still be above its line.
+    let after = seize(&env, &owner);
+    assert_hodl_error(send(&mut env.svm, &[after], &[&liquidator.key]), HodlError::NotLiquidatable);
+    assert_eq!(env.position(&owner).promo_balance, 50_000 * ONE_CNGN);
+}
+```
+
+**And on a position that actually holds promo** — the fixture above holds none, so it cannot tell a gated promo cap from an ungated one. In `tests/promo_health.rs`, which needs `use solana_signer::Signer;` added: this test reaches for `.pubkey()` on the raw `env.guardian` / `env.admin` keypairs, where the file previously only used wrapper structs.
 
 ```rust
 #[test]
@@ -846,9 +1007,21 @@ fn pausing_borrowing_leaves_the_liquidation_line_where_it_was() {
 
     // The position is still healthy. The pause removed borrowing power, not the collateral
     // standing behind debt already taken — otherwise every live loan against the asset would
-    // become liquidatable the instant an admin paused it. This holds structurally rather than
-    // by convention: the pause zeroes `ltv_bps`, `ltv_bps` reaches only `borrow_limit`, and
-    // `is_liquidatable` reads `liquidation_line`. There is no call-site flag to get wrong.
+    // become liquidatable the instant an admin paused it.
+    //
+    // What holds that in place is *which* accumulations in `compute_health` consult
+    // `lends_borrowing_power`: the LTV term, and the promo cap **for borrowing only**. The
+    // liquidation line's own promo lift takes an ungated cap, so withholding an asset never
+    // lowers it.
+    //
+    // This position holds no promo, so what it pins is the collateral half — the
+    // liquidation-threshold term is untouched by the flag. The promo half cannot be seen from
+    // here at all: `promo_counted` is 0 on both sides of the pause.
+    // `pausing_borrowing_must_not_drop_the_liquidation_line_of_a_promo_holding_position`
+    // (`promo_health.rs`) is the one that covers it, and it exists because an earlier version
+    // of this branch shipped a single shared promo cap — which made a guardian pause drop the
+    // line and liquidate a healthy position with no price movement, while this test stayed
+    // green.
     let result = env.liquidate(&liquidator, &setup, &setup.usdc, &collateral_account, 0, ONE_CNGN);
     assert_hodl_error(result, HodlError::NotLiquidatable);
 
@@ -978,7 +1151,23 @@ Expected: all pass. `CollateralAsset::INIT_SPACE` is still 294 — the unit guar
 
 Verify the mechanism is load-bearing in three separate ways, rebuilding with `cargo build-sbf --tools-version v1.52` before each: neuter the flag (`lends_borrowing_power: true` always) and the borrow/withdraw tests fail; make the pause also zero `liquidation_threshold_bps` and the liquidation test fails; replace the ceiling's withholding with a hard `require!` on the price and the xStock test fails. The second and third are the ones that prove the tests pin the *design* and not just the presence of a check.
 
-- [ ] **Step 12: Commit**
+- [ ] **Step 12: Re-measure the compute figures**
+
+This task moves them again, and nothing later does. `lends_borrowing_power`
+adds a branch per slot and shifts inlining across the crate. The author saw
+the liquidate paths move ~364 CU and even `repay_loan`, which walks no
+collateral, move ~55 — but that was measured on the *finished* plan, with
+Tasks 4-8 also in the tree, and inlining shifts with every one of them. Expect
+your numbers to differ, possibly by more than the figures themselves. Small
+either way — but `tests/budget.rs` is the only place compute is written down,
+and a recorded number nobody measured is worse than no number.
+
+Repeat Task 1's procedure: assertions to `println!`, 20+ runs, min–max per
+figure, restore. Update all seven ranges and the run count. If `repay_loan`
+moved too, say so and stop calling it unchanged — it is the control, and the
+honest version of that sentence is what makes the attribution credible.
+
+- [ ] **Step 13: Commit**
 
 ```bash
 git add -A
@@ -1116,7 +1305,9 @@ In `programs/hodl_loans/src/instructions/admin/sweep.rs`, above `handle_sweep_ma
 
 - [ ] **Step 6: Narrow the spec claim**
 
-Replace spec §9's heading and opening so it names which instructions accrue and why three do not — that accrual writes only `accrued_interest`, `accrual_remainder` and `last_accrual_ts`; that the three read and write only `protocol_reserve` and `cash`; and that skipping an interval costs no precision, because accrual is linear in elapsed time and carries its own remainder.
+**The spec is already amended.** Its changes for the whole of Plan 7 landed in the plan's own commit, so this step is a *check*, not an edit: read the section named below and confirm it describes what you just built. If it does not, the mismatch is a finding — say which is wrong, the code or the spec, and stop rather than quietly editing either.
+
+Spec §9 should already name which instructions accrue and why three do not — that accrual writes only `accrued_interest`, `accrual_remainder` and `last_accrual_ts`; that the three read and write only `protocol_reserve` and `cash`; and that skipping an interval costs no precision, because accrual is linear in elapsed time and carries its own remainder.
 
 - [ ] **Step 7: Commit**
 
@@ -1129,10 +1320,10 @@ empty market, for a borrow against the wrong market. True of that market, not
 what was wrong with the call. Spec §10 puts both position preconditions in
 steps 1-2, ahead of step 3's accrual. Only the reported error changes.
 
-Spec §9 claimed accrual runs first in every instruction that touches the
-market. harvest_reserve and the two sweeps do not, and provably need not.
-Narrowed the spec and recorded the reasoning at both call sites so it does not
-read as an omission.
+Spec §9's claim that accrual runs first in every instruction touching the
+market was already narrowed in the plan's own commit; this records the same
+reasoning at both call sites, so a reader of reserve.rs or sweep.rs does not
+have to treat the missing accrue() as an oversight.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
@@ -1337,11 +1528,11 @@ fn a_campaign_cannot_outlast_the_maximum_lifetime() {
     let admin = env.admin.pubkey();
     let now = env.now();
 
-    let too_long = create_campaign_ix(&admin, &cngn, 1, BUDGET, now + MAX_CAMPAIGN_LIFETIME + 1);
+    let too_long = create_campaign_ix(&admin, &cngn, 1, BUDGET, now + hodl_loans::MAX_CAMPAIGN_LIFETIME + 1);
     assert_hodl_error(send(&mut env.svm, &[too_long], &[&env.admin]), HodlError::InvalidParameters);
 
     // Exactly at the bound is allowed: the check is `<=`.
-    let at_bound = create_campaign_ix(&admin, &cngn, 1, BUDGET, now + MAX_CAMPAIGN_LIFETIME);
+    let at_bound = create_campaign_ix(&admin, &cngn, 1, BUDGET, now + hodl_loans::MAX_CAMPAIGN_LIFETIME);
     send(&mut env.svm, &[at_bound], &[&env.admin]).unwrap();
 }
 
@@ -1375,7 +1566,9 @@ Expected: all pass. If `a_campaign_past_its_window_issues_nothing` fails with `V
 
 - [ ] **Step 8: Update the spec and commit**
 
-Spec §8's `set_promo_cap` paragraph gains the `MAX_LISTED_COLLATERAL` ceiling and the lock-limit reason; §12's `create_campaign` gains its lifetime bound and `redeem_promo` the voucher condition with its migration note.
+**The spec is already amended.** Its changes for the whole of Plan 7 landed in the plan's own commit, so this step is a *check*, not an edit: read the section named below and confirm it describes what you just built. If it does not, the mismatch is a finding — say which is wrong, the code or the spec, and stop rather than quietly editing either.
+
+Spec §8's `set_promo_cap` paragraph should carry the `MAX_LISTED_COLLATERAL` ceiling and the lock-limit reason; §12's `create_campaign` its lifetime bound, and `redeem_promo` the voucher condition with its migration note.
 
 ```bash
 git add -A
@@ -1547,9 +1740,13 @@ In `programs/hodl_loans/src/instructions/admin/market_admin.rs`, in `handle_set_
     // would only defer the harvest: a pause outlasting `promo_inactivity_seconds` would leave
     // every idle promo expirable the instant it lifted, which is the same charge for the
     // protocol's own downtime, collected a moment later. Restarting the clock gives every
-    // borrower a full window to act once they can act again. Only on the true→false edge —
-    // though note that guards little, since setting `paused = true` on an already-paused
-    // market was never going to reach this line anyway.
+    // borrower a full window to act once they can act again. The `old_paused` conjunct is
+    // what stops a *false→false* call — `set_market_paused(false)` on a market that is already
+    // unpaused — from resetting the clock, which would otherwise let the admin postpone every
+    // promo expiry on the market indefinitely with a free no-op call. (`!paused` is what
+    // excludes the pausing edges; there is no early return for a no-op, so both reach here.)
+    // The protection is thin, since a pause-and-unpause pair in one transaction achieves the
+    // same thing — but that is an argument for bounding it later, not for dropping the guard.
     //
     // What it does not bound: the clock is market-global and every genuine pause→unpause
     // cycle resets it for every position. Two unrelated incidents inside one
@@ -1573,7 +1770,9 @@ In `programs/hodl_loans/src/instructions/promos/lifecycle.rs`:
 ```rust
 /// Spec §12. Anyone may reclaim promo a borrower has left idle, which is what stops granted
 /// promo sitting on the books forever. The clock runs from the last redemption, the last loan
-/// taken, or the moment the last loan closed.
+/// taken, the moment the last loan closed, or — since a pause cannot count as borrower
+/// inactivity — the market's last unpause (`Market::promo_clock_resumed_at`), whichever is
+/// latest.
 pub fn handle_expire_promo(ctx: Context<ExpirePromo>) -> Result<()> {
     let now = Clock::get()?.unix_timestamp;
     let market_key = ctx.accounts.market.key();
@@ -1610,9 +1809,11 @@ pub fn handle_expire_promo(ctx: Context<ExpirePromo>) -> Result<()> {
 Run: `./scripts/test.sh`
 Expected: all pass, `Market::INIT_SPACE` still 555. Confirm both halves separately: remove the pause gate and the first test fails; keep the gate but remove the clock restart and it fails again, on the "right after unpausing" assertion. The second mutation is the one that proves the gate alone would not have been enough.
 
-- [ ] **Step 7: Update the spec and commit**
+- [ ] **Step 8: Update the spec and commit**
 
-Spec §12's `expire_promo` bullet gains the pause requirement, the `max(promo_last_activity_at, promo_clock_resumed_at)` deadline, why this is the one promo operation a pause blocks, and why barring it during the pause is not sufficient alone.
+**The spec is already amended.** Its changes for the whole of Plan 7 landed in the plan's own commit, so this step is a *check*, not an edit: read the section named below and confirm it describes what you just built. If it does not, the mismatch is a finding — say which is wrong, the code or the spec, and stop rather than quietly editing either.
+
+Spec §12's `expire_promo` bullet should carry the pause requirement, the `max(promo_last_activity_at, promo_clock_resumed_at)` deadline, why this is the one promo operation a pause blocks, and why barring it during the pause is not sufficient alone.
 
 ```bash
 git add -A
@@ -1912,7 +2113,9 @@ Expected: all pass. Check the invariant assertion is load-bearing — delete `re
 
 - [ ] **Step 6: Update the spec and commit**
 
-Spec §12 gains a `reconcile_promo_vault` bullet: downward only, why `fund_promo_vault` owns the upward direction, and that the §12 invariant is still asserted afterwards.
+**The spec is already amended.** Its changes for the whole of Plan 7 landed in the plan's own commit, so this step is a *check*, not an edit: read the section named below and confirm it describes what you just built. If it does not, the mismatch is a finding — say which is wrong, the code or the spec, and stop rather than quietly editing either.
+
+Spec §12 should carry a `reconcile_promo_vault` bullet: downward only, why `fund_promo_vault` owns the upward direction, and that the §12 invariant is still asserted afterwards.
 
 ```bash
 git add -A
@@ -2115,16 +2318,63 @@ pub fn handle_revoke_promo<'info>(ctx: Context<'info, RevokePromo<'info>>) -> Re
     }
 ```
 
-- [ ] **Step 6: Run everything**
+- [ ] **Step 6: Pin what this composes into**
+
+`revoke_promo` now requires health after the release, and Task 3's borrow pause takes an asset's borrowing power to zero — so on a single-asset position, a pause makes promo unrevokable while any loan is live. Neither task can see that alone. It is **not** a regression (the rule this replaces blocked revocation for *any* live loan) and repayment stays open, so it is pinned rather than fixed:
+
+```rust
+#[test]
+fn a_borrow_paused_asset_makes_promo_unrevokable_while_a_loan_is_live() {
+    // Tasks 3 and 8 compose into this and neither could see it alone. `revoke_promo` requires
+    // the position to be healthy *after* the release; a borrow-paused asset contributes nothing
+    // to `borrow_limit`; so on a single-asset position every live loan makes revocation fail.
+    //
+    // Pinned rather than fixed, and the reason matters: this is not a regression. The rule it
+    // replaced blocked revocation for **any** live loan, paused or not, so the paused case is
+    // no worse than before and every unpaused case is better. The borrower's exit is open too —
+    // `repay_loan` consults neither pause. Changing the health basis for revocation (asking
+    // "could this position stand if we were not paused?", since revocation is not
+    // exposure-increasing) is a real design question and deserves its own decision, not a
+    // merge-time fix.
+    let (mut env, setup) = Env::promo_ready();
+    let borrower = &setup.borrower;
+    let owner = borrower.pubkey();
+    let admin = env.admin.pubkey();
+    env.redeem_promo(borrower, &setup.cngn, 1, GRANT, 7).unwrap();
+    env.take_loan(borrower, &setup, 1_000 * ONE_CNGN, 365 * DAY).unwrap();
+
+    // The pause is the only thing standing in the way: unpaused, this position stands easily
+    // without the promo, which is Task 8's whole point.
+    let prices = price_pairs(&[setup.usdc]);
+    let pause = set_collateral_borrow_paused_ix(&env.guardian.pubkey(), &setup.usdc, true);
+    send(&mut env.svm, &[pause], &[&env.guardian]).unwrap();
+
+    // Paused, it cannot: the borrow limit is zero, so any debt at all fails the check.
+    let blocked = revoke_promo_priced_ix(&admin, &setup.cngn, &owner, true, prices.clone());
+    assert_hodl_error(send(&mut env.svm, &[blocked], &[&env.admin]), HodlError::Unhealthy);
+    assert_eq!(env.position(&owner).promo_balance, GRANT);
+
+    // The way out is open: lifting the pause restores it.
+    let unpause = set_collateral_borrow_paused_ix(&admin, &setup.usdc, false);
+    send(&mut env.svm, &[unpause], &[&env.admin]).unwrap();
+    let allowed = revoke_promo_priced_ix(&admin, &setup.cngn, &owner, true, prices);
+    send(&mut env.svm, &[allowed], &[&env.admin]).unwrap();
+    assert_eq!(env.position(&owner).promo_balance, 0);
+}
+```
+
+- [ ] **Step 7: Run everything**
 
 Run: `./scripts/test.sh`
-Expected: all pass, 264 tests. Confirm the health check is load-bearing: delete `require!(health.is_healthy(), ...)`, rebuild, and the refusal test must fail.
+Expected: all pass, 266 tests. Confirm the health check is load-bearing: delete `require!(health.is_healthy(), ...)`, rebuild, and the refusal test must fail.
 
 Worth checking by reading rather than testing: a wrong-market position is still blocked, transitively — `promo_vault` is seed-derived from `market` with `has_one = market`, and `release_promo` asserts `position.market == promo_vault.market`.
 
-- [ ] **Step 7: Update the spec and commit**
+- [ ] **Step 8: Update the spec and commit**
 
-Spec §12's `revoke_promo` bullet drops "requires no active loans" and gains the post-release health check, the account requirements, and a paragraph on why the old rule was replaced.
+**The spec is already amended.** Its changes for the whole of Plan 7 landed in the plan's own commit, so this step is a *check*, not an edit: read the section named below and confirm it describes what you just built. If it does not, the mismatch is a finding — say which is wrong, the code or the spec, and stop rather than quietly editing either.
+
+Spec §12's `revoke_promo` bullet should no longer say "requires no active loans", and should carry the post-release health check, the account requirements, and a paragraph on why the old rule was replaced.
 
 ```bash
 git add -A

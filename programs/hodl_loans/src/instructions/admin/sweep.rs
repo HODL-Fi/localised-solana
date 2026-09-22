@@ -62,6 +62,9 @@ pub struct SweepMarketExcess<'info> {
 }
 
 /// Sends vault tokens above `market.cash` (direct donations) to the treasury.
+///
+/// Like `harvest_reserve`, this does not accrue first: it compares the vault's token balance
+/// against `market.cash`, and accrual never touches `cash`. See spec §9.
 pub fn handle_sweep_market_excess(ctx: Context<SweepMarketExcess>) -> Result<()> {
     let mint_key = ctx.accounts.mint.key();
     let seeds: &[&[u8]] = &[MARKET_SEED, mint_key.as_ref(), &[ctx.accounts.market.bump]];

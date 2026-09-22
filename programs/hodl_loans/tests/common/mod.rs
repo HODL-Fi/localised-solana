@@ -577,6 +577,7 @@ pub fn default_collateral_params(mint: &Pubkey) -> hodl_loans::CollateralParams 
         liquidation_threshold_bps: 9_000,
         liquidation_bonus_bps: 500,
         deposit_cap: u64::MAX,
+        max_multiplier: 0,
     }
 }
 
@@ -612,6 +613,17 @@ pub fn set_collateral_paused_ix(signer: &Pubkey, mint: &Pubkey, paused: bool) ->
     ix(
         hodl_loans::instruction::SetCollateralPaused { paused },
         hodl_loans::accounts::SetCollateralPaused { signer: *signer, config: config_pda(), collateral: collateral_pda(mint) },
+    )
+}
+
+pub fn set_collateral_borrow_paused_ix(signer: &Pubkey, mint: &Pubkey, paused: bool) -> Instruction {
+    ix(
+        hodl_loans::instruction::SetCollateralBorrowPaused { paused },
+        hodl_loans::accounts::SetCollateralBorrowPaused {
+            signer: *signer,
+            config: config_pda(),
+            collateral: collateral_pda(mint),
+        },
     )
 }
 
@@ -710,8 +722,21 @@ pub fn expire_promo_ix(mint: &Pubkey, owner: &Pubkey) -> Instruction {
     )
 }
 
+/// Revocation of an idle position: no prices needed, so `ngn_feed` is omitted.
 pub fn revoke_promo_ix(admin: &Pubkey, mint: &Pubkey, owner: &Pubkey) -> Instruction {
-    ix(
+    revoke_promo_priced_ix(admin, mint, owner, false, vec![])
+}
+
+/// Revocation with the accounts a live loan's health check needs. `with_feed` is separate from
+/// `prices` so a test can supply one and withhold the other.
+pub fn revoke_promo_priced_ix(
+    admin: &Pubkey,
+    mint: &Pubkey,
+    owner: &Pubkey,
+    with_feed: bool,
+    prices: Vec<AccountMeta>,
+) -> Instruction {
+    let mut instruction = ix(
         hodl_loans::instruction::RevokePromo {},
         hodl_loans::accounts::RevokePromo {
             admin: *admin,
@@ -719,8 +744,11 @@ pub fn revoke_promo_ix(admin: &Pubkey, mint: &Pubkey, owner: &Pubkey) -> Instruc
             market: market_pda(mint),
             promo_vault: promo_vault_pda(mint),
             position: position_pda(owner),
+            ngn_feed: with_feed.then(ngn_feed),
         },
-    )
+    );
+    instruction.accounts.extend(prices);
+    instruction
 }
 
 /// `close_position`, naming the promo vault so a position still holding promo can hand it back.
@@ -946,6 +974,13 @@ impl Env {
     pub fn set_ngn_price(&mut self, value: i128, std_dev: i128) {
         let slot = self.svm.get_sysvar::<Clock>().slot;
         self.set_account_data(&ngn_feed(), &switchboard_on_demand::ON_DEMAND_MAINNET_PID, pull_feed_data(value, std_dev, slot, 5));
+    }
+
+    /// The same NGN feed bytes `set_ngn_price` writes, but owned by an account of the
+    /// caller's choosing. Only a test that wants the owner check to fire has any use for this.
+    pub fn set_ngn_price_owned_by(&mut self, owner: &Pubkey, value: i128, std_dev: i128) {
+        let slot = self.svm.get_sysvar::<Clock>().slot;
+        self.set_account_data(&ngn_feed(), owner, pull_feed_data(value, std_dev, slot, 5));
     }
 
     /// The health accounts for every used collateral slot, in slot order: a pair per
@@ -1509,6 +1544,21 @@ pub fn sweep_promo_excess_ix(admin: &Pubkey, mint: &Pubkey, destination: &Pubkey
             promo_vault: promo_vault_pda(mint),
             vault: promo_vault_token_pda(mint),
             destination: *destination,
+            token_program: TOKEN_2022,
+        },
+    )
+}
+
+pub fn reconcile_promo_vault_ix(admin: &Pubkey, mint: &Pubkey) -> Instruction {
+    ix(
+        hodl_loans::instruction::ReconcilePromoVault {},
+        hodl_loans::accounts::ReconcilePromoVault {
+            admin: *admin,
+            config: config_pda(),
+            market: market_pda(mint),
+            mint: *mint,
+            promo_vault: promo_vault_pda(mint),
+            vault: promo_vault_token_pda(mint),
             token_program: TOKEN_2022,
         },
     )
