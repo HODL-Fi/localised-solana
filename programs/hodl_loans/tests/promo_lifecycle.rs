@@ -102,7 +102,9 @@ fn an_admin_can_revoke_promo_without_waiting() {
     // Same conservation property as every other release path: `free()` rises by GRANT.
     assert_eq!(vault.free().unwrap(), free_before + GRANT);
 
-    // Revocation is still barred while a loan is live, so it cannot force a liquidation.
+    // Revocation is no longer barred outright while a loan is live — only when releasing the
+    // promo would leave the position unhealthy. `other`'s loan is small next to its own
+    // collateral, so it does not need the promo to stand.
     let other = env.new_borrower();
     env.deposit_collateral(&other, &setup.usdc, 1_000 * ONE_USDC);
     let other_cngn = env.create_token_account(&setup.cngn, &other.pubkey());
@@ -110,8 +112,49 @@ fn an_admin_can_revoke_promo_without_waiting() {
     let prices = env.price_accounts(&other.pubkey());
     let borrow = take_loan_ix(&other.pubkey(), &setup.cngn, &other_cngn, 1_000 * ONE_CNGN, 365 * DAY, prices);
     send(&mut env.svm, &[borrow], &[&env.admin, &other.key]).unwrap();
-    let live = revoke_promo_ix(&admin, &setup.cngn, &other.pubkey());
-    assert_hodl_error(send(&mut env.svm, &[live], &[&env.admin]), HodlError::PositionNotEmpty);
+
+    // A bare call carries no `ngn_feed` at all, and a feed-less priced call withholds only the
+    // feed while still supplying `remaining_accounts` — both fail the same way, because the
+    // health check the live loan now requires has no price to run on.
+    let bare = revoke_promo_ix(&admin, &setup.cngn, &other.pubkey());
+    assert_hodl_error(send(&mut env.svm, &[bare], &[&env.admin]), HodlError::PriceAccountMismatch);
+    let feedless = revoke_promo_priced_ix(&admin, &setup.cngn, &other.pubkey(), false, price_pairs(&[setup.usdc]));
+    assert_hodl_error(send(&mut env.svm, &[feedless], &[&env.admin]), HodlError::PriceAccountMismatch);
+
+    // Priced, it succeeds: `other`'s loan does not need the promo to stay healthy.
+    let priced = revoke_promo_priced_ix(&admin, &setup.cngn, &other.pubkey(), true, price_pairs(&[setup.usdc]));
+    send(&mut env.svm, &[priced], &[&env.admin]).unwrap();
+    assert_eq!(env.position(&other.pubkey()).promo_balance, 0);
+    assert_eq!(env.promo_vault(&setup.cngn).outstanding, 0);
+}
+
+#[test]
+fn revoking_under_a_live_loan_is_refused_when_the_promo_is_holding_the_position_up() {
+    let (mut env, setup) = Env::promo_ready();
+    let borrower = &setup.borrower;
+    let owner = borrower.pubkey();
+    let admin = env.admin.pubkey();
+    env.redeem_promo(borrower, &setup.cngn, 1, GRANT, 7).unwrap();
+
+    // Borrow past what the collateral alone supports: `OWN_CEILING` is the limit without the
+    // promo, and the promo lifts it to `WITH_PROMO_CEILING`. Anything above the first is debt
+    // the promo is carrying.
+    env.take_loan(borrower, &setup, OWN_CEILING + ONE_CNGN, 365 * DAY).unwrap();
+
+    // Taking the promo away would put the position under its own borrow limit, so revocation
+    // is refused — the guarantee the old `!has_active_loans()` rule was reaching for, now
+    // stated as the thing it actually protects rather than as a blanket ban.
+    let priced = revoke_promo_priced_ix(&admin, &setup.cngn, &owner, true, price_pairs(&[setup.usdc]));
+    assert_hodl_error(send(&mut env.svm, &[priced], &[&env.admin]), HodlError::Unhealthy);
+    assert_eq!(env.position(&owner).promo_balance, GRANT);
+    assert_eq!(env.promo_vault(&setup.cngn).outstanding, GRANT);
+
+    // Repaying back under the unaided ceiling makes the same call succeed: the borrower can
+    // no longer be hurt by it.
+    env.repay(&setup, 0, 2 * ONE_CNGN).unwrap();
+    let priced = revoke_promo_priced_ix(&admin, &setup.cngn, &owner, true, price_pairs(&[setup.usdc]));
+    send(&mut env.svm, &[priced], &[&env.admin]).unwrap();
+    assert_eq!(env.position(&owner).promo_balance, 0);
 }
 
 #[test]

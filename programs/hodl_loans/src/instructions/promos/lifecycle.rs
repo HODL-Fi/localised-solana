@@ -7,6 +7,7 @@ use crate::events::{PromoExpired, PromoForfeited, PromoRevoked};
 use crate::math::checked::{sub, to_u64};
 use crate::state::{Config, Market, Position, PromoVault};
 use crate::token::transfer::transfer_from_vault;
+use crate::valuation::{load_health, ValuationRequest};
 
 /// The one way promo leaves a position: expiry, revocation, forfeiture on liquidation or
 /// write-off, and `close_position` all end here. The cNGN itself does not move — it stops being
@@ -21,8 +22,9 @@ pub fn release_promo(position: &mut Position, promo_vault: &mut PromoVault) -> R
     Ok(amount)
 }
 
-/// Shared by `expire_promo` and `revoke_promo`: promo only leaves a quiet position, so neither
-/// can be used to strip borrowing power out from under a live loan.
+/// `expire_promo`'s alone: promo only expires out of a quiet position, so an inactivity claim
+/// can never be used to strip borrowing power out from under a live loan. `revoke_promo` no
+/// longer routes through here — it prices the position after the release instead.
 fn release_from_idle_position(position: &mut Position, promo_vault: &mut PromoVault) -> Result<u64> {
     require!(position.promo_balance > 0, HodlError::AmountTooSmall);
     require!(!position.has_active_loans(), HodlError::PositionNotEmpty);
@@ -164,15 +166,63 @@ pub struct RevokePromo<'info> {
     pub promo_vault: Box<Account<'info, PromoVault>>,
     #[account(mut, seeds = [POSITION_SEED, position.load()?.owner.as_ref()], bump)]
     pub position: AccountLoader<'info, Position>,
+    /// CHECK: required only when the position has active loans, to price the health check
+    /// below; `read_ngn_price` pins it to `market.ngn_feed`.
+    pub ngn_feed: Option<UncheckedAccount<'info>>,
 }
 
 /// Spec §12. The same release without waiting out the clock — for promo granted in error or to
-/// an account the backend has since judged ineligible. It still cannot touch a position with a
-/// live loan, so it cannot be used to push someone into liquidation.
-pub fn handle_revoke_promo(ctx: Context<RevokePromo>) -> Result<()> {
+/// an account the backend has since judged ineligible.
+///
+/// A live loan no longer blocks it outright. The old rule — revoke only an idle position —
+/// was sound in its purpose (revocation must not push anyone into liquidation) but handed the
+/// borrower the wrong lever: one minimum-size loan, held open, made promo permanently
+/// unrevokable, which defeats the instruction in exactly the case it exists for. Instead the
+/// position is checked for health **after** the promo is taken away, and the whole
+/// transaction reverts if it would not survive.
+///
+/// Note what changed class. The old rule was unconditional: no parameter could bypass it.
+/// `is_healthy()` is not — the same admin signing this also sets `ltv_bps`,
+/// `liquidation_threshold_bps` and `max_conf_bps` through `update_collateral_params`, with no
+/// in-program timelock, so three instructions in one transaction can raise the LTV, revoke,
+/// and restore it, leaving the borrower promo-less and liquidatable. What stands between that
+/// and a borrower is spec §18's timelocked multisig, which is an operational control rather
+/// than an on-chain one. The trade is deliberate: the unconditional rule let any borrower make
+/// promo permanently unrevokable by holding one minimum-size loan open, which defeats the
+/// instruction in exactly the case it exists for.
+///
+/// With active loans, `ngn_feed` is required and `remaining_accounts` must hold, per used
+/// collateral slot in slot order, a `(CollateralAsset, PriceUpdateV2)` pair — an `XStock` slot
+/// needs its mint too, as a third account.
+pub fn handle_revoke_promo<'info>(ctx: Context<'info, RevokePromo<'info>>) -> Result<()> {
     let market_key = ctx.accounts.market.key();
     let mut position = ctx.accounts.position.load_mut()?;
-    let amount = release_from_idle_position(&mut position, &mut ctx.accounts.promo_vault)?;
+    require!(position.promo_balance > 0, HodlError::AmountTooSmall);
+    let has_loans = position.has_active_loans();
+    let amount = release_promo(&mut position, &mut ctx.accounts.promo_vault)?;
+    if has_loans {
+        // Health is measured on the position as it stands *after* the release, so what is
+        // being asked is exactly "can this borrower stand without the promo?". A failure
+        // reverts the release along with everything else in the transaction.
+        let Some(ngn_feed) = &ctx.accounts.ngn_feed else {
+            return err!(HodlError::PriceAccountMismatch);
+        };
+        let ngn_feed = ngn_feed.to_account_info();
+        let clock = Clock::get()?;
+        let health = load_health(
+            &position,
+            &ValuationRequest {
+                program_id: ctx.program_id,
+                market: &ctx.accounts.market,
+                ngn_feed: &ngn_feed,
+                remaining: ctx.remaining_accounts,
+                extra_debt: 0,
+                promo_cap_bps: ctx.accounts.config.promo_cap_bps,
+                clock: &clock,
+            },
+        )?;
+        require!(health.is_healthy(), HodlError::Unhealthy);
+    }
     emit!(PromoRevoked {
         market: market_key,
         position: ctx.accounts.position.key(),

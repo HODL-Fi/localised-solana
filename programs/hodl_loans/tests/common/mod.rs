@@ -722,8 +722,21 @@ pub fn expire_promo_ix(mint: &Pubkey, owner: &Pubkey) -> Instruction {
     )
 }
 
+/// Revocation of an idle position: no prices needed, so `ngn_feed` is omitted.
 pub fn revoke_promo_ix(admin: &Pubkey, mint: &Pubkey, owner: &Pubkey) -> Instruction {
-    ix(
+    revoke_promo_priced_ix(admin, mint, owner, false, vec![])
+}
+
+/// Revocation with the accounts a live loan's health check needs. `with_feed` is separate from
+/// `prices` so a test can supply one and withhold the other.
+pub fn revoke_promo_priced_ix(
+    admin: &Pubkey,
+    mint: &Pubkey,
+    owner: &Pubkey,
+    with_feed: bool,
+    prices: Vec<AccountMeta>,
+) -> Instruction {
+    let mut instruction = ix(
         hodl_loans::instruction::RevokePromo {},
         hodl_loans::accounts::RevokePromo {
             admin: *admin,
@@ -731,8 +744,11 @@ pub fn revoke_promo_ix(admin: &Pubkey, mint: &Pubkey, owner: &Pubkey) -> Instruc
             market: market_pda(mint),
             promo_vault: promo_vault_pda(mint),
             position: position_pda(owner),
+            ngn_feed: with_feed.then(ngn_feed),
         },
-    )
+    );
+    instruction.accounts.extend(prices);
+    instruction
 }
 
 /// `close_position`, naming the promo vault so a position still holding promo can hand it back.

@@ -164,7 +164,7 @@ pub mod hodl_loans {
         instructions::handle_expire_promo(ctx)
     }
 
-    pub fn revoke_promo(ctx: Context<RevokePromo>) -> Result<()> {
+    pub fn revoke_promo<'info>(ctx: Context<'info, RevokePromo<'info>>) -> Result<()> {
         instructions::handle_revoke_promo(ctx)
     }
 
