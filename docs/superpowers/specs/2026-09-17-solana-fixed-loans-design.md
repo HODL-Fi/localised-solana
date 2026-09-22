@@ -273,7 +273,7 @@ Market rules, enforced by `create_market` and `update_market_params`:
 - `ngn_feed` is not the default key; `ngn_max_stale_slots > 0`; `ngn_min_samples ≥ 1`; `ngn_max_spread_bps ≤ BPS`
 - `promo_inactivity_seconds ≥ 0`
 
-`set_promo_cap` rejects a value that breaks the second collateral rule for any listed asset. Every `CollateralAsset` account is passed as a remaining account, **in ascending key order**, and the count must equal `config.collateral_count`. The count alone would not stop one permissive asset being passed several times while the rest go unexamined; requiring the keys to strictly increase does, and each account's PDA is re-derived from its own stored mint and bump so a look-alike cannot stand in for a stricter asset. `list_collateral` increments `collateral_count` and `delist_collateral` decrements it.
+`set_promo_cap` rejects a value that breaks the second collateral rule for any listed asset. Every `CollateralAsset` account is passed as a remaining account, **in ascending key order**, and the count must equal `config.collateral_count`. The count alone would not stop one permissive asset being passed several times while the rest go unexamined; requiring the keys to strictly increase does, and each account's PDA is re-derived from its own stored mint and bump so a look-alike cannot stand in for a stricter asset. `list_collateral` increments `collateral_count` and `delist_collateral` decrements it. Because this instruction has to name every listed asset in one transaction, `list_collateral` refuses past `MAX_LISTED_COLLATERAL` (96) with `CollateralLimitReached`. The binding limit is `MAX_TX_ACCOUNT_LOCKS = 128`, the accounts a transaction may lock; address lookup tables relieve message *size*, not locks, so the `u8` index's 256-key ceiling is never reached. Minus the three accounts `set_promo_cap` always needs, that leaves 125, and 96 keeps a margin. There is no way back — `collateral_count` falls only on delisting, which requires the asset to be unused — so the bound has to be right the first time.
 
 ### Launch values
 
@@ -291,7 +291,15 @@ Market rules, enforced by `create_market` and `update_market_params`:
 
 ## 9. Market Accounting
 
-### Accrual — run first by every instruction that touches the market
+### Accrual — run first by every instruction whose result depends on it
+
+Every instruction that settles a loan, or that reads `total_assets` to price lender shares,
+accrues before doing anything else. The three that do not are `harvest_reserve`,
+`sweep_market_excess` and `sweep_collateral_excess`: accrual writes only `accrued_interest`,
+`accrual_remainder` and `last_accrual_ts`, while those three read and write only
+`protocol_reserve` and `cash` — which accrual never touches. Accruing there would cost compute
+and change nothing. Because accrual is linear in elapsed time and carries its own remainder,
+skipping an interval costs no precision: the next real accrual covers the whole span.
 
 ```text
 elapsed           = now − last_accrual_ts
@@ -437,7 +445,8 @@ The collateral stays in the position: a write-off clears the debt, it does not s
 - **`create_promo_vault`:** creates the `PromoVault` and its cNGN token account for a market. Separate from `create_market` so a market can run without promo, and explicit rather than `init_if_needed` inside funding, so the question of re-initializing an account that holds funds never arises.
 - **`fund_promo_vault(amount)`:** transfer cNGN in; `cash += amount`.
 - **`withdraw_promo_vault(amount)`:** requires `amount ≤ cash − outstanding − unissued`; sends to the treasury.
-- **`create_campaign(campaign_id, budget, redeem_until)`:** requires `cash − outstanding − unissued ≥ budget`; `unissued += budget`.
+- **`reconcile_promo_vault`** (admin): sets `cash = vault token balance`, and only when the balance is **lower** (`AmountTooSmall` otherwise). cNGN's `PermanentDelegate` lets its issuer take tokens out of the promo vault directly; `forfeit_promo` already clamps to what remains so liquidation keeps working, but nothing afterwards reconciled the ledger, leaving `free() = cash − outstanding − unissued` reading high and `withdraw_promo_vault` failing inside the token program rather than at our own bound. Solvency never depended on `cash` — `outstanding` backs positions and stays exact — so this is a liveness repair. It refuses upward moves, which are `fund_promo_vault`'s job, and it still asserts the §12 invariant afterwards: a clawback that has already eaten into `outstanding` cannot be papered over by rewriting one field, since `outstanding` may only fall through expiry, revocation or liquidation. Emit `PromoVaultReconciled`.
+- **`create_campaign(campaign_id, budget, redeem_until)`:** requires `cash − outstanding − unissued ≥ budget` and `now < redeem_until ≤ now + MAX_CAMPAIGN_LIFETIME` (365 days); `unissued += budget`. The upper bound is policy, not arithmetic: a campaign's end bounds its vouchers' expiry, and a voucher's expiry is what holds its receipt's rent.
 - **`close_campaign(campaign_id)`:** `unissued −= budget − granted`; `active = false`. The account stays, so a campaign's `granted` total remains readable and redeemed vouchers keep a campaign to point at.
 - **`sweep_promo_excess`:** moves `vault balance − cash` to the treasury, as §9 does for the market vault and §13 for a collateral vault. Without it a direct transfer into the promo vault's token account is stranded. It is the third copy of the same body, and the three share one helper.
 
@@ -458,6 +467,13 @@ The voucher message is the Borsh serialization of:
 3. Require:
    - `now ≤ voucher_expiry`;
    - the campaign is active with `now ≤ redeem_until`;
+   - `voucher_expiry ≤ redeem_until` (`VoucherOutlivesCampaign`) — checked after the two campaign
+     conditions, so a closed campaign still reports as closed. Expiry is not part of the receipt's
+     seeds, so without this the promo signer alone would decide how long the receipt holds its rent.
+     **This rejects vouchers that were previously valid:** `voucher_expiry` and `now` are different
+     quantities, so a voucher expiring after `redeem_until` redeems fine at any `now ≤ redeem_until`.
+     A backend issuing rolling 30-day vouchers must clamp expiry to the campaign and re-sign anything
+     already outstanding;
    - `granted + amount ≤ budget`;
    - `promo_balance + amount ≤ max_promo_per_position`.
 4. Create `VoucherReceipt` for `(campaign, nonce)`. It already existing fails the instruction, which prevents replay.
@@ -478,12 +494,18 @@ On the first liquidation of a position with promo (§11 step 3), and on write-of
 ### Expiry
 
 - `promo_last_activity_at` is set on redeem, on `take_loan`, and when the last active loan closes.
-- **`expire_promo(position)`** (anyone): requires `promo_balance > 0`, no active loans, and `now ≥ promo_last_activity_at + promo_inactivity_seconds`. Then `outstanding −= promo_balance` and `promo_balance = 0`; the cNGN stays in the promo vault as free HODL funds. Emit `PromoExpired`.
+- **`expire_promo(position)`** (anyone): requires the market **not paused**, `promo_balance > 0`, no active loans, and `now ≥ max(promo_last_activity_at, market.promo_clock_resumed_at) + promo_inactivity_seconds`. Then `outstanding −= promo_balance` and `promo_balance = 0`; the cNGN stays in the promo vault as free HODL funds. Emit `PromoExpired`.
+
+  This is the only promo operation a pause blocks, which reads backwards against the rule that pauses stop exposure-increasing work and leave the rest open. It is an exception to a different rule: the precondition is a *measurement* of borrower inactivity, and a paused market is one the borrower cannot act on, so the measurement is invalid — not the operation unsafe. `revoke_promo` makes no such measurement and stays open.
+
+  Barring expiry during the pause is not sufficient on its own. A pause outlasting `promo_inactivity_seconds` would leave every idle promo expirable the instant it lifted — the same charge for the protocol's own downtime, collected a moment later. So unpausing also sets `market.promo_clock_resumed_at = now` (on the true→false edge only, so re-pausing cannot extend the window), and expiry runs from whichever of that and the borrower's own last activity is later. Every borrower gets one full window once they can act again.
 - `take_loan` performs the same expiry before its health check.
 
 ### Other promo instructions
 
-- **`revoke_promo(position)`** (admin): requires no active loans; releases the promo the same way as expiry. Emit `PromoRevoked`.
+- **`revoke_promo(position)`** (admin): releases the promo the same way as expiry. A live loan does not bar it; instead the position is checked for health **after** the release, and the transaction reverts if it would not survive (`Unhealthy`). With active loans, `ngn_feed` is required and `remaining_accounts` must carry the same per-slot price accounts a withdrawal does (`PriceAccountMismatch` if absent). Emit `PromoRevoked`.
+
+  The old rule barred revocation on any position with a live loan. Its purpose was right — revocation must not push a borrower into liquidation — but it handed the borrower the wrong lever: one minimum-size loan held open made promo permanently unrevokable, defeating the instruction in exactly the case it exists for (promo granted in error, or to an account since judged ineligible). Checking health after the release refuses only the revocations that would actually hurt.
 - **`close_position`:** releases any promo the same way, and emits `PromoReleased`. The market and promo vault accounts are required when the position still holds promo, so closing it cannot strand the backing.
 - **`close_voucher_receipt`** (anyone): allowed once `now > voucher_expiry`; refunds rent to `rent_payer`.
 
@@ -551,7 +573,9 @@ At maximum borrowing, debt ≤ own value × (LTV + promo_cap) ≤ own value × t
   - The permanent delegate (`5aMNN…FvEq`) can move or burn tokens from the custody vault. The protocol's books keep the borrower's balance; the vault is short, and withdrawals fail in the token program once it empties. The loss is bounded by what borrowers deposited: the delegate can only take back its own token.
   - A paused mint (`JDq14…xJNs`) blocks deposits, withdrawals and liquidation seizures of that asset.
   - The freeze authority (`JDq14…xJNs`, the same key as the pause) can set `DefaultAccountState` to `Frozen`. Every live xStock carries the extension at `Initialized` today, and xStocks' own docs say it is there so Backed can switch on blocklist-style compliance tooling later (§20 item 3). Because only the entry policy checks it, this stops new listings and new deposits without sealing positions already open.
-  - The **scaled-UI authority** (`S7vYFFWH6BjJyEsdrPQpqpYTqLTrPRK6KW3VwsJuRaS`, a *different* key from the other two) sets the multiplier, and is the most powerful of the four. The permanent delegate can only take back its own token, bounded by what borrowers deposited; the multiplier mints **cNGN borrowing power**, bounded only by the pool's cash and `deposit_cap` — and `deposit_cap` is denominated in raw token amounts, so it does not cap USD exposure once the multiplier moves. `MAX_MULTIPLIER = 10^6` is not the answer: an effective multiplier above the cap makes the read fail with `InvalidPrice`, which fails every health check touching the asset and seals the position exactly as an over-eager exit check would, so tightening it trades a remote economic risk for a more likely liveness failure. **Deferred:** a per-asset, admin-settable multiplier ceiling — checked at listing and again at valuation — is the shape that bounds this without the liveness cost.
+  - The **scaled-UI authority** (`S7vYFFWH6BjJyEsdrPQpqpYTqLTrPRK6KW3VwsJuRaS`, a *different* key from the other two) sets the multiplier, and is the most powerful of the four. The permanent delegate can only take back its own token, bounded by what borrowers deposited; the multiplier mints **cNGN borrowing power**, bounded only by the pool's cash and `deposit_cap` — and `deposit_cap` is denominated in raw token amounts, so it does not cap USD exposure once the multiplier moves. `MAX_MULTIPLIER = 10^6` is not the answer: an effective multiplier above the cap makes the read fail with `InvalidPrice`, which fails every health check touching the asset and seals the position exactly as an over-eager exit check would, so tightening it trades a remote economic risk for a more likely liveness failure. **Resolved in Plan 7:** `CollateralAsset::max_multiplier`, admin-settable through `CollateralParams`, is a per-asset ceiling in `MULTIPLIER_SCALE` fixed point; `0` leaves the asset uncapped, which is what every asset listed before the field existed carries and what a `Standard` asset wants anyway.
+
+    Crucially it does **not** reject the price when exceeded. The holding's `lends_borrowing_power` goes false instead, exactly as a `borrow_paused` asset's does, which suppresses **both** routes from a holding to `borrow_limit`: its own LTV term and the promo cap its value unlocks. Gating only the LTV term would leave the promo cap — a fraction of the holding's *value*, which never consulted `ltv_bps` — still unlocking borrowing power against an asset the brake is on. Meanwhile `own_value` and `liquidation_line` keep counting the holding at its true multiplier. That is what bounds the authority without the liveness cost: borrowing against a number this key can set at will is refused, and every exit path (repay, withdraw, liquidate, write off) keeps working on honest figures. Rejecting the price instead would seal the position, which is the trap `MAX_MULTIPLIER` is deliberately kept loose to avoid.
 
 ### Where the mint policy runs — entry and exit
 
