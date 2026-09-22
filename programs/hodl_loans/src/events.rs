@@ -355,3 +355,11 @@ pub struct CollateralBorrowPauseSet {
     pub paused: bool,
     pub by: Pubkey,
 }
+
+#[event]
+pub struct PromoVaultReconciled {
+    pub market: Pubkey,
+    pub old_cash: u64,
+    pub cash: u64,
+    pub by: Pubkey,
+}

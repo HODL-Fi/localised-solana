@@ -1533,6 +1533,21 @@ pub fn sweep_promo_excess_ix(admin: &Pubkey, mint: &Pubkey, destination: &Pubkey
     )
 }
 
+pub fn reconcile_promo_vault_ix(admin: &Pubkey, mint: &Pubkey) -> Instruction {
+    ix(
+        hodl_loans::instruction::ReconcilePromoVault {},
+        hodl_loans::accounts::ReconcilePromoVault {
+            admin: *admin,
+            config: config_pda(),
+            market: market_pda(mint),
+            mint: *mint,
+            promo_vault: promo_vault_pda(mint),
+            vault: promo_vault_token_pda(mint),
+            token_program: TOKEN_2022,
+        },
+    )
+}
+
 impl Env {
     /// A cNGN market whose promo vault holds `funded` cNGN.
     pub fn with_promo_vault(funded: u64) -> (Self, Pubkey) {

@@ -126,6 +126,10 @@ pub mod hodl_loans {
         instructions::handle_sweep_promo_excess(ctx)
     }
 
+    pub fn reconcile_promo_vault(ctx: Context<ReconcilePromoVault>) -> Result<()> {
+        instructions::handle_reconcile_promo_vault(ctx)
+    }
+
     pub fn set_promo_cap(ctx: Context<SetPromoCap>, promo_cap_bps: u16) -> Result<()> {
         instructions::handle_set_promo_cap(ctx, promo_cap_bps)
     }
