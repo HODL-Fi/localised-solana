@@ -118,9 +118,6 @@ pub struct ExpirePromo<'info> {
 /// Spec §12. Anyone may reclaim promo a borrower has left idle, which is what stops granted
 /// promo sitting on the books forever. The clock runs from the last redemption, the last loan
 /// taken, or the moment the last loan closed.
-/// Spec §12. Anyone may reclaim promo a borrower has left idle, which is what stops granted
-/// promo sitting on the books forever. The clock runs from the last redemption, the last loan
-/// taken, or the moment the last loan closed.
 pub fn handle_expire_promo(ctx: Context<ExpirePromo>) -> Result<()> {
     let now = Clock::get()?.unix_timestamp;
     let market_key = ctx.accounts.market.key();
