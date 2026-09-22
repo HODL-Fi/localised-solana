@@ -42,31 +42,70 @@ fn full_position_stays_under_the_default_compute_budget() {
     }
 
     // 10th (last) loan slot: the health check walks all 8 collateral slots, the promo cap and
-    // the 9 existing overdue loans. Measured 74,763-79,263 CU over 17 runs.
+    // the 9 existing overdue loans. Measured 87,461-93,461 CU over 55 runs (was 74,763-79,263 CU
+    // over 17 runs pre-Plan-7).
     //
     // These figures are NOT deterministic: the harness keys its mints randomly, so where a
     // target sorts into the collateral slot array shifts the scan, moving the cost in steps of
-    // ~1,500 CU. Each range below is min-max observed over 17 runs, and the tail is not fully
-    // characterised — two separate batches produced different maxima. Compare against the max,
+    // ~1,500 CU. Each range below is min-max observed over 55 runs, and the tail is not fully
+    // characterised — separate batches produced different maxima. Compare against the max,
     // never a single sample.
+    //
+    // **The `create_program_address` syscall this walk added costs ~1,587-1,588 CU per
+    // collateral slot, stable — ~12,700 CU at eight slots.** That is min-to-min against the
+    // pre-Plan-7 baselines above: (87,461-74,763)/8 = 1,587.25 here, (86,883-74,182)/8 = 1,587.6
+    // for `withdraw_collateral` below.
+    //
+    // Subtracting the recorded range ENDPOINTS instead does not give that number, and the gap is
+    // not noise: max-to-max here is (93,461-79,263)/8 = 1,774.75, and (92,883-78,682)/8 =
+    // 1,775.125 for `withdraw_collateral` — both a real ~190 CU/slot higher, not a rounding
+    // difference. The cause is unequal bucket coverage, not a variable cost: this task's 55-run
+    // samples hit 5 distinct ~1,500-CU-spaced slot-order buckets for both figures (confirmed in
+    // the raw per-run data — 87,461/88,961/90,461/91,961/93,461 and
+    // 86,883/88,383/89,883/91,383/92,883, each with ±30 CU of sub-noise on top; I checked this
+    // against the raw runs, not just the two recorded endpoints), while the pre-Plan-7 baseline's
+    // 17 runs only span a 4,500 CU range — 4 buckets at the same 1,500 CU step, inferred from its
+    // documented spread since that raw data is git history, not something I hold to re-measure.
+    // A 5-bucket max minus a 4-bucket max charges the syscall for one extra, unsampled step it
+    // didn't cause; min-to-min avoids this because bucket 0 (cheapest slot order) is common
+    // enough to land in both a 17-run and a 55-run batch. The xStock `take_loan` case below is
+    // the control that shows the mechanism cleanly: there, pre (17 runs) and post (55 runs) both
+    // happen to span 5 buckets, so min-to-min and max-to-max agree exactly — 12,694 either way.
+    //
+    // The two `liquidate` paths below (with and without a promo forfeit) are a separate, genuine
+    // effect, not this same artifact: both are stable (essentially single-valued, no stepped
+    // bucketing) on both sides of the change, so no coverage correction applies, and their
+    // measured delta is still only ~12,044-12,077 CU across the same eight slots
+    // (~1,506-1,510 CU/slot) — a few hundred CU below the ~1,587-1,588 figure above.
+    // `repay_loan`, which walks no collateral, moved only +30 CU at the observed max
+    // (19,247-19,278 CU vs. 19,248 CU before pre-Plan-7). Adding code to the crate shifts
+    // inlining decisions across it, so figures drift by tens of CU on changes that do not touch
+    // the measured path at all. Treat a drift of that order as noise and anything near 1,500 as
+    // the slot-order variance above.
+    //
+    // The cost buys a local admission argument in place of a whole-program one, and these
+    // markers exist to make a change of this size visible rather than to veto it; nothing
+    // here is near the 200,000 default budget. Spec §15 and
+    // `docs/superpowers/plans/2026-09-21-plan-7-followups.md` carry the reasoning.
     let prices = env.price_accounts(&owner);
     let ixn = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 1_000 * ONE_CNGN, 30 * DAY, prices);
     let cu = send_cu(&mut env.svm, &[ixn], &[&env.admin, &setup.borrower.key]).unwrap();
-    assert!(cu < 95_000, "take_loan at 8 collateral slots / 9 existing overdue loans used {cu} CU");
+    assert!(cu < 115_000, "take_loan at 8 collateral slots / 9 existing overdue loans used {cu} CU");
 
     // withdraw_collateral's post-withdrawal health check walks the same 8 slots, the promo cap
-    // and now 10 loans. Measured 74,182-78,682 CU over 17 runs; see the note above.
+    // and now 10 loans. Measured 86,883-92,883 CU over 55 runs (was 74,182-78,682 CU over 17 runs
+    // pre-Plan-7); see the note above.
     let token = env.create_token_account(&setup.usdc, &owner);
     let wd = withdraw_collateral_ix(&owner, &setup.usdc, &SPL_TOKEN, &token, Some(&setup.cngn), ONE_USDC, env.price_accounts(&owner));
     let cu = send_cu(&mut env.svm, &[wd], &[&env.admin, &setup.borrower.key]).unwrap();
-    assert!(cu < 95_000, "withdraw_collateral at 8 collateral slots / 10 loans used {cu} CU");
+    assert!(cu < 115_000, "withdraw_collateral at 8 collateral slots / 10 loans used {cu} CU");
 
     // liquidate prices all 8 collateral slots and all 10 loans, then moves two token types.
     // This position holds NO promo, so `forfeit_promo` resolves its two extra `Option` accounts
     // and takes the zero-balance early return rather than paying for a third CPI — the two
     // accounts alone are still ~9,900 CU over the pre-Task-7 baseline of 86,320. Measured
-    // 96,162 CU, stable across all 17 runs. This is the CHEAP no-forfeit path, not the most
-    // expensive liquidate path
+    // 108,208-108,239 CU over 55 runs, up from 96,162 pre-Plan 7 (see the note above). This is
+    // the CHEAP no-forfeit path, not the most expensive liquidate path
     // overall — see `full_position_liquidation_with_promo_forfeit_stays_under_the_default_compute_budget`
     // below for the case where the forfeit actually fires (token CPI + event).
     // Crash every collateral price to $0.001 so the position is liquidatable.
@@ -84,7 +123,8 @@ fn full_position_stays_under_the_default_compute_budget() {
     assert!(cu < 120_000, "liquidate at 8 collateral slots / 10 loans used {cu} CU");
 
     // repay_loan needs no price accounts but still scans all 10 loan slots to find loan 0.
-    // Measured 19,248 CU, stable across all 17 runs.
+    // Measured 19,247-19,278 CU over 55 runs (was 19,248 CU pre-Plan 7) — repay_loan walks no
+    // collateral, so this is ordinary inlining drift, not the syscall cost; see the note above.
     env.mint_to(&setup.cngn, &setup.borrower_cngn, 100_000 * ONE_CNGN);
     let rp = repay_loan_ix(&owner, &owner, &setup.cngn, &setup.borrower_cngn, 0, u64::MAX);
     let cu = send_cu(&mut env.svm, &[rp], &[&env.admin, &setup.borrower.key]).unwrap();
@@ -144,7 +184,9 @@ fn full_position_liquidation_with_promo_forfeit_stays_under_the_default_compute_
 
     // liquidate prices all 8 collateral slots and all 10 loans, moves the liquidator's
     // repayment and the seized collateral, and now also forfeits the promo balance: a third
-    // token CPI on top of the no-promo case's two. Measured 100,884-100,915 CU over 17 runs.
+    // token CPI on top of the no-promo case's two. Measured 112,938-112,986 CU over 55 runs, up
+    // from 100,884-100,915 pre-Plan 7 — see the note on
+    // `full_position_stays_under_the_default_compute_budget` above.
     for m in &mints {
         env.set_pyth_price(m, 100_000, 0);
     }
@@ -309,9 +351,13 @@ fn an_all_xstock_position_stays_under_the_default_compute_budget() {
     }
 
     // 10th (last) loan slot: the health check unpacks 8 mints on top of the usual 8 collateral
-    // slots, the promo cap and 9 existing loans. **Measured 82,670-88,670 CU over 17 runs —
+    // slots, the promo cap and 9 existing loans. **Measured 95,364-101,364 CU over 55 runs —
     // this is the figure spec §15 points at, and the only place it is written down. Quote the
-    // range, not a sample: two batches produced maxima 4,500 CU apart.**
+    // range, not a sample: two batches of 25 and 30 runs produced maxima 1,500 CU apart.**
+    //
+    // Up from 82,670-88,670 pre-Plan 7 — a rise of ~12,700 CU, one `create_program_address`
+    // syscall per collateral slot; see the note on
+    // `full_position_stays_under_the_default_compute_budget` above.
     //
     // It is a floor for mainnet, not an estimate of it: `MintKind::XStock` initializes a
     // metadata *pointer* but writes no `TokenMetadata` extension, so the fixture mint is
@@ -321,7 +367,7 @@ fn an_all_xstock_position_stays_under_the_default_compute_budget() {
     let prices = env.price_accounts(&owner);
     let ixn = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 1_000 * ONE_CNGN, 30 * DAY, prices);
     let cu = send_cu(&mut env.svm, &[ixn], &[&env.admin, &setup.borrower.key]).unwrap();
-    assert!(cu < 100_000, "take_loan at 8 xStock slots / 9 existing loans used {cu} CU");
+    assert!(cu < 115_000, "take_loan at 8 xStock slots / 9 existing loans used {cu} CU");
 
     // Compute is not the binding limit here: at three accounts a slot the transaction no longer
     // fits in a packet, so such a position needs a v0 transaction with an address lookup table.
@@ -400,9 +446,11 @@ fn full_all_xstock_position_liquidation_with_promo_forfeit_stays_under_the_defau
     // where a target sorts into the collateral slot array can shift the scan in ~1,500 CU steps
     // (see the note on `full_position_stays_under_the_default_compute_budget`) — but every slot
     // here holds the same asset shape (an xStock), so that sort order has nothing to bite on and
-    // the big step disappears: measured 107,425-107,487 CU over 14 runs, a spread of ~60 rather
-    // than ~1,500. Not zero, though — do not restate this as an exact figure. The ceiling below
-    // still leaves the same margin the sibling standard-collateral forfeit case above does.
+    // the big step disappears: measured 119,469-119,561 CU over 55 runs, a spread of ~92 rather
+    // than ~1,500 — up from 107,425-107,487 pre-Plan 7 (a rise of ~12,050-12,070 CU; see the
+    // note on `full_position_stays_under_the_default_compute_budget` above). Not zero, though —
+    // do not restate this as an exact figure. The ceiling below still leaves the same margin the
+    // sibling standard-collateral forfeit case above does.
     for m in &mints {
         env.set_pyth_price(m, 100_000, 0);
     }

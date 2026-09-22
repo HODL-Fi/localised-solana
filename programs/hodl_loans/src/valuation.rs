@@ -7,7 +7,7 @@ use crate::math::price::UsdPrice;
 use crate::math::loan::loan_balance;
 use crate::oracle::pyth::read_pyth_price;
 use crate::oracle::switchboard::read_ngn_price;
-use crate::constants::MULTIPLIER_ONE;
+use crate::constants::{COLLATERAL_SEED, MULTIPLIER_ONE};
 use crate::state::{CollateralAsset, CollateralKind, Market, Position};
 use crate::token::scaled_ui::read_xstock_multiplier;
 
@@ -41,6 +41,18 @@ pub fn load_collateral_values(
             CollateralAsset::try_deserialize(&mut &data[..]).map_err(|_| HodlError::PriceAccountMismatch)?
         };
         require_keys_eq!(asset.mint, slot.mint, HodlError::PriceAccountMismatch);
+        // Re-derive the PDA the account claims to be. Owner + discriminator + `mint` already
+        // narrow it to "a CollateralAsset this program created for this mint", and listing is
+        // the only path that creates one — but that is a whole-program argument, and since
+        // Plan 4 this same account's `kind` also decides how many accounts the walk consumes,
+        // so more rests on it than when Plan 2 first wrote it down. One hash makes the argument
+        // local: this is the canonical `["collateral", mint]` address or the walk stops.
+        let expected = Pubkey::create_program_address(
+            &[COLLATERAL_SEED, asset.mint.as_ref(), &[asset.bump]],
+            program_id,
+        )
+        .map_err(|_| HodlError::PriceAccountMismatch)?;
+        require_keys_eq!(asset_info.key(), expected, HodlError::PriceAccountMismatch);
         if asset.price_account != Pubkey::default() {
             require_keys_eq!(price_info.key(), asset.price_account, HodlError::PriceAccountMismatch);
         }

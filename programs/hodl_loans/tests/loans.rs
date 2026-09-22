@@ -269,3 +269,45 @@ fn a_pinned_price_account_is_the_only_one_accepted() {
     send(&mut env.svm, &[take(prices)], &[&env.admin, &setup.borrower.key]).unwrap();
     assert_eq!(env.token_balance(&setup.borrower_cngn), 2_000_000 * ONE_CNGN);
 }
+
+#[test]
+fn the_health_walk_rejects_a_collateral_asset_at_a_forged_address() {
+    // The walk admits an asset by owner, discriminator and stored `mint`. Those narrow it to
+    // "a CollateralAsset this program created for this mint" — but only because listing is the
+    // sole creation path, which is an argument about the whole program rather than about this
+    // account. Since Plan 4 the same account's `kind` also decides how many accounts the walk
+    // consumes, so more rests on it. Re-deriving the PDA makes the argument local, and this is
+    // the test that fails if someone removes it.
+    let (mut env, setup) = Env::loan_ready();
+    let owner = setup.borrower.pubkey();
+
+    // A copy of the real asset with a far more generous LTV, planted program-owned at an
+    // unrelated address. `mint` and `bump` are the real ones, so every check except the
+    // re-derivation passes: the owner is this program, the discriminator deserializes, and
+    // `asset.mint == slot.mint` holds.
+    let real: hodl_loans::CollateralAsset = env.fetch(&collateral_pda(&setup.usdc));
+    let forged = hodl_loans::CollateralAsset { ltv_bps: 9_000, ..real };
+    let forged_key = Keypair::new().pubkey();
+    env.set_account_data(&forged_key, &hodl_loans::ID, collateral_asset_bytes(&forged));
+
+    let mut prices = env.price_accounts(&owner);
+    let real_key = collateral_pda(&setup.usdc);
+    let mut swapped = 0;
+    for meta in prices.iter_mut() {
+        if meta.pubkey == real_key {
+            meta.pubkey = forged_key;
+            swapped += 1;
+        }
+    }
+    assert_eq!(swapped, 1, "the collateral asset must appear once for the swap to mean anything");
+
+    let borrow = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 100_000 * ONE_CNGN, 30 * DAY, prices);
+    assert_hodl_error(
+        send(&mut env.svm, &[borrow], &[&env.admin, &setup.borrower.key]),
+        HodlError::PriceAccountMismatch,
+    );
+
+    // The same borrow against the real asset succeeds, so the rejection is about the forged
+    // address and not about the amount.
+    env.take_loan(&setup.borrower, &setup, 100_000 * ONE_CNGN, 30 * DAY).unwrap();
+}
