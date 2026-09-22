@@ -101,10 +101,13 @@ pub fn load_collateral_values(
             // bounds what the scaled-UI authority can conjure while every exit path keeps
             // working at the true multiplier.
             //
-            // `compute_health` reads the flag at both places a holding can raise
-            // `borrow_limit` — its LTV term and the promo cap it unlocks — and nowhere else,
-            // so `own_value` and `liquidation_line` still count the holding in full. That is
-            // what keeps a pause from making a live loan liquidatable.
+            // `compute_health` reads the flag at the two places a holding can raise
+            // `borrow_limit` — its LTV term, and the promo cap it unlocks for borrowing. It
+            // does **not** reach `own_value`, the liquidation-threshold term, or the promo
+            // lift on `liquidation_line`, which takes its own ungated cap. That separation is
+            // what keeps a pause from making a live loan liquidatable, and it is easy to lose:
+            // `promo_counted` used to feed both limits from one gated total, so withholding an
+            // asset dropped the line too.
             lends_borrowing_power: !asset.borrow_paused
                 && !over_multiplier_ceiling(&asset, multiplier),
         });

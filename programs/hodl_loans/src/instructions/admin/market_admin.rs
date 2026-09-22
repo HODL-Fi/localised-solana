@@ -127,9 +127,13 @@ pub fn handle_set_market_paused(ctx: Context<SetMarketPaused>, paused: bool) -> 
     // would only defer the harvest: a pause outlasting `promo_inactivity_seconds` would leave
     // every idle promo expirable the instant it lifted, which is the same charge for the
     // protocol's own downtime, collected a moment later. Restarting the clock gives every
-    // borrower a full window to act once they can act again. Only on the true→false edge —
-    // though note that guards little, since setting `paused = true` on an already-paused
-    // market was never going to reach this line anyway.
+    // borrower a full window to act once they can act again. The `old_paused` conjunct is
+    // what stops a *false→false* call — `set_market_paused(false)` on a market that is already
+    // unpaused — from resetting the clock, which would otherwise let the admin postpone every
+    // promo expiry on the market indefinitely with a free no-op call. (`!paused` is what
+    // excludes the pausing edges; there is no early return for a no-op, so both reach here.)
+    // The protection is thin, since a pause-and-unpause pair in one transaction achieves the
+    // same thing — but that is an argument for bounding it later, not for dropping the guard.
     //
     // What it does not bound: the clock is market-global and every genuine pause→unpause
     // cycle resets it for every position. Two unrelated incidents inside one

@@ -22,11 +22,24 @@ that will read as defects to someone meeting them cold, and the items Plan 8 inh
   `CollateralValue::lends_borrowing_power` is read at both sites and nowhere else.
   **It is a property of two call sites, not of the type:** anything new that raises
   `borrow_limit` must be gated too, and no test enumerates the gate sites, so nothing will
-  catch a third contributor added ungated. `own_value` and `liquidation_line` deliberately
-  still count a withheld holding in full — that is what stops a pause making a live loan
-  liquidatable, and `own_value` also decides whether `write_off_loan` may treat a position as
-  dust. The promo-free fixtures cannot see this: `a_borrow_paused_asset_unlocks_no_promo_either`
-  (`promo_health.rs`) and the `compute_health` unit test are the two that can.
+  catch a third contributor added ungated.
+
+  **And the first fix for it was itself wrong, which is the part most worth remembering.**
+  `promo_counted` fed *both* limits from one total, so gating that total dropped
+  `liquidation_line` as well — meaning a guardian pause, or the scaled-UI authority crossing
+  its ceiling with no protocol action at all, made a live loan liquidatable with no price
+  movement, and a liquidator took the bonus while forfeiture handed over the borrower's promo.
+  The whole-branch review caught it; the branch now accumulates the promo cap **twice**, once
+  over all holdings for the line and once over lending holdings for the limit. The line's lift
+  is justified by forfeiture — seizure returns the full, uncapped promo balance — and that
+  argument never depended on the pause. `own_value` also decides whether `write_off_loan` may
+  treat a position as dust, so it stays ungated too.
+
+  Promo-free fixtures cannot see any of this. The tests that can are
+  `pausing_borrowing_must_not_drop_the_liquidation_line_of_a_promo_holding_position` and
+  `a_borrow_paused_asset_unlocks_no_promo_either` (both `promo_health.rs`), plus the
+  `compute_health` unit test — whose earlier version asserted the *dropped* line as correct,
+  under a comment denying the drop could happen.
 
 - **`MAX_LISTED_COLLATERAL` is derived from `MAX_TX_ACCOUNT_LOCKS` (128), not the `u8` account
   index (256).** Address lookup tables relieve message *size*, not the lock limit, so the index
@@ -131,17 +144,26 @@ than the other way around.
 
 ## Plan 8 (coverage, fuzzing, devnet)
 
-- **The liquidate paths' per-slot delta came in a few hundred CU below the other walking
-  paths** — ~1,506-1,510 against ~1,587 — repeatably across 55-run samples, and nobody has
-  explained it mechanistically. Small, but it is an unexplained difference in the one place
-  compute is written down.
+- **The liquidate paths' per-slot delta is ~81 CU below the other walking paths** —
+  ~1,506-1,510 against ~1,587, about 650 across eight slots. The whole-branch review supplied
+  the likely mechanism: every CU/slot figure in `budget.rs` is one 8-slot total divided by
+  eight, and nothing varies the slot count, so nothing separates a true per-slot term from a
+  fixed per-instruction one. Varying the slot count would settle it. (An earlier version of
+  this note called the gap "a few hundred CU per slot", which was 4x wrong — it is a few
+  hundred in total.)
 - **No test in the repo asserts any event.** Not a regression — it is the existing convention,
   confirmed by grep — but Plan 7 added two (`CollateralBorrowPauseSet`, `PromoVaultReconciled`)
   and neither is covered.
-- **Seed the harness keypairs.** Compute figures move in ~1,500 CU steps because mints are keyed
-  randomly, and Plan 7 spent real effort on bucket-coverage arguments that a seeded harness
-  makes unnecessary — including one review finding that was itself an artifact of comparing
-  samples with unequal bucket coverage.
+- **Seed the harness *borrower* keypairs, and consider storing the position bump.** The
+  ~1,500 CU stepping is not the collateral: `TakeLoan` and `WithdrawCollateral` declare the
+  position PDA with a bare `bump`, so Anchor emits `find_program_address` and pays ~1,500 CU
+  per candidate bump tried. A random borrower's canonical bump is 255 with p≈1/2, 254 with
+  p≈1/4 — a geometric ladder with an unbounded tail, not a spread bounded by eight slots.
+  `Liquidate` and `RepayLoan` constrain the position by no seeds at all, which is why their
+  figures are stable to ~31 CU. Seeding fixes the measurement; storing the bump and using
+  `bump = position.bump` would remove the cost itself, on the program's hottest path. Plan 7
+  spent real effort on bucket-coverage arguments that either change makes unnecessary —
+  including one review finding that was itself an artifact of unequal bucket coverage.
 - **`cargo fmt` remains unadopted** — 2,106 `Diff in` hunks repo-wide, overwhelmingly
   pre-existing and inherited from Plan 1. Worth a commit that does nothing else, so a real
   change is never buried in reformatting noise.

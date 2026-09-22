@@ -387,12 +387,18 @@ fn pausing_borrowing_leaves_the_liquidation_line_where_it_was() {
     // become liquidatable the instant an admin paused it.
     //
     // What holds that in place is *which* accumulations in `compute_health` consult
-    // `lends_borrowing_power`: the LTV term and the promo cap, and nothing else. `own_value`
-    // and `liquidation_line` count a withheld holding in full, so `is_liquidatable` cannot
-    // move. That is a property of two specific call sites, not of the type — an earlier draft
-    // gated only the LTV term and left the promo cap still unlocking borrowing power against a
-    // paused asset. Anything new that raises `borrow_limit` has to be gated as well, and this
-    // test will not notice if it is not: it pins the blast radius, not the gate count.
+    // `lends_borrowing_power`: the LTV term, and the promo cap **for borrowing only**. The
+    // liquidation line's own promo lift takes an ungated cap, so withholding an asset never
+    // lowers it.
+    //
+    // This position holds no promo, so what it pins is the collateral half — the
+    // liquidation-threshold term is untouched by the flag. The promo half cannot be seen from
+    // here at all: `promo_counted` is 0 on both sides of the pause.
+    // `pausing_borrowing_must_not_drop_the_liquidation_line_of_a_promo_holding_position`
+    // (`promo_health.rs`) is the one that covers it, and it exists because an earlier version
+    // of this branch shipped a single shared promo cap — which made a guardian pause drop the
+    // line and liquidate a healthy position with no price movement, while this test stayed
+    // green.
     let result = env.liquidate(&liquidator, &setup, &setup.usdc, &collateral_account, 0, ONE_CNGN);
     assert_hodl_error(result, HodlError::NotLiquidatable);
 

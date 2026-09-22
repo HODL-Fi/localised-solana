@@ -2,6 +2,7 @@ mod common;
 
 use common::*;
 use hodl_loans::HodlError;
+use anchor_lang::prelude::Pubkey;
 use solana_signer::Signer;
 
 const DAY: i64 = 86_400;
@@ -131,4 +132,51 @@ fn a_borrow_paused_asset_unlocks_no_promo_either() {
     let unpause = set_collateral_borrow_paused_ix(&env.admin.pubkey(), &setup.usdc, false);
     send(&mut env.svm, &[unpause], &[&env.admin]).unwrap();
     env.take_loan(&setup.borrower, &setup, WITH_PROMO_CEILING, 30 * DAY).unwrap();
+}
+
+#[test]
+fn pausing_borrowing_must_not_drop_the_liquidation_line_of_a_promo_holding_position() {
+    // The pause withholds borrowing power. It must not also lower the line that decides
+    // liquidation — otherwise an admin (or, through the multiplier ceiling, the token's own
+    // scaled-UI authority) can make a live loan liquidatable with no price movement at all,
+    // and a liquidator takes the bonus while `forfeit_promo` hands the borrower's promo to
+    // the market vault.
+    //
+    // The promo lift on the liquidation line is justified by forfeiture: seizure returns the
+    // position's full *uncapped* promo balance, so recovery covers the lift. Nothing about
+    // that argument depends on whether the collateral is borrow-paused.
+    let (mut env, setup) = Env::promo_ready();
+    let promoed = env.new_borrower();
+    let owner = promoed.pubkey();
+    env.deposit_collateral(&promoed, &setup.usdc, 1_000 * ONE_USDC);
+    let promoed_cngn = env.create_token_account(&setup.cngn, &owner);
+    env.redeem_promo(&promoed, &setup.cngn, 1, 50_000 * ONE_CNGN, 7).unwrap();
+    let prices = env.price_accounts(&owner);
+    let borrow = take_loan_ix(&owner, &setup.cngn, &promoed_cngn, 700_000 * ONE_CNGN, 365 * DAY, prices);
+    send(&mut env.svm, &[borrow], &[&env.admin, &promoed.key]).unwrap();
+
+    // Exactly the price from `promo_lifts_the_liquidation_line_with_the_borrow_limit`: the
+    // position sits just above its line at $438.47 against $437.94 of debt, held there by
+    // $31.21875 of counted promo.
+    env.set_pyth_price(&setup.usdc, 45_250_000, 0);
+    let liquidator = env.new_liquidator(&setup.cngn, 1_000_000 * ONE_CNGN);
+    let seized_to = env.create_token_account(&setup.usdc, &liquidator.pubkey());
+    let seize = |env: &Env, owner: &Pubkey| {
+        liquidate_ix(
+            &liquidator.pubkey(), owner, &setup.cngn, &liquidator.cngn, &setup.usdc, &SPL_TOKEN,
+            &seized_to, 0, 1_000 * ONE_CNGN, env.price_accounts(owner),
+        )
+    };
+    let before = seize(&env, &owner);
+    assert_hodl_error(send(&mut env.svm, &[before], &[&liquidator.key]), HodlError::NotLiquidatable);
+
+    // The guardian pauses borrowing against the collateral. Nothing else changes — no price
+    // moves, no debt is drawn, the promo is untouched and still forfeitable.
+    let pause = set_collateral_borrow_paused_ix(&env.guardian.pubkey(), &setup.usdc, true);
+    send(&mut env.svm, &[pause], &[&env.guardian]).unwrap();
+
+    // The position must still be above its line.
+    let after = seize(&env, &owner);
+    assert_hodl_error(send(&mut env.svm, &[after], &[&liquidator.key]), HodlError::NotLiquidatable);
+    assert_eq!(env.position(&owner).promo_balance, 50_000 * ONE_CNGN);
 }

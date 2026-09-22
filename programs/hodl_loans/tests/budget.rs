@@ -46,11 +46,18 @@ fn full_position_stays_under_the_default_compute_budget() {
     // over 17 runs pre-Plan-7; was 87,461-93,461 CU over 55 runs after Task 1, before this
     // task's own `lends_borrowing_power` gate — see the Task 3 note below the syscall analysis).
     //
-    // These figures are NOT deterministic: the harness keys its mints randomly, so where a
-    // target sorts into the collateral slot array shifts the scan, moving the cost in steps of
-    // ~1,500 CU. Each range below is min-max observed over 55 runs, and the tail is not fully
-    // characterised — separate batches produced different maxima. Compare against the max,
-    // never a single sample.
+    // These figures are NOT deterministic, and the cause is the **borrower keypair**, not the
+    // collateral. `TakeLoan` and `WithdrawCollateral` declare the position with
+    // `seeds = [POSITION_SEED, owner.key().as_ref()], bump` — a *bare* bump, so Anchor emits
+    // `find_program_address`, which tries candidate bumps from 255 downward at ~1,500 CU each.
+    // A randomly-keyed borrower's canonical bump is 255 with p≈1/2, 254 with p≈1/4, and so on:
+    // a geometric ladder of ~1,500 CU steps, with an unbounded tail rather than one bounded by
+    // the slot count. `Liquidate` and `RepayLoan` take the position with no seeds constraint at
+    // all, which is why their spreads are ~31-62 CU while these are thousands.
+    //
+    // Each range below is min-max over 55 runs and the tail is not fully characterised.
+    // Compare against the max, never a single sample — and note the max grows with sample
+    // size, which is exactly why the derivation below uses min-to-min.
     //
     // **The `create_program_address` syscall this walk added costs ~1,587-1,588 CU per
     // collateral slot, stable — ~12,700 CU at eight slots.** This is a Task 1 finding, measured
@@ -84,8 +91,12 @@ fn full_position_stays_under_the_default_compute_budget() {
     // The two `liquidate` paths below (with and without a promo forfeit) are a separate, genuine
     // effect, not this same artifact: both are stable (essentially single-valued, no stepped
     // bucketing) on both sides of the change, so no coverage correction applies, and — at Task 1
-    // — their measured delta was still only ~12,044-12,077 CU across the same eight slots
-    // (~1,506-1,510 CU/slot) — a few hundred CU below the ~1,587-1,588 figure above.
+    // — their measured delta was still only ~12,046-12,077 CU across the same eight slots
+    // (~1,506-1,510 CU/slot), about 81 CU per slot below the ~1,587-1,588 figure above (~650
+    // across all eight). Worth stating plainly: every CU/slot number here is one 8-slot total
+    // divided by 8, and nothing in this file varies the slot count — so none of it separates a
+    // true per-slot term from a fixed per-instruction one, and that is the likeliest home for
+    // the ~650 gap.
     // `repay_loan`, which walks no collateral, moved only +30 CU at Task 1's observed max
     // (19,247-19,278 CU vs. 19,248 CU before pre-Plan-7). Adding code to the crate shifts
     // inlining decisions across it, so figures drift by tens of CU on changes that do not touch
@@ -483,11 +494,13 @@ fn full_all_xstock_position_liquidation_with_promo_forfeit_stays_under_the_defau
     // repayment and the seized collateral moved, and the promo forfeited on top of it all — a
     // fourth token CPI beyond the standard-collateral no-forfeit case's two.
     //
-    // This suite's CU is not deterministic in general — the harness keys its mints randomly, so
-    // where a target sorts into the collateral slot array can shift the scan in ~1,500 CU steps
-    // (see the note on `full_position_stays_under_the_default_compute_budget`) — but every slot
-    // here holds the same asset shape (an xStock), so that sort order has nothing to bite on and
-    // the big step disappears: measured 120,224-120,255 CU over 55 runs, a spread of ~31 rather
+    // This figure is stable where the `take_loan` ones are not, and the reason is the
+    // instruction, not the collateral: `Liquidate` takes the position with no seeds constraint,
+    // so it never pays `find_program_address`'s bump search (see the note on
+    // `full_position_stays_under_the_default_compute_budget`). Same-shape collateral has
+    // nothing to do with it — `an_all_xstock_position_stays_under_the_default_compute_budget`
+    // below holds eight identical xStocks and still spreads 9,000 CU, because it is a
+    // `take_loan`. Measured 120,224-120,255 CU over 55 runs, a spread of ~31 rather
     // than ~1,500 — up from 107,425-107,487 pre-Plan 7 (was 119,469-119,561 CU over 55 runs
     // after Task 1, a further +755 CU at the min from this task's `lends_borrowing_power` gate;
     // see the note on `full_position_stays_under_the_default_compute_budget` above and its

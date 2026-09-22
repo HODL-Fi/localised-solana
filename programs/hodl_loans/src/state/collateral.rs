@@ -41,10 +41,17 @@ pub struct CollateralAsset {
     /// Blocks new *borrowing* backed by this asset. While set, the holding's
     /// `lends_borrowing_power` is false, which suppresses both ways it could raise
     /// `borrow_limit`: its own LTV term and the promo cap its value would otherwise unlock.
-    /// It still counts in full at `own_value` and the liquidation line, and it can still be
-    /// deposited, withdrawn and seized — pausing an asset must not strand the collateral
-    /// already behind it, and must not make a position that was liquidatable a moment ago
-    /// suddenly safe.
+    /// It still counts in full at `own_value` and at the liquidation line — including the
+    /// promo lift, which takes its own ungated cap — so pausing an asset can neither make a
+    /// live loan liquidatable nor make a position that was liquidatable a moment ago suddenly
+    /// safe. Deposits and seizure are unaffected.
+    ///
+    /// **Withdrawal is not.** `withdraw_collateral` gates on the same `is_healthy()` the
+    /// borrow does, so while a loan is live a borrow-paused asset backs no withdrawal at all;
+    /// `a_borrow_paused_asset_backs_no_withdrawal_while_a_loan_is_live` pins that. Withdrawing
+    /// is exposure-increasing in the same way borrowing is, so this is intended — but it means
+    /// a pause does strand collateral behind a live loan until the loan is repaid or the pause
+    /// lifted.
     /// Taken from the reserved padding, so the account size is unchanged.
     pub borrow_paused: bool,
     /// Per-asset ceiling on the mint's scaled-UI multiplier, in `MULTIPLIER_SCALE` fixed
