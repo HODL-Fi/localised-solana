@@ -24,10 +24,7 @@
 - Compute figures in `tests/budget.rs` are **not deterministic**: the harness keys mints randomly, so slot sort order shifts the cost in ~1,500 CU steps. Record ranges over many runs, never a single sample. Adding code to the crate also shifts inlining and moves figures by tens of CU on paths you did not touch.
 - Every commit message ends with:
   `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>`
-- The suite is **241 tests** (57 unit, 184 LiteSVM) at the start of this plan and **264** (59 unit, 205 LiteSVM)
-  at the end. Per task: 242, 243, 251, 252, 256, 259, 263, 264. If your count does not match the task you are
-  on, **report it — do not delete a test to reach the number.** One of these figures was wrong on the first
-  pass and the implementer who found it was right to refuse.
+- The suite is **241 tests** (57 unit, 184 LiteSVM) at the start of this plan and **264** (59 unit, 205 LiteSVM) at the end.
 
 ## File Structure
 
@@ -853,9 +850,15 @@ fn pausing_borrowing_leaves_the_liquidation_line_where_it_was() {
 
     // The position is still healthy. The pause removed borrowing power, not the collateral
     // standing behind debt already taken — otherwise every live loan against the asset would
-    // become liquidatable the instant an admin paused it. This holds structurally rather than
-    // by convention: the pause zeroes `ltv_bps`, `ltv_bps` reaches only `borrow_limit`, and
-    // `is_liquidatable` reads `liquidation_line`. There is no call-site flag to get wrong.
+    // become liquidatable the instant an admin paused it.
+    //
+    // What holds that in place is *which* accumulations in `compute_health` consult
+    // `lends_borrowing_power`: the LTV term and the promo cap, and nothing else. `own_value`
+    // and `liquidation_line` count a withheld holding in full, so `is_liquidatable` cannot
+    // move. That is a property of two specific call sites, not of the type — an earlier draft
+    // gated only the LTV term and left the promo cap still unlocking borrowing power against a
+    // paused asset. Anything new that raises `borrow_limit` has to be gated as well, and this
+    // test will not notice if it is not: it pins the blast radius, not the gate count.
     let result = env.liquidate(&liquidator, &setup, &setup.usdc, &collateral_account, 0, ONE_CNGN);
     assert_hodl_error(result, HodlError::NotLiquidatable);
 
@@ -1154,10 +1157,10 @@ empty market, for a borrow against the wrong market. True of that market, not
 what was wrong with the call. Spec §10 puts both position preconditions in
 steps 1-2, ahead of step 3's accrual. Only the reported error changes.
 
-Spec §9 claimed accrual runs first in every instruction that touches the
-market. harvest_reserve and the two sweeps do not, and provably need not.
-Narrowed the spec and recorded the reasoning at both call sites so it does not
-read as an omission.
+Spec §9's claim that accrual runs first in every instruction touching the
+market was already narrowed in the plan's own commit; this records the same
+reasoning at both call sites, so a reader of reserve.rs or sweep.rs does not
+have to treat the missing accrue() as an oversight.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
