@@ -1,6 +1,7 @@
 mod common;
 
 use anchor_lang::error::ErrorCode as AnchorError;
+use anchor_lang::prelude::Pubkey;
 use common::*;
 use hodl_loans::{CollateralKind, CollateralParams, HodlError};
 use solana_signer::Signer;
@@ -266,4 +267,52 @@ fn the_guardian_pauses_borrowing_against_one_asset_and_only_the_admin_lifts_it()
     let unpause = set_collateral_borrow_paused_ix(&admin, &mint, false);
     send(&mut env.svm, &[unpause], &[&env.admin]).unwrap();
     assert!(!env.collateral(&mint).borrow_paused);
+}
+
+#[test]
+fn listing_refuses_once_the_asset_list_is_at_its_bound() {
+    let mut env = Env::initialized();
+    let program = hodl_loans::ID;
+    // This pins the guard only. That the bound is the *right* number — small enough that
+    // `set_promo_cap` still fits inside `MAX_TX_ACCOUNT_LOCKS` — is arithmetic, and
+    // `the_asset_list_bound_keeps_set_promo_cap_inside_the_lock_limit` in `constants.rs`
+    // pins that instead; listing a full asset list here would take minutes and still not
+    // exercise the transaction limit.
+    //
+    // Listing 96 assets for real would take minutes, and the guard is what is under test,
+    // not the counter: `list_collateral` is the only writer that raises `collateral_count`,
+    // and every increment runs this same check. Re-serialize the config with the count at the
+    // ceiling — writing the struct rather than poking an offset, so the test does not silently
+    // stop testing anything if a field is ever added above it.
+    let set_count = |env: &mut Env, count: u16| {
+        let mut config = env.config();
+        config.collateral_count = count;
+        let mut encoded = Vec::new();
+        anchor_lang::AccountSerialize::try_serialize(&config, &mut encoded).unwrap();
+        let mut data = env.svm.get_account(&config_pda()).unwrap().data;
+        data[..encoded.len()].copy_from_slice(&encoded);
+        env.set_account_data(&config_pda(), &program, data);
+    };
+    let listing = |env: &Env, mint: &Pubkey| {
+        list_collateral_ix(
+            &env.admin.pubkey(),
+            mint,
+            &SPL_TOKEN,
+            default_collateral_params(mint),
+            hodl_loans::CollateralKind::Standard,
+        )
+    };
+
+    set_count(&mut env, hodl_loans::MAX_LISTED_COLLATERAL);
+    assert_eq!(env.config().collateral_count, hodl_loans::MAX_LISTED_COLLATERAL);
+    let mint = env.create_mint(MintKind::SplToken, 6);
+    let list = listing(&env, &mint);
+    assert_hodl_error(send(&mut env.svm, &[list], &[&env.admin]), HodlError::CollateralLimitReached);
+
+    // One below the ceiling the same listing goes through, so the guard is the bound itself
+    // and not a blanket refusal — and it lands exactly on the ceiling.
+    set_count(&mut env, hodl_loans::MAX_LISTED_COLLATERAL - 1);
+    let list = listing(&env, &mint);
+    send(&mut env.svm, &[list], &[&env.admin]).unwrap();
+    assert_eq!(env.config().collateral_count, hodl_loans::MAX_LISTED_COLLATERAL);
 }

@@ -285,3 +285,39 @@ fn a_receipt_is_closable_once_its_voucher_can_no_longer_be_used() {
     // The promo the voucher granted is untouched by closing its receipt.
     assert_eq!(env.position(&borrower.pubkey()).promo_balance, GRANT);
 }
+
+#[test]
+fn a_campaign_cannot_outlast_the_maximum_lifetime() {
+    let (mut env, cngn) = Env::with_promo_vault(FUNDING);
+    let admin = env.admin.pubkey();
+    let now = env.now();
+
+    let too_long = create_campaign_ix(&admin, &cngn, 1, BUDGET, now + hodl_loans::MAX_CAMPAIGN_LIFETIME + 1);
+    assert_hodl_error(send(&mut env.svm, &[too_long], &[&env.admin]), HodlError::InvalidParameters);
+
+    // Exactly at the bound is allowed: the check is `<=`.
+    let at_bound = create_campaign_ix(&admin, &cngn, 1, BUDGET, now + hodl_loans::MAX_CAMPAIGN_LIFETIME);
+    send(&mut env.svm, &[at_bound], &[&env.admin]).unwrap();
+}
+
+#[test]
+fn a_voucher_may_not_outlive_its_campaign() {
+    let (mut env, cngn) = Env::with_promo_vault(FUNDING);
+    let admin = env.admin.pubkey();
+    let until = env.now() + 86_400;
+    send(&mut env.svm, &[create_campaign_ix(&admin, &cngn, 1, BUDGET, until)], &[&env.admin]).unwrap();
+    let borrower = env.new_borrower();
+    let signer = env.promo_signer.insecure_clone();
+
+    // A validly signed voucher, inside its own expiry and inside the campaign window, but
+    // whose expiry reaches past the campaign's end. Its receipt would hold rent no one could
+    // reclaim until that date, so it is refused.
+    let result =
+        env.redeem_voucher_signed_by(&signer, &borrower, &cngn, 1, GRANT, 7, until + 1);
+    assert_hodl_error(result, HodlError::VoucherOutlivesCampaign);
+
+    // Expiry exactly at the campaign's end is fine — the check is `<=`, and the receipt
+    // becomes closable the second after the campaign closes.
+    env.redeem_voucher_signed_by(&signer, &borrower, &cngn, 1, GRANT, 7, until).unwrap();
+    assert_eq!(env.position(&borrower.pubkey()).promo_balance, GRANT);
+}

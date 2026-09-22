@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{self, CloseAccount, Mint, TokenAccount, TokenInterface};
 
-use crate::constants::{ACCOUNT_VERSION, COLLATERAL_SEED, COLLATERAL_VAULT_SEED, CONFIG_SEED, MAX_COLLATERAL_DECIMALS};
+use crate::constants::{ACCOUNT_VERSION, COLLATERAL_SEED, COLLATERAL_VAULT_SEED, CONFIG_SEED, MAX_COLLATERAL_DECIMALS, MAX_LISTED_COLLATERAL};
 use crate::errors::HodlError;
 use crate::events::{
     CollateralBorrowPauseSet, CollateralDelisted, CollateralListed, CollateralParamsUpdated, CollateralPauseSet,
@@ -126,6 +126,10 @@ pub fn handle_list_collateral(
     ctx.accounts.collateral.set_inner(asset);
 
     let config = &mut ctx.accounts.config;
+    // `set_promo_cap` must name every listed asset in one transaction, so the list has a
+    // ceiling; see `MAX_LISTED_COLLATERAL`. Checked here rather than in `set_promo_cap`
+    // because by then it is too late — listing is the only thing that grows the count.
+    require!(config.collateral_count < MAX_LISTED_COLLATERAL, HodlError::CollateralLimitReached);
     config.collateral_count = config.collateral_count.checked_add(1).ok_or(HodlError::MathOverflow)?;
 
     emit!(CollateralListed {
