@@ -337,3 +337,30 @@ fn the_ngn_feed_must_be_owned_by_the_switchboard_program() {
     env.set_ngn_price(NGN_USD, NGN_SPREAD);
     env.take_loan(&setup.borrower, &setup, 100_000 * ONE_CNGN, 30 * DAY).unwrap();
 }
+
+#[test]
+fn a_borrow_paused_asset_lends_no_borrowing_power() {
+    let (mut env, setup) = Env::loan_ready();
+    let pause = set_collateral_borrow_paused_ix(&env.guardian.pubkey(), &setup.usdc, true);
+    send(&mut env.svm, &[pause], &[&env.guardian]).unwrap();
+
+    // The $700 limit is gone entirely, not merely reduced: the market's smallest permitted
+    // loan is refused. Anything under `min_loan_amount` would trip `AmountTooSmall` first and
+    // prove nothing about health.
+    assert_hodl_error(env.take_loan(&setup.borrower, &setup, 1_000 * ONE_CNGN, 30 * DAY), HodlError::Unhealthy);
+    // Depositing more of the asset buys none of it back, and is still permitted — the pause
+    // stops borrowing against the asset, not holding it.
+    env.deposit_collateral(&setup.borrower, &setup.usdc, 1_000 * ONE_USDC);
+    assert_eq!(env.position(&setup.borrower.pubkey()).collateral[0].amount, 2_000 * ONE_USDC);
+    assert_hodl_error(env.take_loan(&setup.borrower, &setup, 1_000 * ONE_CNGN, 30 * DAY), HodlError::Unhealthy);
+
+    // Lifting it restores the limit over everything deposited: 2,000 USDC is twice the
+    // 1,118,881 cNGN of `borrow_limit_is_seventy_percent_of_collateral_at_the_ngn_ask`.
+    let unpause = set_collateral_borrow_paused_ix(&env.admin.pubkey(), &setup.usdc, false);
+    send(&mut env.svm, &[unpause], &[&env.admin]).unwrap();
+    assert_hodl_error(
+        env.take_loan(&setup.borrower, &setup, 2_237_763 * ONE_CNGN, 30 * DAY),
+        HodlError::Unhealthy,
+    );
+    env.take_loan(&setup.borrower, &setup, 2_237_762 * ONE_CNGN, 30 * DAY).unwrap();
+}

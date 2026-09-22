@@ -2,6 +2,7 @@ mod common;
 
 use common::*;
 use hodl_loans::HodlError;
+use solana_signer::Signer;
 
 const DAY: i64 = 86_400;
 /// 1,000 USDC at 70% LTV backs $700, which is 1,118,881 cNGN at the NGN ask.
@@ -98,4 +99,36 @@ fn promo_lifts_the_liquidation_line_with_the_borrow_limit() {
 
     // The only difference between the two positions is the promo.
     env.liquidate(&liquidator, &setup, &setup.usdc, &seized_to, 0, 1_000 * ONE_CNGN).unwrap();
+}
+
+#[test]
+fn a_borrow_paused_asset_unlocks_no_promo_either() {
+    // The brake has to stop *both* routes from a holding to the borrow limit. Its own LTV
+    // term is the obvious one; the promo cap is the other, and it is a fraction of the
+    // holding's value that never consulted `ltv_bps`. A test on a promo-free position cannot
+    // tell the two apart — this one can.
+    let (mut env, setup) = Env::promo_ready();
+    let borrower = &setup.borrower;
+    env.redeem_promo(borrower, &setup.cngn, 1, 50_000 * ONE_CNGN, 7).unwrap();
+    env.take_loan(borrower, &setup, WITH_PROMO_CEILING, 30 * DAY).unwrap();
+
+    // Repay in full so the position is idle, then pause borrowing against the collateral.
+    env.mint_to(&setup.cngn, &setup.borrower_cngn, WITH_PROMO_CEILING);
+    env.repay(&setup, 0, u64::MAX).unwrap();
+    let pause = set_collateral_borrow_paused_ix(&env.guardian.pubkey(), &setup.usdc, true);
+    send(&mut env.svm, &[pause], &[&env.guardian]).unwrap();
+    assert_eq!(env.position(&setup.borrower.pubkey()).promo_balance, 50_000 * ONE_CNGN);
+
+    // Promo is still held and the collateral is still there, but neither may be borrowed
+    // against: the market's smallest permitted loan is refused. Before the promo cap was
+    // gated on the same flag, this call succeeded for up to 20% of the collateral's value.
+    assert_hodl_error(
+        env.take_loan(&setup.borrower, &setup, 1_000 * ONE_CNGN, 30 * DAY),
+        HodlError::Unhealthy,
+    );
+
+    // Lifting it restores exactly the promo-assisted ceiling, so nothing else moved.
+    let unpause = set_collateral_borrow_paused_ix(&env.admin.pubkey(), &setup.usdc, false);
+    send(&mut env.svm, &[unpause], &[&env.admin]).unwrap();
+    env.take_loan(&setup.borrower, &setup, WITH_PROMO_CEILING, 30 * DAY).unwrap();
 }

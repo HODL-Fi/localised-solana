@@ -242,3 +242,28 @@ fn a_mint_with_too_many_decimals_cannot_be_listed() {
     env.list_spl_collateral(6);
     assert_eq!(env.config().collateral_count, 3);
 }
+
+#[test]
+fn the_guardian_pauses_borrowing_against_one_asset_and_only_the_admin_lifts_it() {
+    let mut env = Env::initialized();
+    let mint = env.list_spl_collateral(6);
+    let guardian = env.guardian.pubkey();
+    let admin = env.admin.pubkey();
+
+    let pause = set_collateral_borrow_paused_ix(&guardian, &mint, true);
+    send(&mut env.svm, &[pause], &[&env.guardian]).unwrap();
+    assert!(env.collateral(&mint).borrow_paused);
+    // The two pauses are independent switches: this one leaves deposits open.
+    assert!(!env.collateral(&mint).paused);
+
+    let guardian_unpause = set_collateral_borrow_paused_ix(&guardian, &mint, false);
+    assert_hodl_error(send(&mut env.svm, &[guardian_unpause], &[&env.guardian]), HodlError::Unauthorized);
+
+    let stranger = env.funded_keypair();
+    let stranger_pause = set_collateral_borrow_paused_ix(&stranger.pubkey(), &mint, true);
+    assert_hodl_error(send(&mut env.svm, &[stranger_pause], &[&stranger]), HodlError::Unauthorized);
+
+    let unpause = set_collateral_borrow_paused_ix(&admin, &mint, false);
+    send(&mut env.svm, &[unpause], &[&env.admin]).unwrap();
+    assert!(!env.collateral(&mint).borrow_paused);
+}

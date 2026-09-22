@@ -501,3 +501,84 @@ fn a_multiplier_above_the_cap_fails_every_priced_path() {
     env.sponsored(withdraw, &setup.borrower.key).unwrap();
     assert_eq!(env.token_balance(&token), 10 * ONE_XSTOCK);
 }
+
+#[test]
+fn a_multiplier_past_the_assets_ceiling_withdraws_borrowing_power_without_sealing_the_position() {
+    let (mut env, setup) = Env::loan_ready();
+    let stock = env.list_xstock_collateral(200);
+    let borrower = env.new_borrower();
+    env.deposit_collateral(&borrower, &stock, 10 * ONE_XSTOCK);
+    let borrower_cngn = env.create_token_account(&setup.cngn, &borrower.pubkey());
+    let setup = LoanSetup { borrower, borrower_cngn, ..setup };
+    let admin = env.admin.pubkey();
+    let owner = setup.borrower.pubkey();
+
+    // The admin caps this asset at 1.5×, which is where it sits today, so nothing changes yet.
+    let mut params = xstock_collateral_params(&stock);
+    params.max_multiplier = 3 * hodl_loans::MULTIPLIER_SCALE / 2;
+    send(&mut env.svm, &[update_collateral_params_ix(&admin, &stock, params)], &[&env.admin]).unwrap();
+    let now = env.now();
+    env.set_multiplier(&stock, 1.5, now);
+    env.take_loan(&setup.borrower, &setup, CEILING_AT_1_5, 30 * DAY).unwrap();
+
+    // The issuer then scales far past the ceiling. The collateral's *value* really did rise,
+    // but the protocol will not lend against a number this authority can set at will.
+    env.set_multiplier(&stock, 1_000.0, env.now());
+    assert_hodl_error(env.take_loan(&setup.borrower, &setup, 1_000 * ONE_CNGN, 30 * DAY), HodlError::Unhealthy);
+
+    // The whole point of withholding borrowing power rather than rejecting the price: every
+    // exit path still works. The position is priced, not sealed — so it can be liquidated if
+    // it ever needs to be, and the borrower can still get their collateral back.
+    let liquidator = env.new_liquidator(&setup.cngn, CEILING_AT_1_5);
+    let seized_to = env.create_token_account(&stock, &liquidator.pubkey());
+    let result = env.liquidate(&liquidator, &setup, &stock, &seized_to, 0, ONE_CNGN);
+    assert_hodl_error(result, HodlError::NotLiquidatable);
+
+    // Repaying and withdrawing both go through — the asset is still valued at its true
+    // multiplier everywhere except the borrow limit.
+    env.mint_to(&setup.cngn, &setup.borrower_cngn, CEILING_AT_1_5);
+    env.repay(&setup, 0, u64::MAX).unwrap();
+    let token = env.create_token_account(&stock, &owner);
+    let withdraw = withdraw_collateral_ix(&owner, &stock, &TOKEN_2022, &token, None, ONE_XSTOCK, vec![]);
+    env.sponsored(withdraw, &setup.borrower.key).unwrap();
+    assert_eq!(env.token_balance(&token), ONE_XSTOCK);
+
+    // Lifting the ceiling restores the borrowing power the collateral genuinely carries.
+    let mut params = xstock_collateral_params(&stock);
+    params.max_multiplier = 0;
+    send(&mut env.svm, &[update_collateral_params_ix(&admin, &stock, params)], &[&env.admin]).unwrap();
+    env.take_loan(&setup.borrower, &setup, 1_000 * ONE_CNGN, 30 * DAY).unwrap();
+}
+
+#[test]
+fn a_multiplier_ceiling_below_one_is_refused_rather_than_silently_freezing_the_asset() {
+    // `max_multiplier` is MULTIPLIER_SCALE fixed point, so an admin who means "cap at 1x" and
+    // writes `1` is asking for 10^-12. Unvalidated that puts *every* asset over its ceiling —
+    // a Standard asset included, whose multiplier is the constant MULTIPLIER_ONE — which
+    // silently zeroes its borrowing power and freezes every existing borrower out of
+    // withdrawing collateral, with no event and no error where the mistake was made.
+    let mut env = Env::initialized();
+    let admin = env.admin.pubkey();
+    let usdc = env.list_spl_collateral(6);
+
+    let mut params = default_collateral_params(&usdc);
+    params.max_multiplier = 1;
+    let bad = update_collateral_params_ix(&admin, &usdc, params);
+    assert_hodl_error(send(&mut env.svm, &[bad], &[&env.admin]), HodlError::InvalidParameters);
+
+    // Above MAX_MULTIPLIER the ceiling could never bind — the price read rejects those
+    // multipliers first — so advertising it is refused too.
+    let mut params = default_collateral_params(&usdc);
+    params.max_multiplier = hodl_loans::MAX_MULTIPLIER + 1;
+    let too_high = update_collateral_params_ix(&admin, &usdc, params);
+    assert_hodl_error(send(&mut env.svm, &[too_high], &[&env.admin]), HodlError::InvalidParameters);
+
+    // The two values that mean something both go through: uncapped, and exactly 1x.
+    for value in [0, hodl_loans::MULTIPLIER_ONE] {
+        let mut params = default_collateral_params(&usdc);
+        params.max_multiplier = value;
+        let ok = update_collateral_params_ix(&admin, &usdc, params);
+        send(&mut env.svm, &[ok], &[&env.admin]).unwrap();
+        assert_eq!(env.collateral(&usdc).max_multiplier, value);
+    }
+}

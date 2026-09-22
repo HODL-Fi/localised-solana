@@ -175,3 +175,27 @@ fn withdrawal_checks_the_borrowed_market() {
     let wrong_market = withdraw_collateral_ix(&owner, &setup.usdc, &SPL_TOKEN, &token, Some(&other), ONE_USDC, price_pairs(&[setup.usdc]));
     assert_hodl_error(env.sponsored(wrong_market, &setup.borrower.key), HodlError::MarketMismatch);
 }
+
+#[test]
+fn a_borrow_paused_asset_backs_no_withdrawal_while_a_loan_is_live() {
+    let (mut env, setup) = Env::loan_ready();
+    let owner = setup.borrower.pubkey();
+    let (usdc, cngn) = (setup.usdc, setup.cngn);
+    env.take_loan(&setup.borrower, &setup, 500_000 * ONE_CNGN, 365 * DAY).unwrap();
+    let token = env.create_token_account(&usdc, &owner);
+    let withdraw =
+        |amount| withdraw_collateral_ix(&owner, &usdc, &SPL_TOKEN, &token, Some(&cngn), amount, price_pairs(&[usdc]));
+    let key = &setup.borrower.key;
+
+    let pause = set_collateral_borrow_paused_ix(&env.guardian.pubkey(), &usdc, true);
+    send(&mut env.svm, &[pause], &[&env.guardian]).unwrap();
+    // Withdrawing is exposure-increasing in the same way borrowing is, and the slack that
+    // would have allowed it is the paused asset's own borrowing power. One atom is refused.
+    assert_hodl_error(env.sponsored(withdraw(1), key), HodlError::Unhealthy);
+
+    // Lifting the pause restores the same 553 USDC of slack the unpaused case has.
+    let unpause = set_collateral_borrow_paused_ix(&env.admin.pubkey(), &usdc, false);
+    send(&mut env.svm, &[unpause], &[&env.admin]).unwrap();
+    env.sponsored(withdraw(553 * ONE_USDC), key).unwrap();
+    assert_hodl_error(env.sponsored(withdraw(ONE_USDC), key), HodlError::Unhealthy);
+}

@@ -17,6 +17,13 @@ use crate::token::scaled_ui::read_xstock_multiplier;
 pub const ACCOUNTS_PER_COLLATERAL: usize = 2;
 pub const ACCOUNTS_PER_XSTOCK: usize = 3;
 
+/// Whether the mint's live multiplier has run past the ceiling the admin set for this asset.
+/// `0` disables the ceiling, which is what every asset listed before the field existed carries
+/// and what a `Standard` asset — whose multiplier is always `MULTIPLIER_ONE` — wants anyway.
+fn over_multiplier_ceiling(asset: &CollateralAsset, multiplier: u128) -> bool {
+    asset.max_multiplier != 0 && multiplier > asset.max_multiplier
+}
+
 /// Value every used collateral slot, in slot order, from `remaining` pairs.
 ///
 /// The loop runs over the position's slots, not over the accounts supplied, so a missing,
@@ -83,6 +90,23 @@ pub fn load_collateral_values(
             price,
             ltv_bps: asset.ltv_bps,
             liquidation_threshold_bps: asset.liquidation_threshold_bps,
+            // Two reasons an asset stops supporting new exposure: the admin's borrow pause,
+            // and a mint that has scaled its multiplier past the ceiling set for it. Both are
+            // the same answer to different questions, so they share one flag.
+            //
+            // The ceiling is the reason the flag exists rather than a hard rejection:
+            // refusing the price would seal the position against liquidation and write-off
+            // too, trading a remote economic risk for a likely liveness failure — which is
+            // why `MAX_MULTIPLIER` is deliberately loose. Withholding only borrowing power
+            // bounds what the scaled-UI authority can conjure while every exit path keeps
+            // working at the true multiplier.
+            //
+            // `compute_health` reads the flag at both places a holding can raise
+            // `borrow_limit` — its LTV term and the promo cap it unlocks — and nowhere else,
+            // so `own_value` and `liquidation_line` still count the holding in full. That is
+            // what keeps a pause from making a live loan liquidatable.
+            lends_borrowing_power: !asset.borrow_paused
+                && !over_multiplier_ceiling(&asset, multiplier),
         });
     }
     // Every account supplied must have been consumed: an extra one is a mismatch.

@@ -73,8 +73,10 @@ pub const MULTIPLIER_ONE: u128 = MULTIPLIER_SCALE;
 /// `read_xstock_multiplier` return `InvalidPrice`, which fails *every* health check that
 /// touches the asset — borrow, withdraw against a loan, liquidate, write off — and seals the
 /// position the same way an over-eager exit check would. That trades a remote economic risk
-/// for a more likely liveness failure. The shape that would bound the authority without the
-/// liveness cost is a per-asset, admin-settable ceiling, which spec §14 defers.
+/// for a more likely liveness failure. The shape that bounds the authority without that cost
+/// is a per-asset, admin-settable ceiling which withholds *borrowing power* instead of
+/// rejecting the price: `CollateralAsset::max_multiplier`, added in Plan 7. This constant
+/// stays loose on purpose — it is the arithmetic backstop, not the policy knob.
 pub const MAX_MULTIPLIER: u128 = 1_000_000 * MULTIPLIER_SCALE;
 
 /// Largest `bad_debt_dust_usd` an admin may set (spec §11: a write-off's loss is bounded by

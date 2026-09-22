@@ -577,6 +577,7 @@ pub fn default_collateral_params(mint: &Pubkey) -> hodl_loans::CollateralParams 
         liquidation_threshold_bps: 9_000,
         liquidation_bonus_bps: 500,
         deposit_cap: u64::MAX,
+        max_multiplier: 0,
     }
 }
 
@@ -612,6 +613,17 @@ pub fn set_collateral_paused_ix(signer: &Pubkey, mint: &Pubkey, paused: bool) ->
     ix(
         hodl_loans::instruction::SetCollateralPaused { paused },
         hodl_loans::accounts::SetCollateralPaused { signer: *signer, config: config_pda(), collateral: collateral_pda(mint) },
+    )
+}
+
+pub fn set_collateral_borrow_paused_ix(signer: &Pubkey, mint: &Pubkey, paused: bool) -> Instruction {
+    ix(
+        hodl_loans::instruction::SetCollateralBorrowPaused { paused },
+        hodl_loans::accounts::SetCollateralBorrowPaused {
+            signer: *signer,
+            config: config_pda(),
+            collateral: collateral_pda(mint),
+        },
     )
 }
 

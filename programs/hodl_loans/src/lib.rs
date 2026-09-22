@@ -95,6 +95,13 @@ pub mod hodl_loans {
         instructions::handle_set_collateral_paused(ctx, paused)
     }
 
+    pub fn set_collateral_borrow_paused(
+        ctx: Context<SetCollateralBorrowPaused>,
+        paused: bool,
+    ) -> Result<()> {
+        instructions::handle_set_collateral_borrow_paused(ctx, paused)
+    }
+
     pub fn delist_collateral(ctx: Context<DelistCollateral>) -> Result<()> {
         instructions::handle_delist_collateral(ctx)
     }
