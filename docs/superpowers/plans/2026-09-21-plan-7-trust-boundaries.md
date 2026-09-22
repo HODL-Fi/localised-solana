@@ -24,7 +24,10 @@
 - Compute figures in `tests/budget.rs` are **not deterministic**: the harness keys mints randomly, so slot sort order shifts the cost in ~1,500 CU steps. Record ranges over many runs, never a single sample. Adding code to the crate also shifts inlining and moves figures by tens of CU on paths you did not touch.
 - Every commit message ends with:
   `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>`
-- The suite is **241 tests** (57 unit, 184 LiteSVM) at the start of this plan and **264** (59 unit, 205 LiteSVM) at the end.
+- The suite is **241 tests** (57 unit, 184 LiteSVM) at the start of this plan and **264** (59 unit, 205 LiteSVM)
+  at the end. Per task: 242, 243, 251, 252, 256, 259, 263, 264. If your count does not match the task you are
+  on, **report it — do not delete a test to reach the number.** One of these figures was wrong on the first
+  pass and the implementer who found it was right to refuse.
 
 ## File Structure
 
@@ -534,7 +537,7 @@ Every existing `CollateralValue` literal in the unit tests takes `lends_borrowin
 - [ ] **Step 4: Run the unit suite**
 
 Run: `cargo test --lib`
-Expected: PASS, 58 tests. Confirm the new one is load-bearing by ungating `promo_cap_total` and watching it fail.
+Expected: PASS, 58 unit tests. Confirm the new one is load-bearing by ungating `promo_cap_total` and watching it fail.
 
 - [ ] **Step 5: Add both fields to the asset**
 
@@ -718,7 +721,9 @@ pub fn handle_set_collateral_borrow_paused(
 /// stays loose on purpose — it is the arithmetic backstop, not the policy knob.
 ```
 
-In spec §14, replace the `**Deferred:**` sentence on the scaled-UI authority with the `**Resolved in Plan 7:**` paragraph describing `CollateralAsset::max_multiplier` — that it withholds borrowing power rather than rejecting the price, that this suppresses **both** routes to `borrow_limit`, and that `own_value` and `liquidation_line` keep counting the holding at its true multiplier.
+**The spec is already amended.** Its changes for the whole of Plan 7 landed in the plan's own commit, so this step is a *check*, not an edit: read the section named below and confirm it describes what you just built. If it does not, the mismatch is a finding — say which is wrong, the code or the spec, and stop rather than quietly editing either.
+
+Spec §14 should carry a `**Resolved in Plan 7:**` paragraph on the scaled-UI authority, saying that `CollateralAsset::max_multiplier` withholds borrowing power rather than rejecting the price, that this suppresses **both** routes to `borrow_limit`, and that `own_value` and `liquidation_line` keep counting the holding at its true multiplier. Only `constants.rs`'s `MAX_MULTIPLIER` note needs editing in this step.
 
 - [ ] **Step 10: Write the behavioural tests**
 
@@ -797,7 +802,7 @@ fn a_borrow_paused_asset_lends_no_borrowing_power() {
 }
 ```
 
-**And on a position that actually holds promo** — the fixture above holds none, so it cannot tell a gated promo cap from an ungated one. In `tests/promo_health.rs`:
+**And on a position that actually holds promo** — the fixture above holds none, so it cannot tell a gated promo cap from an ungated one. In `tests/promo_health.rs`, which needs `use solana_signer::Signer;` added: this test reaches for `.pubkey()` on the raw `env.guardian` / `env.admin` keypairs, where the file previously only used wrapper structs.
 
 ```rust
 #[test]
@@ -983,11 +988,13 @@ Verify the mechanism is load-bearing in three separate ways, rebuilding with `ca
 - [ ] **Step 12: Re-measure the compute figures**
 
 This task moves them again, and nothing later does. `lends_borrowing_power`
-adds a branch per slot and shifts inlining across the crate, which in the
-author's measurement moved the liquidate paths ~364 CU and even `repay_loan`,
-which walks no collateral, by ~55. Small — but the figures in `tests/budget.rs`
-are the only place compute is written down, and a recorded number nobody
-measured is worse than no number.
+adds a branch per slot and shifts inlining across the crate. The author saw
+the liquidate paths move ~364 CU and even `repay_loan`, which walks no
+collateral, move ~55 — but that was measured on the *finished* plan, with
+Tasks 4-8 also in the tree, and inlining shifts with every one of them. Expect
+your numbers to differ, possibly by more than the figures themselves. Small
+either way — but `tests/budget.rs` is the only place compute is written down,
+and a recorded number nobody measured is worse than no number.
 
 Repeat Task 1's procedure: assertions to `println!`, 20+ runs, min–max per
 figure, restore. Update all seven ranges and the run count. If `repay_loan`
@@ -1132,7 +1139,9 @@ In `programs/hodl_loans/src/instructions/admin/sweep.rs`, above `handle_sweep_ma
 
 - [ ] **Step 6: Narrow the spec claim**
 
-Replace spec §9's heading and opening so it names which instructions accrue and why three do not — that accrual writes only `accrued_interest`, `accrual_remainder` and `last_accrual_ts`; that the three read and write only `protocol_reserve` and `cash`; and that skipping an interval costs no precision, because accrual is linear in elapsed time and carries its own remainder.
+**The spec is already amended.** Its changes for the whole of Plan 7 landed in the plan's own commit, so this step is a *check*, not an edit: read the section named below and confirm it describes what you just built. If it does not, the mismatch is a finding — say which is wrong, the code or the spec, and stop rather than quietly editing either.
+
+Spec §9 should already name which instructions accrue and why three do not — that accrual writes only `accrued_interest`, `accrual_remainder` and `last_accrual_ts`; that the three read and write only `protocol_reserve` and `cash`; and that skipping an interval costs no precision, because accrual is linear in elapsed time and carries its own remainder.
 
 - [ ] **Step 7: Commit**
 
@@ -1391,7 +1400,9 @@ Expected: all pass. If `a_campaign_past_its_window_issues_nothing` fails with `V
 
 - [ ] **Step 8: Update the spec and commit**
 
-Spec §8's `set_promo_cap` paragraph gains the `MAX_LISTED_COLLATERAL` ceiling and the lock-limit reason; §12's `create_campaign` gains its lifetime bound and `redeem_promo` the voucher condition with its migration note.
+**The spec is already amended.** Its changes for the whole of Plan 7 landed in the plan's own commit, so this step is a *check*, not an edit: read the section named below and confirm it describes what you just built. If it does not, the mismatch is a finding — say which is wrong, the code or the spec, and stop rather than quietly editing either.
+
+Spec §8's `set_promo_cap` paragraph should carry the `MAX_LISTED_COLLATERAL` ceiling and the lock-limit reason; §12's `create_campaign` its lifetime bound, and `redeem_promo` the voucher condition with its migration note.
 
 ```bash
 git add -A
@@ -1628,7 +1639,9 @@ Expected: all pass, `Market::INIT_SPACE` still 555. Confirm both halves separate
 
 - [ ] **Step 7: Update the spec and commit**
 
-Spec §12's `expire_promo` bullet gains the pause requirement, the `max(promo_last_activity_at, promo_clock_resumed_at)` deadline, why this is the one promo operation a pause blocks, and why barring it during the pause is not sufficient alone.
+**The spec is already amended.** Its changes for the whole of Plan 7 landed in the plan's own commit, so this step is a *check*, not an edit: read the section named below and confirm it describes what you just built. If it does not, the mismatch is a finding — say which is wrong, the code or the spec, and stop rather than quietly editing either.
+
+Spec §12's `expire_promo` bullet should carry the pause requirement, the `max(promo_last_activity_at, promo_clock_resumed_at)` deadline, why this is the one promo operation a pause blocks, and why barring it during the pause is not sufficient alone.
 
 ```bash
 git add -A
@@ -1928,7 +1941,9 @@ Expected: all pass. Check the invariant assertion is load-bearing — delete `re
 
 - [ ] **Step 6: Update the spec and commit**
 
-Spec §12 gains a `reconcile_promo_vault` bullet: downward only, why `fund_promo_vault` owns the upward direction, and that the §12 invariant is still asserted afterwards.
+**The spec is already amended.** Its changes for the whole of Plan 7 landed in the plan's own commit, so this step is a *check*, not an edit: read the section named below and confirm it describes what you just built. If it does not, the mismatch is a finding — say which is wrong, the code or the spec, and stop rather than quietly editing either.
+
+Spec §12 should carry a `reconcile_promo_vault` bullet: downward only, why `fund_promo_vault` owns the upward direction, and that the §12 invariant is still asserted afterwards.
 
 ```bash
 git add -A
@@ -2140,7 +2155,9 @@ Worth checking by reading rather than testing: a wrong-market position is still 
 
 - [ ] **Step 7: Update the spec and commit**
 
-Spec §12's `revoke_promo` bullet drops "requires no active loans" and gains the post-release health check, the account requirements, and a paragraph on why the old rule was replaced.
+**The spec is already amended.** Its changes for the whole of Plan 7 landed in the plan's own commit, so this step is a *check*, not an edit: read the section named below and confirm it describes what you just built. If it does not, the mismatch is a finding — say which is wrong, the code or the spec, and stop rather than quietly editing either.
+
+Spec §12's `revoke_promo` bullet should no longer say "requires no active loans", and should carry the post-release health check, the account requirements, and a paragraph on why the old rule was replaced.
 
 ```bash
 git add -A
