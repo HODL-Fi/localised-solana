@@ -100,6 +100,29 @@ at those two sites comes from somewhere other than where a reader would look for
 because a future instruction added to that family would not inherit the chokepoint
 automatically.
 
+### Delete the tautological seeds constraints rather than keep them
+
+The re-review's recommendation, and it is right: `ExpirePromo` and `RevokePromo`
+(`lifecycle.rs:114`, `:166`) should drop their `seeds`/`bump` clauses outright instead of
+carrying a constraint that implies a binding it does not have. `write_off.rs` already takes
+that approach. Not done during Plan 8 — removing an access-control-adjacent constraint after
+the review pass is the kind of small safe change that deserves its own cycle, and the two new
+tests now pin the guard that actually holds.
+
+**The security question is settled, and the answer is that the tautology confers no
+privilege.** Both instructions are designed to operate on arbitrary positions — `expire_promo`
+is permissionless, `revoke_promo` is admin-gated — so substituting position B is exactly
+equivalent to calling the instruction for B directly. The seeds constraint at those two sites
+was never an authorization boundary, only a misleading one. `MarketMismatch` binds position to
+market, and `promo_vault`'s own `seeds = [PROMO_VAULT_SEED, market.key()]` plus `has_one =
+market` compose with it transitively, so a doctored market cannot soften the expiry clock or
+the pause check either.
+
+### Dead tail assertions in the three new foreign-position tests
+
+Same class as the review's L-4. The transaction reverted, so assertions after it cannot fail.
+Harmless but misleading about what the test proves.
+
 ### Naming and duplication, carried from Plan 6
 
 - `rescale` / `rescale_ceil` share most of their body; worth deduplicating.
