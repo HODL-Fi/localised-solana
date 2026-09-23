@@ -1,0 +1,18 @@
+[package]
+name = "setup-cli"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# One-shot devnet setup driver. Deliberately NOT a workspace member: it pulls the
+# full solana-client tree, which has no business in the program's dependency graph
+# or its build times. Run it from this directory.
+[dependencies]
+hodl_loans = { path = "../programs/hodl_loans", features = ["devnet", "no-entrypoint"] }
+anchor-lang = "1.2.0"
+anchor-spl = "1.2.0"
+solana-client = "3"
+solana-sdk = "3"
+solana-commitment-config = "3"
+
+[workspace]
