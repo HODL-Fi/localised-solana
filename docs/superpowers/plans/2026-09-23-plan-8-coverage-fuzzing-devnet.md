@@ -28,6 +28,7 @@
 
 - Anchor 1.2.0. Build and test with `./scripts/test.sh`, which rebuilds the SBF program first. **Plain `cargo test` reuses a stale `.so`** and will pass against code you have just changed. `cargo test --lib` is safe for unit tests alone; anything touching LiteSVM needs the rebuild.
 - **"Green" means no failures AND no compile errors.** Grepping for `FAILED` alone misses a test binary that did not compile — check for `error[` too.
+- **Never restore a mutated file with `mv backup file`.** `mv` preserves the backup's original mtime, which is *older* than the mutated build Cargo fingerprinted — so Cargo silently reuses the stale binary and the "reverted" run still reports the mutation's failure. Restore with an editor, `cp`, or `touch` the file afterwards. Task 8 hit this and only noticed because a reverted test kept failing.
 - **Run mutation checks with `cargo test -p hodl_loans --no-fail-fast`.** Plain `cargo test` stops launching further test binaries once one reports a failure, so a mutation whose blast radius crosses files looks smaller than it is. Task 3 found a second failing test this way that an earlier measurement had missed. Combine with the rebuild rule above: `cargo build-sbf --tools-version v1.52 && cargo test -p hodl_loans --no-fail-fast`.
 - All arithmetic is checked: no raw `+ - *` on values that could overflow, no `unwrap()` on arithmetic, no bare `as` narrowing casts.
 - `cargo clippy -p hodl_loans --all-targets -- -D warnings` clean, and also clean under `--features devnet` once Task 8 lands. Do not silence a lint with `#[allow]`.
@@ -1151,9 +1152,11 @@ Confirm the feature actually changes the constant — build both and compare the
 
 - [ ] **Step 4: Give the xStock fixture real metadata**
 
-Recorded as a devnet prerequisite since Plan 4. `try_calculate_account_len` cannot size a variable-length extension, and Token-2022 **rejects `InitializeMint2` on an account longer than the calculated length** — so padding up front fails. Create at exactly the calculated size, fund for the larger final size, and grow with `reallocate` after initialization.
+Recorded as a devnet prerequisite since Plan 4. Two constraints box you in: `try_calculate_account_len` cannot size a variable-length extension, and Token-2022 **rejects `InitializeMint2` on an account longer than the calculated length** — so padding up front fails with `InvalidAccountData`.
 
-Add `spl-token-metadata-interface` as a dev-dependency, `XSTOCK_METADATA_SPACE`, and the `reallocate` + `initialize` pair after `initialize_mint2`.
+The shape that works: create the account at exactly the calculated size, **fund it for the larger final size**, and let `spl_token_metadata_interface::instruction::initialize` grow the account itself while packing the TLV entry. **Do not reach for Token-2022's `Reallocate`** — that instruction is token-account-only and rejects a Mint with `InvalidAccountData` (its own doc comment says "Check to see if a *token account* is large enough"). An earlier draft of this plan said to use it; the code it was drafted from never did.
+
+Add `spl-token-metadata-interface` as a dev-dependency, an `XSTOCK_METADATA_SPACE` constant, and the metadata `initialize` call after `initialize_mint2`.
 
 Measured cost: **+0 CU** on the all-xStock `take_loan` and **+54** on the forfeit case. Unpacking a mint walks TLV headers and the program never reads the metadata's contents, so a longer entry is nearly free — which retires the "these figures are a floor" caveat rather than passing it on.
 
