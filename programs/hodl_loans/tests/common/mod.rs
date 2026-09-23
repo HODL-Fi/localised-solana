@@ -229,7 +229,16 @@ impl Env {
             ),
         };
         let space = ExtensionType::try_calculate_account_len::<MintState>(&extensions).unwrap();
-        let lamports = self.svm.minimum_balance_for_rent_exemption(space);
+        // `try_calculate_account_len` cannot size `TokenMetadata` (variable-length), and
+        // Token-2022 rejects `InitializeMint2` on an account longer than the extensions
+        // already written to it — so an `XStock` mint is created at exactly `space` (no
+        // `TokenMetadata` in `extensions` above) and funded up front for the larger size it
+        // grows to once the metadata-interface `initialize` call below reallocates the account
+        // to add the `TokenMetadata` entry, after the mint itself is initialized (Task 8).
+        let lamports = self.svm.minimum_balance_for_rent_exemption(match kind {
+            MintKind::XStock => space + XSTOCK_METADATA_SPACE,
+            _ => space,
+        });
         let mut ixs = vec![system_instruction::create_account(&authority, &mint.pubkey(), lamports, space as u64, &program)];
         match kind {
             MintKind::SplToken => {
@@ -258,6 +267,23 @@ impl Env {
                 ixs.push(default_account_state::instruction::initialize_default_account_state(&TOKEN_2022, &m, &AccountState::Initialized).unwrap());
                 ixs.push(confidential_transfer::instruction::initialize_mint(&TOKEN_2022, &m, Some(authority), true, None).unwrap());
                 ixs.push(spl_token_2022_interface::instruction::initialize_mint2(&TOKEN_2022, &m, &authority, Some(&authority), decimals).unwrap());
+                // Grow the account and write the metadata in one call. Token-2022's own
+                // `TokenInstruction::Reallocate` only accepts token *accounts* (confirmed
+                // empirically: issuing it against a freshly-initialized mint fails with
+                // `InvalidAccountData` before it does anything else), so there is no separate
+                // on-chain reallocate step available for a Mint. The metadata-interface
+                // `initialize` instruction reallocates the account itself as part of packing
+                // the new `TokenMetadata` TLV entry, using the lamports already funded above.
+                ixs.push(spl_token_metadata_interface::instruction::initialize(
+                    &TOKEN_2022,
+                    &m,
+                    &authority,
+                    &m,
+                    &authority,
+                    "Apple xStock".to_string(),
+                    "AAPLX".to_string(),
+                    "https://assets.backed.fi/token-metadata/AAPLX.json".to_string(),
+                ));
             }
         }
         send(&mut self.svm, &ixs, &[&self.admin, &mint]).expect("create mint");
@@ -1402,6 +1428,15 @@ pub fn send_cu(svm: &mut LiteSVM, ixs: &[Instruction], signers: &[&Keypair]) -> 
 /// balance a number of shares.
 pub const XSTOCK_DECIMALS: u8 = 8;
 pub const ONE_XSTOCK: u64 = 100_000_000;
+
+/// TLV bytes a `TokenMetadata` extension needs beyond an `XStock` mint's fixed-extension
+/// length: an 8-byte discriminator + 4-byte length header, plus the Borsh-packed
+/// `update_authority`/`mint`/name/symbol/uri/`additional_metadata` this fixture writes (Task
+/// 8). `try_calculate_account_len` cannot size `TokenMetadata` — it is variable-length — so
+/// `create_mint` funds the account for this much extra room up front; the metadata-interface
+/// `initialize` instruction grows the account into it after `initialize_mint2`. 192 covers the
+/// 159 bytes the fixture's literal name/symbol/uri actually need with headroom to spare.
+pub const XSTOCK_METADATA_SPACE: usize = 192;
 
 /// Spec §8 launch values for an xStock: LTV 50%, threshold 75%, bonus 10%, pinned price.
 pub fn xstock_collateral_params(mint: &Pubkey) -> hodl_loans::CollateralParams {

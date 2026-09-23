@@ -1734,6 +1734,7 @@ dependencies = [
  "solana-transaction",
  "spl-token-2022-interface",
  "spl-token-interface",
+ "spl-token-metadata-interface",
  "switchboard-on-demand",
 ]
 
