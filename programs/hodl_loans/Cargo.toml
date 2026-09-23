@@ -29,6 +29,7 @@ bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
 solana-instructions-sysvar = "3"
 
 [dev-dependencies]
+base64 = "0.22"
 solana-instructions-sysvar = "3"
 litesvm = { version = "0.10.0", features = ["precompiles"] }
 solana-account = "3"

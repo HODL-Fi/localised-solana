@@ -390,3 +390,111 @@ fn a_wrong_market_borrow_reports_the_mismatch_not_that_markets_own_state() {
         HodlError::MarketMismatch,
     );
 }
+
+#[test]
+fn the_loan_events_carry_what_an_indexer_would_read() {
+    // No test in this repo had ever decoded an event. Every one is emitted on a path some
+    // test exercises, so a wrong *field* — a swapped `owner`/`payer`, a principal that is
+    // really the balance — is invisible: the transaction still succeeds and the state
+    // assertions still hold. An off-chain indexer reads only this.
+    let (mut env, setup) = Env::loan_ready();
+    let owner = setup.borrower.pubkey();
+    let opened_at = env.now();
+
+    let prices = env.price_accounts(&owner);
+    let borrow = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 100_000 * ONE_CNGN, 365 * DAY, prices);
+    let logs = send_logs(&mut env.svm, &[borrow], &[&env.admin, &setup.borrower.key]).unwrap();
+    let opened: hodl_loans::LoanOpened = one_event(&logs);
+    assert_eq!(opened.market, market_pda(&setup.cngn));
+    assert_eq!(opened.position, position_pda(&owner));
+    assert_eq!(opened.owner, owner);
+    assert_eq!((opened.loan_id, opened.principal), (0, 100_000 * ONE_CNGN));
+    assert_eq!(opened.tenure_seconds, 365 * DAY);
+    // Copied from the market at origination, not read live — `a_loan_pays_out_cngn_and_records
+    // _fixed_terms` pins that the slot works this way; this pins the event agrees with it.
+    assert_eq!((opened.rate_bps, opened.penalty_rate_bps, opened.reserve_factor_bps), (1_500, 500, 1_000));
+    assert_eq!(opened.originated_at, opened_at);
+
+    // Repay in full a year later, so interest is non-zero and the split is checkable.
+    env.warp_seconds(365 * DAY);
+    env.mint_to(&setup.cngn, &setup.borrower_cngn, 100_000 * ONE_CNGN);
+    let repay = repay_loan_ix(&owner, &owner, &setup.cngn, &setup.borrower_cngn, 0, u64::MAX);
+    let logs = send_logs(&mut env.svm, &[repay], &[&env.admin, &setup.borrower.key]).unwrap();
+    let repaid: hodl_loans::LoanRepaid = one_event(&logs);
+    assert_eq!(repaid.owner, owner);
+    assert_eq!(repaid.payer, owner, "owner and payer are distinct fields and must not be swapped");
+    assert_eq!((repaid.loan_id, repaid.remaining_principal), (0, 0));
+    // 15% of 100,000 cNGN over a year.
+    assert_eq!(repaid.interest_paid, 15_000 * ONE_CNGN);
+    assert_eq!(repaid.principal_repaid, 100_000 * ONE_CNGN);
+    assert_eq!(repaid.amount, repaid.principal_repaid + repaid.interest_paid);
+}
+
+#[test]
+fn a_third_party_repayment_names_the_payer_and_still_settles_the_interest() {
+    // The one third-party repay test repays immediately after borrowing, so interest is ~0 —
+    // the interest-first split it should exercise never runs. And `payer` is the field most
+    // likely to be wrong, since it is the only one that differs from `owner` here.
+    let (mut env, setup) = Env::loan_ready();
+    let owner = setup.borrower.pubkey();
+    env.take_loan(&setup.borrower, &setup, 100_000 * ONE_CNGN, 365 * DAY).unwrap();
+    env.warp_seconds(365 * DAY);
+
+    let good_samaritan = env.new_borrower();
+    let payer = good_samaritan.pubkey();
+    let payer_cngn = env.create_token_account(&setup.cngn, &payer);
+    env.mint_to(&setup.cngn, &payer_cngn, 200_000 * ONE_CNGN);
+
+    let repay = repay_loan_ix(&payer, &owner, &setup.cngn, &payer_cngn, 0, u64::MAX);
+    let logs = send_logs(&mut env.svm, &[repay], &[&env.admin, &good_samaritan.key]).unwrap();
+    let repaid: hodl_loans::LoanRepaid = one_event(&logs);
+    assert_eq!(repaid.owner, owner);
+    assert_eq!(repaid.payer, payer);
+    assert_eq!(repaid.interest_paid, 15_000 * ONE_CNGN, "a year of interest, paid by a stranger");
+    assert_eq!(repaid.remaining_principal, 0);
+
+    // The debt is settled and the payer is out of pocket — nobody else's balance moved.
+    assert!(!env.position(&owner).has_active_loans());
+    assert_eq!(env.token_balance(&payer_cngn), 200_000 * ONE_CNGN - repaid.amount);
+    assert_eq!(env.token_balance(&setup.borrower_cngn), 100_000 * ONE_CNGN);
+}
+
+#[test]
+fn the_utilization_cap_counts_only_cash_the_reserve_does_not_own() {
+    // `available_cash()` is `cash - protocol_reserve`, and the cap is computed from it — but
+    // the existing cap test runs on a market whose reserve is 0, so that subtraction has never
+    // been anything but a no-op. A cap that quietly counted the reserve as lendable would let
+    // the pool lend out money earmarked for the protocol, and every current test would pass.
+    let (mut env, setup) = Env::loan_ready();
+    env.deposit_collateral(&setup.borrower, &setup.usdc, 100_000 * ONE_USDC);
+    let b = &setup.borrower;
+
+    // Build a real reserve: borrow, let a year of interest accrue, repay in full. The reserve
+    // factor is 10% of the interest.
+    env.take_loan(b, &setup, 1_000_000 * ONE_CNGN, 365 * DAY).unwrap();
+    env.warp_seconds(365 * DAY);
+    env.mint_to(&setup.cngn, &setup.borrower_cngn, 1_000_000 * ONE_CNGN);
+    env.repay(&setup, 0, u64::MAX).unwrap();
+    // A year of warping staled both feeds; repayment needs no prices but borrowing does.
+    env.set_pyth_price(&setup.usdc, ONE_DOLLAR, 0);
+    env.set_ngn_price(NGN_USD, NGN_SPREAD);
+
+    let market = env.market(&setup.cngn);
+    let reserve = market.protocol_reserve;
+    assert!(reserve > 0, "the reserve must be non-zero for this test to mean anything");
+    assert_eq!(market.total_borrows, 0);
+    let cash = market.cash;
+    let available = cash - reserve;
+
+    // The cap is `borrows_after * BPS <= (available + total_borrows) * max_utilization_bps`,
+    // with `total_borrows` now 0 — so the ceiling is 90% of `available`, not of `cash`. One
+    // atom past it is refused, and the difference between the two readings is 90% of the
+    // reserve, which is far more than the 1,000 cNGN minimum loan.
+    let ceiling = available / 10 * 9;
+    assert!(cash / 10 * 9 > ceiling + 1_000 * ONE_CNGN, "the two readings must differ by a usable margin");
+    assert_hodl_error(env.take_loan(b, &setup, ceiling + 1, 30 * DAY), HodlError::UtilizationCapExceeded);
+    env.take_loan(b, &setup, ceiling, 30 * DAY).unwrap();
+
+    // And the reserve is still there afterwards — lending against the cap never spends it.
+    assert_eq!(env.market(&setup.cngn).protocol_reserve, reserve);
+}

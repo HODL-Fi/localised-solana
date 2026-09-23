@@ -42,6 +42,41 @@ pub fn send(svm: &mut LiteSVM, ixs: &[Instruction], signers: &[&Keypair]) -> TxR
         .map_err(|e| format!("{:?} logs: {:#?}", e.err, e.meta.logs))
 }
 
+/// Send, and keep the logs a successful transaction produced. `send` throws them away
+/// (`.map(|_| ())`), which is why nothing in this suite could check an event until now.
+pub fn send_logs(svm: &mut LiteSVM, ixs: &[Instruction], signers: &[&Keypair]) -> Result<Vec<String>, String> {
+    svm.expire_blockhash();
+    let msg = Message::new_with_blockhash(ixs, Some(&signers[0].pubkey()), &svm.latest_blockhash());
+    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), signers).unwrap();
+    svm.send_transaction(tx)
+        .map(|meta| meta.logs)
+        .map_err(|e| format!("{:?} logs: {:#?}", e.err, e.meta.logs))
+}
+
+/// Decode every `emit!`ed event of type `E` from a transaction's logs, in order.
+///
+/// Anchor writes events as `Program data: <base64>`, where the payload is the event's
+/// 8-byte discriminator followed by its Borsh body. Filtering on the discriminator is what
+/// makes this type-safe: a log line for a different event deserializes to nothing here
+/// rather than to a wrong-but-plausible `E`.
+pub fn decode_events<E: anchor_lang::Event + anchor_lang::AnchorDeserialize>(logs: &[String]) -> Vec<E> {
+    use base64::Engine;
+    logs.iter()
+        .filter_map(|l| l.strip_prefix("Program data: "))
+        .filter_map(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
+        .filter(|bytes| bytes.len() >= 8 && bytes[..8] == *E::DISCRIMINATOR)
+        .filter_map(|bytes| E::try_from_slice(&bytes[8..]).ok())
+        .collect()
+}
+
+/// The single event of type `E` a transaction emitted. Panics if there is not exactly one,
+/// because a test that says "the event" and gets two is not testing what it thinks.
+pub fn one_event<E: anchor_lang::Event + anchor_lang::AnchorDeserialize>(logs: &[String]) -> E {
+    let mut found = decode_events::<E>(logs);
+    assert_eq!(found.len(), 1, "expected exactly one event of this type, found {}", found.len());
+    found.pop().unwrap()
+}
+
 pub fn assert_custom_error(result: TxResult, code: u32) {
     let err = result.expect_err("transaction should have failed");
     assert!(err.contains(&format!("Custom({code})")), "expected Custom({code}), got {err}");
