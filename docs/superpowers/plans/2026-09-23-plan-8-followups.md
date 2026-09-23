@@ -80,6 +80,26 @@ two specific properties those plans asked for as ordinary sequence tests against
 That is not a substitute for coverage-guided fuzzing. If Trident becomes installable, the
 highest-value targets are the liquidation math and the share-accounting round-trip.
 
+### `ExpirePromo` / `RevokePromo` seeds constraints are self-referential
+
+Found during the Plan 8 fix round, while writing the regression tests for the stored-bump
+change. Both sites declare:
+
+```rust
+seeds = [POSITION_SEED, position.load()?.owner.as_ref()], bump = position.load()?.bump
+```
+
+The expected address is derived from the account's **own stored fields**, so any valid
+`Position` satisfies it — substituting another user's position passes the seeds check. The
+actual guard is `release_promo`'s `require_keys_eq`, raising `MarketMismatch`, and the two
+new tests in `tests/promo_lifecycle.rs` pin that.
+
+**This predates Plan 8** — the pre-branch form also read `position.load()?.owner`, so the
+stored-bump change neither introduced nor worsened it. It is recorded because the isolation
+at those two sites comes from somewhere other than where a reader would look for it, and
+because a future instruction added to that family would not inherit the chokepoint
+automatically.
+
 ### Naming and duplication, carried from Plan 6
 
 - `rescale` / `rescale_ceil` share most of their body; worth deduplicating.
