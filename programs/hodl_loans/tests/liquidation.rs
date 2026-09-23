@@ -406,3 +406,56 @@ fn pausing_borrowing_leaves_the_liquidation_line_where_it_was() {
     env.set_pyth_price(&setup.usdc, USDC_CRASHED, 0);
     env.liquidate(&liquidator, &setup, &setup.usdc, &collateral_account, 0, ONE_CNGN).unwrap();
 }
+
+#[test]
+fn a_repayment_too_small_to_touch_principal_is_refused() {
+    // `ZeroPrincipalRepaid` was the one error in the program raised by code no test reached.
+    // It fires when `principal_share` — `floor(paid x principal / balance)` — rounds to zero:
+    // the liquidator pays something, all of it lands on interest, and the loan's principal
+    // does not move. Letting that through would let someone seize collateral at the
+    // liquidation bonus while the debt it is supposed to be retiring stays exactly where it
+    // was, repeatable until the slot is empty.
+    //
+    // Reaching it needs the slot cap to force `paid` down to a single atom. A 12-decimal
+    // asset (the `MAX_COLLATERAL_DECIMALS` ceiling) priced at $1 makes one atom worth
+    // 1e-12 dollars, so a slot holding 657 atoms covers exactly one atom of cNGN —
+    // and against an overdue balance, one atom of repayment is all interest.
+    let (mut env, setup) = Env::loan_ready();
+    let owner = setup.borrower.pubkey();
+    let dust = env.list_spl_collateral(12);
+    env.set_pyth_price(&dust, ONE_DOLLAR, 0);
+
+    // Borrow against the USDC, then strand a few hundred atoms of the dust asset in the
+    // position and let the loan go a year overdue so interest dominates the balance.
+    env.take_loan(&setup.borrower, &setup, LOAN, 30 * DAY).unwrap();
+    env.deposit_collateral(&setup.borrower, &dust, 657);
+    env.warp_seconds(400 * DAY);
+    env.set_pyth_price(&setup.usdc, USDC_CRASHED, 0);
+    env.set_pyth_price(&dust, ONE_DOLLAR, 0);
+    env.set_ngn_price(NGN_USD, NGN_SPREAD);
+
+    let liquidator = env.new_liquidator(&setup.cngn, LOAN);
+    let seized_to = env.create_token_account(&dust, &liquidator.pubkey());
+    let slot = env.position(&owner).collateral.iter().position(|s| s.mint == dust).unwrap();
+
+    // Ask to repay far more than the dust slot can cover: the cap scales the repayment down
+    // to the slot, and what survives is too small to move the principal.
+    // 657 atoms is the exact width of the window: the slot cap scales the requested LOAN down
+    // to `paid = 1` atom, and the balance is 1.2176x the principal after the overdue period,
+    // so `floor(1 x principal / balance)` is 0. At 656 the cap rounds `paid` to 0 and
+    // `AmountTooSmall` fires one line earlier instead; above ~5,000 the repayment is large
+    // enough to move the principal and the liquidation simply succeeds.
+    let result = env.liquidate(&liquidator, &setup, &dust, &seized_to, 0, LOAN);
+    assert_hodl_error(result, HodlError::ZeroPrincipalRepaid);
+
+    // Nothing moved — the position keeps its dust and the loan keeps its principal.
+    let position = env.position(&owner);
+    assert_eq!(position.collateral[slot].amount, 657);
+    assert_eq!(position.loans[0].principal, LOAN);
+    assert_eq!(env.token_balance(&seized_to), 0);
+
+    // The same liquidator against the *real* collateral succeeds, so the position is
+    // genuinely liquidatable and it is the dust slot that is refused.
+    let usdc_to = env.create_token_account(&setup.usdc, &liquidator.pubkey());
+    env.liquidate(&liquidator, &setup, &setup.usdc, &usdc_to, 0, 1_000 * ONE_CNGN).unwrap();
+}

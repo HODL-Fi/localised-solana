@@ -49,9 +49,33 @@ mod tests {
 
     #[test]
     fn zero_denominator_and_overflow_fail() {
-        assert!(mul_div_floor(1, 1, 0).is_err());
-        assert!(mul_div_ceil(u128::MAX, 2, 1).is_err());
-        assert!(sub(1, 2).is_err());
-        assert!(to_u64(u64::MAX as u128 + 1).is_err());
+        // `is_err()` would pass for *any* error, and `MathOverflow` is the most-raised variant
+        // in the program — 37 sites — with nothing anywhere pinning that it is what these
+        // return. A helper that started returning `InvalidParameters` would be caught by
+        // nothing. Every branch of every helper, by the variant.
+        // Compare the error *code*, not the Debug string: Anchor stamps a source file and
+        // line into the latter, so two `MathOverflow`s from different helpers never match.
+        // The code is also what a client actually sees.
+        let code = |e: anchor_lang::error::Error| match e {
+            anchor_lang::error::Error::AnchorError(a) => a.error_code_number,
+            other => panic!("expected an AnchorError, got {other:?}"),
+        };
+        let want = u32::from(HodlError::MathOverflow);
+        let is_overflow = |r: Result<u128>| assert_eq!(code(r.unwrap_err()), want);
+        is_overflow(mul_div_floor(1, 1, 0));
+        is_overflow(mul_div_floor(u128::MAX, 2, 1));
+        is_overflow(mul_div_ceil(1, 1, 0));
+        is_overflow(mul_div_ceil(u128::MAX, 2, 1));
+        is_overflow(add(u128::MAX, 1));
+        is_overflow(sub(1, 2));
+        is_overflow(pow10(39));
+        assert_eq!(code(to_u64(u64::MAX as u128 + 1).unwrap_err()), want);
+
+        // The boundaries on each side still succeed, so the guards are not simply always-on.
+        assert_eq!(mul_div_floor(u128::MAX, 1, u128::MAX).unwrap(), 1);
+        assert_eq!(add(u128::MAX - 1, 1).unwrap(), u128::MAX);
+        assert_eq!(sub(1, 1).unwrap(), 0);
+        assert_eq!(pow10(38).unwrap(), 10u128.pow(38));
+        assert_eq!(to_u64(u64::MAX as u128).unwrap(), u64::MAX);
     }
 }
