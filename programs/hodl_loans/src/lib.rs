@@ -17,7 +17,23 @@ pub use events::*;
 pub use instructions::*;
 pub use state::*;
 
+// The program's own address, baked into the binary. Cluster-selected, for the same reason
+// `SWITCHBOARD_ON_DEMAND_PID` is: a devnet deployment needs its own program id, and the
+// mainnet identity should not be spent on a rehearsal.
+//
+// Getting this wrong is loud, not subtle. Anchor's generated entrypoint compares the
+// runtime's program id against this constant before dispatching anything, so a binary
+// deployed at an address it does not declare answers **every** instruction with error 4100
+// (`DeclaredProgramIdMismatch`) and does nothing else. The cost is a wasted deploy, not a
+// debugging maze.
+//
+// The devnet keypair lives at `~/.config/solana/hodl_loans-devnet.json` — outside the repo,
+// because `target/` is gitignored AND wiped by `cargo clean`, and losing a program keypair
+// means losing the ability to upgrade that deployment. Back it up.
+#[cfg(not(feature = "devnet"))]
 declare_id!("J9sKAhm2EhdJQ3bHeP2KUCxqZ4cYdBc65C3RDr4JjGEd");
+#[cfg(feature = "devnet")]
+declare_id!("q33KxkuB2ntHSBwPnuFGpkiCxxEmmxsAgYAM6Gjx2SN");
 
 #[program]
 pub mod hodl_loans {
@@ -210,5 +226,25 @@ pub mod hodl_loans {
 
     pub fn withdraw_liquidity(ctx: Context<WithdrawLiquidity>, amount: u64) -> Result<()> {
         instructions::handle_withdraw_liquidity(ctx, amount)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The same drift guard `the_switchboard_pid_matches_the_build` applies to the Switchboard
+    /// program id, and it catches the same narrow thing: the two `#[cfg]` arms of `declare_id!`
+    /// collapsing onto one address, or one arm being edited without the other.
+    ///
+    /// It cannot catch a forgotten `--features devnet` — the flag is the intent, and nothing
+    /// in-process can know what cluster you meant to build for. Gate B of the deployment
+    /// runbook is what catches that, by hashing both binaries before the deploy.
+    #[test]
+    fn the_declared_program_id_matches_the_build() {
+        let mainnet: Pubkey = "J9sKAhm2EhdJQ3bHeP2KUCxqZ4cYdBc65C3RDr4JjGEd".parse().unwrap();
+        let devnet: Pubkey = "q33KxkuB2ntHSBwPnuFGpkiCxxEmmxsAgYAM6Gjx2SN".parse().unwrap();
+        assert_ne!(mainnet, devnet, "the two arms must be distinct addresses");
+        assert_eq!(ID, if cfg!(feature = "devnet") { devnet } else { mainnet });
     }
 }
