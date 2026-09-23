@@ -28,6 +28,8 @@
 
 - Anchor 1.2.0. Build and test with `./scripts/test.sh`, which rebuilds the SBF program first. **Plain `cargo test` reuses a stale `.so`** and will pass against code you have just changed. `cargo test --lib` is safe for unit tests alone; anything touching LiteSVM needs the rebuild.
 - **"Green" means no failures AND no compile errors.** Grepping for `FAILED` alone misses a test binary that did not compile — check for `error[` too.
+- **Never restore a mutated file with `mv backup file`.** `mv` preserves the backup's original mtime, which is *older* than the mutated build Cargo fingerprinted — so Cargo silently reuses the stale binary and the "reverted" run still reports the mutation's failure. Restore with an editor, `cp`, or `touch` the file afterwards. Task 8 hit this and only noticed because a reverted test kept failing.
+- **Run mutation checks with `cargo test -p hodl_loans --no-fail-fast`.** Plain `cargo test` stops launching further test binaries once one reports a failure, so a mutation whose blast radius crosses files looks smaller than it is. Task 3 found a second failing test this way that an earlier measurement had missed. Combine with the rebuild rule above: `cargo build-sbf --tools-version v1.52 && cargo test -p hodl_loans --no-fail-fast`.
 - All arithmetic is checked: no raw `+ - *` on values that could overflow, no `unwrap()` on arithmetic, no bare `as` narrowing casts.
 - `cargo clippy -p hodl_loans --all-targets -- -D warnings` clean, and also clean under `--features devnet` once Task 8 lands. Do not silence a lint with `#[allow]`.
 - New `HodlError` variants are **appended**, never inserted — codes are `6000 + position`.
@@ -35,13 +37,32 @@
   `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>`
 - Write commit messages with `git commit -F -` and a heredoc when they contain backticks; a double-quoted `-m` gets them command-substituted.
 - Stage only the files your task touches. No `git add -A`, no `git commit -a`.
-- The suite is **266 tests** (59 unit, 207 LiteSVM) at the start of this plan and **278** (60 unit, 218 LiteSVM) at the end. Per task: 269, 272, 273, 274, 275, 275, 277, 278, 278. **If your count does not match, report it — do not delete a test to reach the number.**
+- The suite is **266 tests** (59 unit, 207 LiteSVM) at the start of this plan and **278** (60 unit, 218 LiteSVM) at the end.
+
+| After task | Total | Unit | Why |
+|---|---|---|---|
+| 1 | 266 | 59 | reading only, no change |
+| 2 | 269 | 59 | +3 |
+| 3 | 272 | 59 | +3 |
+| 4 | **273** | 59 | +1 only — Step 1 *replaces* a unit test, so the unit count cannot move |
+| 5 | 274 | 59 | +1 |
+| 6 | 274 | 59 | +0 — re-measures, adds no test |
+| 7 | 277 | 59 | +3 |
+| 8 | 278 | **60** | +1, and it is a unit test (`constants.rs`) — this is where 60 arrives |
+| 9 | 278 | 60 | docs only |
+
+  **If your count does not match, report it — do not delete a test to reach the number.** An
+  earlier draft of this table was read off the reference tree's *commit* sequence rather than
+  this plan's *task* decomposition, and one of those commits bundled Task 4's work with Task
+  5's — so every figure from Task 4 on was shifted by one, and "60 unit" was attributed to
+  Task 4 instead of Task 8. Task 4's implementer caught it by reporting rather than forcing
+  the number.
 
 ## A note on the compute figures
 
 `tests/budget.rs` is the only place compute is written down, and several tasks re-measure it. Two things that have caught people, both now fixed but worth knowing:
 
-- Until Task 6 the figures were **not deterministic**: seven instructions declared the position PDA with a bare `bump`, so Anchor emitted `find_program_address` and paid ~1,500 CU per candidate bump tried. Every "measured X–Y over N runs" range in the file's history was measuring a geometric ladder. Task 6 removes it and the figures become single-valued.
+- Until Task 6 the figures carried a geometric ladder: seven instructions declared the position PDA with a bare `bump`, so Anchor emitted `find_program_address` and paid ~1,500 CU per candidate tried, producing spreads of 9,000–10,500 CU. Task 6 removes the ladder. It does **not** make the figures single-valued — a residual 0–48 CU of ordinary jitter remains, measured over 20 runs. The useful change is that a max is now worth comparing against; it never was before. (An earlier draft of this plan claimed the figures become deterministic. That came from a 5-run sample, which is too few to see jitter this small.)
 - Measure, do not estimate. Figures in this plan are the author's; record what *you* measure. Two drafts of Task 5's assertion and one of Task 7's shipped numbers nobody had measured, and each was wrong by more than the tolerance.
 
 ## File Structure
@@ -117,11 +138,15 @@ fn a_write_off_against_the_wrong_market_is_rejected() {
     // the instruction that writes `total_bad_debt`, so pointing it at the wrong market would
     // charge the loss to lenders who never funded the loan.
     //
-    // Two guards reject this and both raise `MarketMismatch`: the `address = market.vault`
-    // constraint on the vault account, and `require_keys_eq!(position.market, market_key)` in
-    // the handler. This test pins the outcome, not either one individually — removing just one
-    // still passes. That is belt-and-braces working as intended, but do not read the test as
-    // covering the handler check alone.
+    // `require_keys_eq!(position.market, market_key)` in the handler is the ONLY guard that
+    // catches this. The `address = market.vault` constraint looks like a second one and is not:
+    // the instruction builder derives `market` and `vault` from the same mint, and `market.vault`
+    // IS `market_vault_pda(mint)` by construction, so that constraint is trivially satisfied no
+    // matter whose position is passed. It guards a different attack — a mismatched vault supplied
+    // alongside a *correct* market. Delete the `require_keys_eq!` and this test fails (it reverts
+    // on unrelated `MathOverflow` arithmetic instead), so the test is load-bearing for that one
+    // line. Established by mutation, after an earlier draft of this comment claimed the
+    // opposite.
     let (mut env, setup) = dust_collateral();
     let admin = env.admin.pubkey();
     let owner = setup.borrower.pubkey();
@@ -229,7 +254,7 @@ Run: `./scripts/test.sh` — expect 269.
 Then verify each is load-bearing, rebuilding with `cargo build-sbf --tools-version v1.52` before each check:
 
 - Delete the `PromoVaultMismatch` constraint from `liquidate.rs` and `write_off.rs` — the forfeit test must fail.
-- Delete `write_off.rs`'s `require_keys_eq!(position.market, market_key, ...)` — **the wrong-market test still passes.** That is not a broken test: two guards raise `MarketMismatch` here, the handler check and the vault's `address` constraint, and either alone catches it. Remove *both* and it fails. The test pins the property, not either guard, and its comment says so.
+- Delete `write_off.rs`'s `require_keys_eq!(position.market, market_key, ...)` — the wrong-market test must fail, and it fails in an informative way: the transaction still reverts, but on `MathOverflow` rather than `MarketMismatch`. `require_keys_eq!` is the **only** guard for this attack. The `address = market.vault` constraint reads like a second one and is not — the ix builder derives `market` and `vault` from the same mint, and `market.vault` IS `market_vault_pda(mint)` by construction, so it is trivially satisfied whichever position is passed. Removing it *as well* changes nothing observable. (An earlier draft of this plan asserted the opposite — that removing one guard still passed. That was measured against a stale `.so`; rebuild with `cargo build-sbf` before every mutation check.)
 
 - [ ] **Step 4: Commit**
 
@@ -240,9 +265,10 @@ test(plan8): close three coverage gaps, one of them the last unreached error
 
 write_off_loan had no MarketMismatch test, alone among the market-touching
 instructions — and it is the one that writes total_bad_debt, so a wrong market
-charges the loss to lenders who never funded the loan. Two guards reject it and
-both raise MarketMismatch, so removing either alone still passes; the comment
-says so, and removing both fails.
+charges the loss to lenders who never funded the loan. require_keys_eq! is the
+only guard that catches it: the address = market.vault constraint looks like a
+second one but the ix builder derives market and vault from the same mint, so it
+is trivially satisfied. Deleting require_keys_eq! fails this test.
 
 No write-off test had ever run with a surviving sibling loan — every multi-loan
 case repaid loan 0 in full first.
@@ -444,7 +470,7 @@ Run: `./scripts/test.sh` — expect 272.
 Two checks, each with a rebuild first:
 
 - Change `LoanRepaid`'s `payer` field in `repay_loan.rs` to emit `owner` instead. Exactly one test must fail — and **before this task, none would have.**
-- Make `available_cash()` return `self.cash` outright. All sixteen pre-existing tests in `loans.rs` still pass; only the new cap test fails.
+- Make `available_cash()` return `self.cash` outright. All sixteen pre-existing tests in `loans.rs` still pass and the new cap test fails — but run this one with `--no-fail-fast`, because the blast radius is **two tests, not one**: `available_cash()` has exactly two consumers, `take_loan.rs:89` (the utilization cap, what the new test targets) and `withdraw_liquidity.rs:47`, whose pre-existing `liquidity.rs::withdrawals_are_limited_to_cash_minus_reserve` also fails. An earlier draft of this plan said "only the new cap test fails", which is true within `loans.rs` and misleading suite-wide.
 
 - [ ] **Step 5: Commit**
 
@@ -589,7 +615,7 @@ The window is one atom wide on the low side: at 656 the cap rounds `paid` to 0 a
 
 - [ ] **Step 3: Run and verify**
 
-Run: `cargo test --lib` (60) and `./scripts/test.sh` (274).
+Run: `cargo test --lib` (**59** — Step 1 replaces a test, it does not add one) and `./scripts/test.sh` (**273**).
 
 Two checks, rebuilding first:
 
@@ -712,7 +738,7 @@ A first draft of this test asserted a 3,000–3,400 band. The measurement said 2
 
 - [ ] **Step 3: Run and commit**
 
-Run: `./scripts/test.sh` — expect 275.
+Run: `./scripts/test.sh` — expect 274.
 
 ```bash
 git add programs/hodl_loans/tests/budget.rs
@@ -755,13 +781,15 @@ In each declaration, `bump)]` becomes `bump = position.load()?.bump)]`. Seven si
 
 - [ ] **Step 2: Run, then re-measure everything**
 
-Run: `./scripts/test.sh` — expect 275, unchanged.
+Run: `./scripts/test.sh` — expect 274, unchanged.
 
 Then re-measure every figure in `tests/budget.rs`: turn each `assert!(cu < N, ...)` into a `println!`, run the budget test 16+ times, take min–max, restore the assertions.
 
-What the author measured, max-to-max: `take_loan` **−8,680**, `withdraw_collateral` **−8,680**, xStock `take_loan` **−7,163**, `revoke_promo` **−13,432**. The three `liquidate` figures went the *other* way by ~260 CU — they never constrained the position by seeds, so they paid no search and see only the extra account read.
+**Only re-measure figures that exist in `budget.rs` at this point.** At Task 6 the file carries `take_loan`, `withdraw_collateral`, the three `liquidate` figures, `repay_loan`, the xStock pair, and Task 5's `set_promo_cap`. It does **not** yet carry `revoke_promo` — Task 7 adds that, and measures it post-bump. Do not go looking for it.
 
-The more useful result is that the spreads collapse: `take_loan` 10,500 → 0, `revoke_promo` 13,500 → 0.
+What was measured over 20 runs, max-to-max, on the figures you will have: `take_loan` **−10,052**, `withdraw_collateral` **−10,170**, xStock `take_loan` **−8,535**. (An earlier draft quoted −8,680 / −8,680 / −7,163 from a 5-run sample; the arithmetic against the ranges this file carried — 98,595 − 88,543 = 10,052 — gives the figures above.) The three `liquidate` figures went the *other* way by ~260 CU — they never constrained the position by seeds, so they paid no search and see only the extra account read. `set_promo_cap` should not move at all (it touches no position PDA); if it does, report it. The comment block you install in Step 3 also cites a `revoke_promo` −**13,432**: that is the end-state figure this plan reaches at Task 7, deliberately left in the comment so the finished file reads coherently. It is not something for you to reproduce.
+
+The more useful result is the collapse in spread: `take_loan` 10,500 → 31, `withdraw_collateral` 10,500 → 0, xStock `take_loan` 9,000 → 48. Not zero everywhere — `liquidate` (no-forfeit) and xStock `take_loan` sit at up to 48 CU — but two orders of magnitude down, which is what makes a max comparable.
 
 - [ ] **Step 3: Replace the file's causal note**
 
@@ -1124,9 +1152,11 @@ Confirm the feature actually changes the constant — build both and compare the
 
 - [ ] **Step 4: Give the xStock fixture real metadata**
 
-Recorded as a devnet prerequisite since Plan 4. `try_calculate_account_len` cannot size a variable-length extension, and Token-2022 **rejects `InitializeMint2` on an account longer than the calculated length** — so padding up front fails. Create at exactly the calculated size, fund for the larger final size, and grow with `reallocate` after initialization.
+Recorded as a devnet prerequisite since Plan 4. Two constraints box you in: `try_calculate_account_len` cannot size a variable-length extension, and Token-2022 **rejects `InitializeMint2` on an account longer than the calculated length** — so padding up front fails with `InvalidAccountData`.
 
-Add `spl-token-metadata-interface` as a dev-dependency, `XSTOCK_METADATA_SPACE`, and the `reallocate` + `initialize` pair after `initialize_mint2`.
+The shape that works: create the account at exactly the calculated size, **fund it for the larger final size**, and let `spl_token_metadata_interface::instruction::initialize` grow the account itself while packing the TLV entry. **Do not reach for Token-2022's `Reallocate`** — that instruction is token-account-only and rejects a Mint with `InvalidAccountData` (its own doc comment says "Check to see if a *token account* is large enough"). An earlier draft of this plan said to use it; the code it was drafted from never did.
+
+Add `spl-token-metadata-interface` as a dev-dependency, an `XSTOCK_METADATA_SPACE` constant, and the metadata `initialize` call after `initialize_mint2`.
 
 Measured cost: **+0 CU** on the all-xStock `take_loan` and **+54** on the forfeit case. Unpacking a mint walks TLV headers and the program never reads the metadata's contents, so a longer entry is nearly free — which retires the "these figures are a floor" caveat rather than passing it on.
 

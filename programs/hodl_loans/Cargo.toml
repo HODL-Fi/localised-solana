@@ -18,6 +18,7 @@ idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
 anchor-debug = []
 custom-heap = []
 custom-panic = []
+devnet = []
 
 [dependencies]
 anchor-lang = { version = "1.2.0", features = ["init-if-needed"] }
@@ -29,6 +30,7 @@ bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
 solana-instructions-sysvar = "3"
 
 [dev-dependencies]
+base64 = "0.22"
 solana-instructions-sysvar = "3"
 litesvm = { version = "0.10.0", features = ["precompiles"] }
 solana-account = "3"
@@ -39,6 +41,7 @@ solana-signer = "3.0.0"
 solana-transaction = "3.0.2"
 spl-token-2022-interface = "2"
 spl-token-interface = "2"
+spl-token-metadata-interface = "0.8"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

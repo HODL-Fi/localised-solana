@@ -13,7 +13,7 @@ pub struct DepositCollateral<'info> {
     pub owner: Signer<'info>,
     #[account(seeds = [ACCESS_SEED, owner.key().as_ref()], bump = access.bump)]
     pub access: Account<'info, Access>,
-    #[account(mut, seeds = [POSITION_SEED, owner.key().as_ref()], bump)]
+    #[account(mut, seeds = [POSITION_SEED, owner.key().as_ref()], bump = position.load()?.bump)]
     pub position: AccountLoader<'info, Position>,
     #[account(mut, seeds = [COLLATERAL_SEED, mint.key().as_ref()], bump = collateral.bump, has_one = mint, has_one = vault)]
     pub collateral: Box<Account<'info, CollateralAsset>>,

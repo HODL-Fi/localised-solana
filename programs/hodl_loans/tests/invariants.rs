@@ -215,3 +215,123 @@ fn a_default_runs_from_liquidation_to_write_off_with_promo() {
         market.total_bad_debt
     );
 }
+
+#[test]
+fn two_consecutive_partial_liquidations_converge() {
+    // The first of the two probes the Plan 3 follow-ups asked a fuzzer for. It is a property
+    // about a *sequence*, which is why a single-step test cannot see it: each partial
+    // liquidation seizes collateral and repays debt, and the position's health must move
+    // monotonically toward solvency. If the seizure and the repayment disagreed — the bonus
+    // taking more value than the repayment retires — a position could be liquidated
+    // repeatedly and end further under water each time, which is the shape of a drain.
+    let (mut env, setup) = Env::loan_ready();
+    let owner = setup.borrower.pubkey();
+    env.take_loan(&setup.borrower, &setup, 700_000 * ONE_CNGN, 365 * DAY).unwrap();
+    env.set_pyth_price(&setup.usdc, 45_000_000, 0);
+    assert_invariants(&env, &setup, "before any liquidation");
+
+    let liquidator = env.new_liquidator(&setup.cngn, 1_000_000 * ONE_CNGN);
+    let seized_to = env.create_token_account(&setup.usdc, &liquidator.pubkey());
+
+    let debt_and_collateral = |env: &Env| {
+        let p = env.position(&owner);
+        (p.loans[0].principal, p.collateral.iter().find(|s| s.mint == setup.usdc).unwrap().amount)
+    };
+    let (debt0, coll0) = debt_and_collateral(&env);
+
+    // Two partial liquidations, each repaying a tenth of the principal.
+    env.liquidate(&liquidator, &setup, &setup.usdc, &seized_to, 0, 70_000 * ONE_CNGN).unwrap();
+    assert_invariants(&env, &setup, "after the first partial liquidation");
+    let (debt1, coll1) = debt_and_collateral(&env);
+
+    env.liquidate(&liquidator, &setup, &setup.usdc, &seized_to, 0, 70_000 * ONE_CNGN).unwrap();
+    assert_invariants(&env, &setup, "after the second partial liquidation");
+    let (debt2, coll2) = debt_and_collateral(&env);
+
+    // Both quantities fall, every time — no oscillation, no growth.
+    assert!(debt1 < debt0 && debt2 < debt1, "principal must fall with each liquidation");
+    assert!(coll1 < coll0 && coll2 < coll1, "collateral must fall with each liquidation");
+
+    // The property worth pinning is not that the two steps match each other — at a fixed
+    // price they are symmetric by construction, so asserting that catches almost nothing.
+    // It is that **each step leaves the position better collateralised than it found it**:
+    // the value seized must not exceed the value of the debt retired by more than the bonus
+    // the asset is configured to pay. A liquidation that took more than that would let a
+    // liquidator walk a healthy-ish position down to nothing one call at a time.
+    //
+    // Both sides converted to micro-dollars, which is the trap here: the crashed Pyth price
+    // is at exponent -8 (45_000_000 == $0.45) while `NGN_USD` is at Switchboard's 18 decimals
+    // (625_000_000_000_000 == $0.000625). Mixing the two silently inflates one side by ten
+    // orders of magnitude and makes any ceiling vacuous — which is exactly what a first
+    // version of this assertion did.
+    const MICRO: u128 = 1_000_000;
+    let seized_usd = |atoms: u64| atoms as u128 * 45_000_000 * MICRO / 100_000_000 / ONE_USDC as u128;
+    let retired_usd =
+        |atoms: u64| atoms as u128 * NGN_USD as u128 * MICRO / 1_000_000_000_000_000_000 / ONE_CNGN as u128;
+    for (label, seized, retired) in
+        [("first", coll0 - coll1, debt0 - debt1), ("second", coll1 - coll2, debt1 - debt2)]
+    {
+        let taken = seized_usd(seized);
+        let given = retired_usd(retired);
+        // 5% is `default_collateral_params`' `liquidation_bonus_bps`. One atom of slack for
+        // the per-step flooring in `principal_share` and `seize_for_repayment`.
+        let ceiling = given * 10_500 / 10_000 + 1;
+        assert!(
+            taken <= ceiling,
+            "{label} step seized {taken} USD against {given} retired — past the 5% bonus"
+        );
+        assert!(taken > 0 && given > 0, "{label} step moved nothing");
+    }
+}
+
+#[test]
+fn a_lender_cannot_sandwich_a_liquidation_for_the_penalty_step() {
+    // The second probe. Spec §11's accepted-risk note records that overdue penalty interest
+    // reaches lenders as a *step* at repayment or liquidation rather than continuously, and
+    // that `liquidate` has no access check — so a lender could deposit immediately before
+    // someone else's liquidation, collect a share of the step, and withdraw, diluting the
+    // lenders who actually carried the loan.
+    //
+    // This pins the accounting around that sequence. It does not prevent the sandwich — the
+    // fix is continuous penalty accrual, which is its own plan — but it establishes that the
+    // sandwich cannot extract *more* than the step it is capturing, and that every invariant
+    // survives the sequence. A regression that let the sandwicher withdraw more than they put
+    // in plus their share would fail here.
+    let (mut env, setup) = Env::loan_ready();
+    env.take_loan(&setup.borrower, &setup, 700_000 * ONE_CNGN, 30 * DAY).unwrap();
+
+    // Go well past maturity so the penalty term is substantial, then crash the price.
+    env.warp_seconds(400 * DAY);
+    env.set_pyth_price(&setup.usdc, 45_000_000, 0);
+    env.set_ngn_price(NGN_USD, NGN_SPREAD);
+    assert_invariants(&env, &setup, "overdue, before the sandwich");
+
+    // The sandwicher deposits just before the liquidation.
+    let sandwicher = env.new_lender(&setup.cngn, 1_000_000 * ONE_CNGN);
+    let deposited = 1_000_000 * ONE_CNGN;
+    env.deposit(&sandwicher, &setup.cngn, deposited).unwrap();
+    assert_invariants(&env, &setup, "after the sandwicher deposits");
+
+    let liquidator = env.new_liquidator(&setup.cngn, 1_000_000 * ONE_CNGN);
+    let seized_to = env.create_token_account(&setup.usdc, &liquidator.pubkey());
+    env.liquidate(&liquidator, &setup, &setup.usdc, &seized_to, 0, 100_000 * ONE_CNGN).unwrap();
+    assert_invariants(&env, &setup, "after the liquidation releases the penalty step");
+
+    // Withdraw everything the sandwicher can.
+    let before = env.token_balance(&sandwicher.token);
+    env.withdraw(&sandwicher, &setup.cngn, u64::MAX).unwrap();
+    let gained = env.token_balance(&sandwicher.token) - before;
+    assert_invariants(&env, &setup, "after the sandwicher withdraws");
+
+    // They get back what they put in, plus at most their pro-rata share of what the
+    // liquidation released — never more. The point of the assertion is the upper bound: a
+    // change that let a same-slot deposit claim more than its share of the step would break
+    // it, and that is the failure mode the accepted-risk note is about.
+    assert!(gained >= deposited, "a lender must never lose principal to someone else's liquidation");
+    let share = gained - deposited;
+    assert!(
+        share < deposited / 100,
+        "a same-slot sandwich took {share} atoms on {deposited} deposited — more than a \
+         pro-rata share of one liquidation's penalty step"
+    );
+}

@@ -42,6 +42,41 @@ pub fn send(svm: &mut LiteSVM, ixs: &[Instruction], signers: &[&Keypair]) -> TxR
         .map_err(|e| format!("{:?} logs: {:#?}", e.err, e.meta.logs))
 }
 
+/// Send, and keep the logs a successful transaction produced. `send` throws them away
+/// (`.map(|_| ())`), which is why nothing in this suite could check an event until now.
+pub fn send_logs(svm: &mut LiteSVM, ixs: &[Instruction], signers: &[&Keypair]) -> Result<Vec<String>, String> {
+    svm.expire_blockhash();
+    let msg = Message::new_with_blockhash(ixs, Some(&signers[0].pubkey()), &svm.latest_blockhash());
+    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), signers).unwrap();
+    svm.send_transaction(tx)
+        .map(|meta| meta.logs)
+        .map_err(|e| format!("{:?} logs: {:#?}", e.err, e.meta.logs))
+}
+
+/// Decode every `emit!`ed event of type `E` from a transaction's logs, in order.
+///
+/// Anchor writes events as `Program data: <base64>`, where the payload is the event's
+/// 8-byte discriminator followed by its Borsh body. Filtering on the discriminator is what
+/// makes this type-safe: a log line for a different event deserializes to nothing here
+/// rather than to a wrong-but-plausible `E`.
+pub fn decode_events<E: anchor_lang::Event + anchor_lang::AnchorDeserialize>(logs: &[String]) -> Vec<E> {
+    use base64::Engine;
+    logs.iter()
+        .filter_map(|l| l.strip_prefix("Program data: "))
+        .filter_map(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
+        .filter(|bytes| bytes.len() >= 8 && bytes[..8] == *E::DISCRIMINATOR)
+        .filter_map(|bytes| E::try_from_slice(&bytes[8..]).ok())
+        .collect()
+}
+
+/// The single event of type `E` a transaction emitted. Panics if there is not exactly one,
+/// because a test that says "the event" and gets two is not testing what it thinks.
+pub fn one_event<E: anchor_lang::Event + anchor_lang::AnchorDeserialize>(logs: &[String]) -> E {
+    let mut found = decode_events::<E>(logs);
+    assert_eq!(found.len(), 1, "expected exactly one event of this type, found {}", found.len());
+    found.pop().unwrap()
+}
+
 pub fn assert_custom_error(result: TxResult, code: u32) {
     let err = result.expect_err("transaction should have failed");
     assert!(err.contains(&format!("Custom({code})")), "expected Custom({code}), got {err}");
@@ -194,7 +229,16 @@ impl Env {
             ),
         };
         let space = ExtensionType::try_calculate_account_len::<MintState>(&extensions).unwrap();
-        let lamports = self.svm.minimum_balance_for_rent_exemption(space);
+        // `try_calculate_account_len` cannot size `TokenMetadata` (variable-length), and
+        // Token-2022 rejects `InitializeMint2` on an account longer than the extensions
+        // already written to it — so an `XStock` mint is created at exactly `space` (no
+        // `TokenMetadata` in `extensions` above) and funded up front for the larger size it
+        // grows to once the metadata-interface `initialize` call below reallocates the account
+        // to add the `TokenMetadata` entry, after the mint itself is initialized (Task 8).
+        let lamports = self.svm.minimum_balance_for_rent_exemption(match kind {
+            MintKind::XStock => space + XSTOCK_METADATA_SPACE,
+            _ => space,
+        });
         let mut ixs = vec![system_instruction::create_account(&authority, &mint.pubkey(), lamports, space as u64, &program)];
         match kind {
             MintKind::SplToken => {
@@ -223,6 +267,23 @@ impl Env {
                 ixs.push(default_account_state::instruction::initialize_default_account_state(&TOKEN_2022, &m, &AccountState::Initialized).unwrap());
                 ixs.push(confidential_transfer::instruction::initialize_mint(&TOKEN_2022, &m, Some(authority), true, None).unwrap());
                 ixs.push(spl_token_2022_interface::instruction::initialize_mint2(&TOKEN_2022, &m, &authority, Some(&authority), decimals).unwrap());
+                // Grow the account and write the metadata in one call. Token-2022's own
+                // `TokenInstruction::Reallocate` only accepts token *accounts* (confirmed
+                // empirically: issuing it against a freshly-initialized mint fails with
+                // `InvalidAccountData` before it does anything else), so there is no separate
+                // on-chain reallocate step available for a Mint. The metadata-interface
+                // `initialize` instruction reallocates the account itself as part of packing
+                // the new `TokenMetadata` TLV entry, using the lamports already funded above.
+                ixs.push(spl_token_metadata_interface::instruction::initialize(
+                    &TOKEN_2022,
+                    &m,
+                    &authority,
+                    &m,
+                    &authority,
+                    "Apple xStock".to_string(),
+                    "AAPLX".to_string(),
+                    "https://assets.backed.fi/token-metadata/AAPLX.json".to_string(),
+                ));
             }
         }
         send(&mut self.svm, &ixs, &[&self.admin, &mint]).expect("create mint");
@@ -973,7 +1034,7 @@ impl Env {
     /// Writes the Switchboard NGN/USD result at the current slot with 5 samples.
     pub fn set_ngn_price(&mut self, value: i128, std_dev: i128) {
         let slot = self.svm.get_sysvar::<Clock>().slot;
-        self.set_account_data(&ngn_feed(), &switchboard_on_demand::ON_DEMAND_MAINNET_PID, pull_feed_data(value, std_dev, slot, 5));
+        self.set_account_data(&ngn_feed(), &hodl_loans::constants::SWITCHBOARD_ON_DEMAND_PID, pull_feed_data(value, std_dev, slot, 5));
     }
 
     /// The same NGN feed bytes `set_ngn_price` writes, but owned by an account of the
@@ -1367,6 +1428,15 @@ pub fn send_cu(svm: &mut LiteSVM, ixs: &[Instruction], signers: &[&Keypair]) -> 
 /// balance a number of shares.
 pub const XSTOCK_DECIMALS: u8 = 8;
 pub const ONE_XSTOCK: u64 = 100_000_000;
+
+/// TLV bytes a `TokenMetadata` extension needs beyond an `XStock` mint's fixed-extension
+/// length: an 8-byte discriminator + 4-byte length header, plus the Borsh-packed
+/// `update_authority`/`mint`/name/symbol/uri/`additional_metadata` this fixture writes (Task
+/// 8). `try_calculate_account_len` cannot size `TokenMetadata` — it is variable-length — so
+/// `create_mint` funds the account for this much extra room up front; the metadata-interface
+/// `initialize` instruction grows the account into it after `initialize_mint2`. 192 covers the
+/// 159 bytes the fixture's literal name/symbol/uri actually need with headroom to spare.
+pub const XSTOCK_METADATA_SPACE: usize = 192;
 
 /// Spec §8 launch values for an xStock: LTV 50%, threshold 75%, bonus 10%, pinned price.
 pub fn xstock_collateral_params(mint: &Pubkey) -> hodl_loans::CollateralParams {

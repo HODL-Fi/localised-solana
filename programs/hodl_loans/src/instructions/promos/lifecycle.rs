@@ -111,7 +111,7 @@ pub struct ExpirePromo<'info> {
         has_one = market
     )]
     pub promo_vault: Box<Account<'info, PromoVault>>,
-    #[account(mut, seeds = [POSITION_SEED, position.load()?.owner.as_ref()], bump)]
+    #[account(mut, seeds = [POSITION_SEED, position.load()?.owner.as_ref()], bump = position.load()?.bump)]
     pub position: AccountLoader<'info, Position>,
 }
 
@@ -163,7 +163,7 @@ pub struct RevokePromo<'info> {
         has_one = market
     )]
     pub promo_vault: Box<Account<'info, PromoVault>>,
-    #[account(mut, seeds = [POSITION_SEED, position.load()?.owner.as_ref()], bump)]
+    #[account(mut, seeds = [POSITION_SEED, position.load()?.owner.as_ref()], bump = position.load()?.bump)]
     pub position: AccountLoader<'info, Position>,
     /// CHECK: required only when the position has active loans, to price the health check
     /// below; `read_ngn_price` pins it to `market.ngn_feed`.

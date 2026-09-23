@@ -153,3 +153,62 @@ fn write_off_prices_the_whole_position() {
     env.set_ngn_price(NGN_USD, NGN_SPREAD);
     assert_hodl_error(env.write_off(&setup, 0), HodlError::StalePrice);
 }
+
+#[test]
+fn a_write_off_against_the_wrong_market_is_rejected() {
+    // Every other market-touching instruction has a `MarketMismatch` test — `repay_loan`,
+    // `withdraw_collateral`, `take_loan`, `liquidate`, three promo paths and `close_position`.
+    // `write_off_loan` was the one that did not, which matters more here than elsewhere: it is
+    // the instruction that writes `total_bad_debt`, so pointing it at the wrong market would
+    // charge the loss to lenders who never funded the loan.
+    //
+    // `require_keys_eq!(position.market, market_key)` in the handler is the ONLY guard that
+    // catches this. The `address = market.vault` constraint looks like a second one and is not:
+    // the instruction builder derives `market` and `vault` from the same mint, and `market.vault`
+    // IS `market_vault_pda(mint)` by construction, so that constraint is trivially satisfied no
+    // matter whose position is passed. It guards a different attack — a mismatched vault supplied
+    // alongside a *correct* market. Delete the `require_keys_eq!` and this test fails (it reverts
+    // on unrelated `MathOverflow` arithmetic instead), so the test is load-bearing for that one
+    // line. Established by mutation, after an earlier draft of this comment claimed the
+    // opposite.
+    let (mut env, setup) = dust_collateral();
+    let admin = env.admin.pubkey();
+    let owner = setup.borrower.pubkey();
+
+    let other = env.create_mint(MintKind::CngnLike, 6);
+    env.create_market_with_promo(&other);
+
+    let prices = env.price_accounts(&owner);
+    let wrong = write_off_loan_ix(&admin, &owner, &other, 0, prices);
+    assert_hodl_error(send(&mut env.svm, &[wrong], &[&env.admin]), HodlError::MarketMismatch);
+
+    // Nothing moved: the loan is still there and the other market never saw the loss.
+    assert!(env.position(&owner).loans[0].is_active());
+    assert_eq!(env.market(&other).total_bad_debt, 0);
+}
+
+#[test]
+fn writing_off_one_loan_leaves_an_active_sibling_untouched() {
+    // Every multi-loan write-off test repays loan 0 in full before writing off loan 1, so no
+    // sibling has ever been live at the moment of a write-off. The slot is
+    // `bytemuck::Zeroable::zeroed()`-ed by the write-off, and a neighbouring slot getting the
+    // same treatment would be silent — the position would simply have less debt than it owes.
+    let (mut env, setup) = Env::loan_ready();
+    let owner = setup.borrower.pubkey();
+    env.take_loan(&setup.borrower, &setup, LOAN, 365 * DAY).unwrap();
+    env.take_loan(&setup.borrower, &setup, 1_000 * ONE_CNGN, 365 * DAY).unwrap();
+    let sibling_before = env.position(&owner).loans[1];
+    assert!(sibling_before.is_active());
+
+    env.set_pyth_price(&setup.usdc, USDC_DUST, 0);
+    env.write_off(&setup, 0).unwrap();
+
+    let position = env.position(&owner);
+    assert_eq!(position.loans[0], bytemuck::Zeroable::zeroed(), "the written-off slot is cleared");
+    assert_eq!(position.loans[1], sibling_before, "the sibling is byte-for-byte untouched");
+    assert!(position.has_active_loans());
+
+    // And the market still owes the sibling's principal — only the written-off loan left
+    // `total_borrows`.
+    assert_eq!(env.market(&setup.cngn).total_borrows, 1_000 * ONE_CNGN);
+}

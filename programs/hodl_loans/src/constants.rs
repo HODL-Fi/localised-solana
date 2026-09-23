@@ -111,6 +111,32 @@ pub const MAX_MULTIPLIER: u128 = 1_000_000 * MULTIPLIER_SCALE;
 /// the dust collateral it leaves behind).
 pub const MAX_BAD_DEBT_DUST_USD: u128 = 1_000 * USD_SCALE;
 
+/// The Switchboard On-Demand program that must own the NGN feed (`oracle/switchboard.rs`).
+///
+/// Chosen at **compile time**, not stored in `Config`, and that is the whole point. The owner
+/// check exists because `Market::ngn_feed` is an admin-settable bare `Pubkey` with nothing
+/// behind it — a mis-set feed would have the program read 3.2 KB of arbitrary bytes as a
+/// price. Putting the expected *owner* in an account would reintroduce exactly that shape one
+/// level up: another admin-settable value that, set wrong, turns the check off. A deployed
+/// binary cannot be misconfigured after the fact.
+///
+/// The cost is two binaries to keep straight, and a devnet build that is silently wrong if
+/// someone forgets `--features devnet`. `the_switchboard_pid_matches_the_build` below pins
+/// each `#[cfg]` arm against the crate's own constant, so an edit that swapped the two arms
+/// cannot ship green. **It cannot detect a forgotten `--features devnet`** — the test is
+/// selected by the exact same `cfg` as the constant, so the flag being absent looks identical
+/// from inside the test to the flag never having been needed. That gap is closed by Gate B in
+/// `docs/superpowers/runbooks/2026-09-23-devnet-deployment.md`, whose `.so`-hash comparison is
+/// the check that actually catches a mis-built binary.
+///
+/// The `switchboard_on_demand` crate has its own selector, but it is client-only: it reads
+/// `std::env::var("SB_ENV")`, which does not exist on SBF. The two PID constants themselves
+/// are plain and usable on-chain, so we choose between them ourselves.
+#[cfg(not(feature = "devnet"))]
+pub const SWITCHBOARD_ON_DEMAND_PID: Pubkey = switchboard_on_demand::ON_DEMAND_MAINNET_PID;
+#[cfg(feature = "devnet")]
+pub const SWITCHBOARD_ON_DEMAND_PID: Pubkey = switchboard_on_demand::ON_DEMAND_DEVNET_PID;
+
 #[constant]
 pub const CONFIG_SEED: &[u8] = b"config";
 #[constant]
@@ -192,6 +218,28 @@ mod tests {
             "MAX_LISTED_COLLATERAL ({MAX_LISTED_COLLATERAL}) + {SET_PROMO_CAP_FIXED_ACCOUNTS} \
              exceeds MAX_TX_ACCOUNT_LOCKS ({MAX_TX_ACCOUNT_LOCKS}): set_promo_cap would be \
              unsendable at a full asset list"
+        );
+    }
+
+    #[test]
+    fn the_switchboard_pid_matches_the_build() {
+        // Pins each `#[cfg]` arm above against the crate's own constant: `cargo test` and
+        // `cargo test --features devnet` each assert their own half, so an edit that swapped
+        // the two arms cannot ship green. This is NOT a check that the binary was built for the
+        // right cluster — `cfg!(feature = "devnet")` here is the exact same signal that selected
+        // `SWITCHBOARD_ON_DEMAND_PID` above, so a forgotten `--features devnet` changes both
+        // sides of the assertion together and passes. Catching that gap is Gate B in
+        // `docs/superpowers/runbooks/2026-09-23-devnet-deployment.md`, not this test.
+        if cfg!(feature = "devnet") {
+            assert_eq!(SWITCHBOARD_ON_DEMAND_PID, switchboard_on_demand::ON_DEMAND_DEVNET_PID);
+        } else {
+            assert_eq!(SWITCHBOARD_ON_DEMAND_PID, switchboard_on_demand::ON_DEMAND_MAINNET_PID);
+        }
+        // And the two are genuinely different, so the assertion above is not vacuous on a
+        // future crate version that collapsed them.
+        assert_ne!(
+            switchboard_on_demand::ON_DEMAND_MAINNET_PID,
+            switchboard_on_demand::ON_DEMAND_DEVNET_PID
         );
     }
 }

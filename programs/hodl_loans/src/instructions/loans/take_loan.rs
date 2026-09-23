@@ -27,7 +27,7 @@ pub struct TakeLoan<'info> {
         has_one = market
     )]
     pub promo_vault: Option<Box<Account<'info, PromoVault>>>,
-    #[account(mut, seeds = [POSITION_SEED, owner.key().as_ref()], bump)]
+    #[account(mut, seeds = [POSITION_SEED, owner.key().as_ref()], bump = position.load()?.bump)]
     pub position: AccountLoader<'info, Position>,
     #[account(
         mut,

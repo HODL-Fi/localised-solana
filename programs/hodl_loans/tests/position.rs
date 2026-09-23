@@ -1,6 +1,7 @@
 mod common;
 
 use anchor_lang::error::ErrorCode as AnchorError;
+use anchor_lang::prelude::AccountMeta;
 use common::*;
 use hodl_loans::HodlError;
 use solana_keypair::Keypair;
@@ -131,4 +132,35 @@ fn closing_refunds_rent_to_the_sponsor() {
     env.deposit_collateral(&other, &usdc, ONE_USDC);
     let close = close_position_ix(&other.pubkey(), &admin);
     assert_hodl_error(send(&mut env.svm, &[close], &[&env.admin, &other.key]), HodlError::PositionNotEmpty);
+}
+
+#[test]
+fn deposit_collateral_rejects_a_foreign_position() {
+    // Since the stored-bump change, `take_loan`, `close_position`, `deposit_collateral`,
+    // `withdraw_collateral` and `redeem_promo` all read `bump = position.load()?.bump` instead
+    // of a bare `bump` — Anchor now compares the account key against
+    // `create_program_address([POSITION_SEED, owner.key()], stored_bump)` rather than deriving
+    // the bump itself. The account→owner binding this produces is unchanged (the seeds still
+    // pin `owner.key()`, the signer), but nothing in the suite ever substituted another owner's
+    // `Position` to prove it — every ix builder derives `position: position_pda(owner)`
+    // internally, so the substitution case is only reachable by editing the built instruction
+    // by hand, as below. `deposit_collateral` stands in for all five of these owner-signer
+    // sites: they share the exact same `#[account(seeds = [...], bump = ...)]` shape, so Anchor
+    // generates identical constraint code for each.
+    let mut env = Env::initialized();
+    let usdc = env.list_spl_collateral(6);
+    let victim = env.new_borrower();
+    let intruder = env.new_borrower();
+    let token = env.create_token_account(&usdc, &intruder.pubkey());
+    env.mint_to(&usdc, &token, 10 * ONE_USDC);
+
+    let mut ix = deposit_collateral_ix(&intruder.pubkey(), &usdc, &SPL_TOKEN, &token, 10 * ONE_USDC);
+    let slot = ix.accounts.iter().position(|a| a.pubkey == position_pda(&intruder.pubkey())).unwrap();
+    ix.accounts[slot] = AccountMeta::new(position_pda(&victim.pubkey()), false);
+    let result = send(&mut env.svm, &[ix], &[&env.admin, &intruder.key]);
+    assert_anchor_error(result, AnchorError::ConstraintSeeds);
+
+    // Neither position was touched by the rejected attempt.
+    assert!(!env.position(&victim.pubkey()).has_collateral());
+    assert!(!env.position(&intruder.pubkey()).has_collateral());
 }

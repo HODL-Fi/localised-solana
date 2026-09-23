@@ -17,7 +17,7 @@ pub struct WithdrawCollateral<'info> {
     /// Carries `promo_cap_bps`, which bounds how much of a position's promo counts (spec §12).
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Box<Account<'info, Config>>,
-    #[account(mut, seeds = [POSITION_SEED, owner.key().as_ref()], bump)]
+    #[account(mut, seeds = [POSITION_SEED, owner.key().as_ref()], bump = position.load()?.bump)]
     pub position: AccountLoader<'info, Position>,
     #[account(mut, seeds = [COLLATERAL_SEED, mint.key().as_ref()], bump = collateral.bump, has_one = mint, has_one = vault)]
     pub collateral: Box<Account<'info, CollateralAsset>>,

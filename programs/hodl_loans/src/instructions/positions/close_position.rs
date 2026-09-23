@@ -14,7 +14,7 @@ pub struct ClosePosition<'info> {
     #[account(
         mut,
         seeds = [POSITION_SEED, owner.key().as_ref()],
-        bump,
+        bump = position.load()?.bump,
         close = rent_payer,
         constraint = position.load()?.rent_payer == rent_payer.key() @ HodlError::Unauthorized
     )]
