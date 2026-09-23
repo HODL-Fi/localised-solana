@@ -36,7 +36,26 @@
   `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>`
 - Write commit messages with `git commit -F -` and a heredoc when they contain backticks; a double-quoted `-m` gets them command-substituted.
 - Stage only the files your task touches. No `git add -A`, no `git commit -a`.
-- The suite is **266 tests** (59 unit, 207 LiteSVM) at the start of this plan and **278** (60 unit, 218 LiteSVM) at the end. Per task: 269, 272, 273, 274, 275, 275, 277, 278, 278. **If your count does not match, report it — do not delete a test to reach the number.**
+- The suite is **266 tests** (59 unit, 207 LiteSVM) at the start of this plan and **278** (60 unit, 218 LiteSVM) at the end.
+
+| After task | Total | Unit | Why |
+|---|---|---|---|
+| 1 | 266 | 59 | reading only, no change |
+| 2 | 269 | 59 | +3 |
+| 3 | 272 | 59 | +3 |
+| 4 | **273** | 59 | +1 only — Step 1 *replaces* a unit test, so the unit count cannot move |
+| 5 | 274 | 59 | +1 |
+| 6 | 274 | 59 | +0 — re-measures, adds no test |
+| 7 | 277 | 59 | +3 |
+| 8 | 278 | **60** | +1, and it is a unit test (`constants.rs`) — this is where 60 arrives |
+| 9 | 278 | 60 | docs only |
+
+  **If your count does not match, report it — do not delete a test to reach the number.** An
+  earlier draft of this table was read off the reference tree's *commit* sequence rather than
+  this plan's *task* decomposition, and one of those commits bundled Task 4's work with Task
+  5's — so every figure from Task 4 on was shifted by one, and "60 unit" was attributed to
+  Task 4 instead of Task 8. Task 4's implementer caught it by reporting rather than forcing
+  the number.
 
 ## A note on the compute figures
 
@@ -595,7 +614,7 @@ The window is one atom wide on the low side: at 656 the cap rounds `paid` to 0 a
 
 - [ ] **Step 3: Run and verify**
 
-Run: `cargo test --lib` (60) and `./scripts/test.sh` (274).
+Run: `cargo test --lib` (**59** — Step 1 replaces a test, it does not add one) and `./scripts/test.sh` (**273**).
 
 Two checks, rebuilding first:
 
@@ -718,7 +737,7 @@ A first draft of this test asserted a 3,000–3,400 band. The measurement said 2
 
 - [ ] **Step 3: Run and commit**
 
-Run: `./scripts/test.sh` — expect 275.
+Run: `./scripts/test.sh` — expect 274.
 
 ```bash
 git add programs/hodl_loans/tests/budget.rs
@@ -761,7 +780,7 @@ In each declaration, `bump)]` becomes `bump = position.load()?.bump)]`. Seven si
 
 - [ ] **Step 2: Run, then re-measure everything**
 
-Run: `./scripts/test.sh` — expect 275, unchanged.
+Run: `./scripts/test.sh` — expect 274, unchanged.
 
 Then re-measure every figure in `tests/budget.rs`: turn each `assert!(cu < N, ...)` into a `println!`, run the budget test 16+ times, take min–max, restore the assertions.
 
