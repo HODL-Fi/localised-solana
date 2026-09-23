@@ -46,7 +46,10 @@ fn full_position_stays_under_the_default_compute_budget() {
     // the 9 existing overdue loans. Measured 88,512-88,543 CU over 20 runs (was 88,095-98,595 CU
     // over 55 runs pre-fix).
     //
-    // **These figures are deterministic as of Plan 8, and were not before.** Every instruction
+    // **Plan 8 removed the multi-thousand-CU steps from these figures; it did not make them
+    // literally single-valued.** A residual 0-109 CU of jitter remains (see the note below the
+    // deltas) — small enough to compare a max against, which the geometric ladder never was.
+    // Every instruction
     // that pins the position PDA now passes `bump = position.load()?.bump` rather than a bare
     // `bump`, so Anchor reads the stored bump instead of emitting `find_program_address`,
     // which tried candidates from 255 downward at ~1,500 CU each. A randomly-keyed borrower's

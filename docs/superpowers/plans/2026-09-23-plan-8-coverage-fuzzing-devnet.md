@@ -61,7 +61,7 @@
 
 `tests/budget.rs` is the only place compute is written down, and several tasks re-measure it. Two things that have caught people, both now fixed but worth knowing:
 
-- Until Task 6 the figures were **not deterministic**: seven instructions declared the position PDA with a bare `bump`, so Anchor emitted `find_program_address` and paid ~1,500 CU per candidate bump tried. Every "measured X–Y over N runs" range in the file's history was measuring a geometric ladder. Task 6 removes it and the figures become single-valued.
+- Until Task 6 the figures carried a geometric ladder: seven instructions declared the position PDA with a bare `bump`, so Anchor emitted `find_program_address` and paid ~1,500 CU per candidate tried, producing spreads of 9,000–10,500 CU. Task 6 removes the ladder. It does **not** make the figures single-valued — a residual 0–109 CU of ordinary jitter remains, measured over 20 runs. The useful change is that a max is now worth comparing against; it never was before. (An earlier draft of this plan claimed the figures become deterministic. That came from a 5-run sample, which is too few to see jitter this small.)
 - Measure, do not estimate. Figures in this plan are the author's; record what *you* measure. Two drafts of Task 5's assertion and one of Task 7's shipped numbers nobody had measured, and each was wrong by more than the tolerance.
 
 ## File Structure
@@ -786,9 +786,9 @@ Then re-measure every figure in `tests/budget.rs`: turn each `assert!(cu < N, ..
 
 **Only re-measure figures that exist in `budget.rs` at this point.** At Task 6 the file carries `take_loan`, `withdraw_collateral`, the three `liquidate` figures, `repay_loan`, the xStock pair, and Task 5's `set_promo_cap`. It does **not** yet carry `revoke_promo` — Task 7 adds that, and measures it post-bump. Do not go looking for it.
 
-What the author measured, max-to-max, on the figures you will have: `take_loan` **−8,680**, `withdraw_collateral` **−8,680**, xStock `take_loan` **−7,163**. The three `liquidate` figures went the *other* way by ~260 CU — they never constrained the position by seeds, so they paid no search and see only the extra account read. `set_promo_cap` should not move at all (it touches no position PDA); if it does, report it. The comment block you install in Step 3 also cites a `revoke_promo` −**13,432**: that is the end-state figure this plan reaches at Task 7, deliberately left in the comment so the finished file reads coherently. It is not something for you to reproduce.
+What was measured over 20 runs, max-to-max, on the figures you will have: `take_loan` **−10,052**, `withdraw_collateral` **−10,170**, xStock `take_loan` **−8,535**. (An earlier draft quoted −8,680 / −8,680 / −7,163 from a 5-run sample; the arithmetic against the ranges this file carried — 98,595 − 88,543 = 10,052 — gives the figures above.) The three `liquidate` figures went the *other* way by ~260 CU — they never constrained the position by seeds, so they paid no search and see only the extra account read. `set_promo_cap` should not move at all (it touches no position PDA); if it does, report it. The comment block you install in Step 3 also cites a `revoke_promo` −**13,432**: that is the end-state figure this plan reaches at Task 7, deliberately left in the comment so the finished file reads coherently. It is not something for you to reproduce.
 
-The more useful result is that the spreads collapse: `take_loan` 10,500 → 0, `revoke_promo` 13,500 → 0.
+The more useful result is the collapse in spread: `take_loan` 10,500 → 31, `withdraw_collateral` 10,500 → 0, xStock `take_loan` 9,000 → 48. Not zero everywhere — `xStock liquidate`-with-forfeit sits at 109 CU — but two orders of magnitude down, which is what makes a max comparable.
 
 - [ ] **Step 3: Replace the file's causal note**
 
