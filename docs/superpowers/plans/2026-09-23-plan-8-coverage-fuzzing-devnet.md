@@ -117,11 +117,15 @@ fn a_write_off_against_the_wrong_market_is_rejected() {
     // the instruction that writes `total_bad_debt`, so pointing it at the wrong market would
     // charge the loss to lenders who never funded the loan.
     //
-    // Two guards reject this and both raise `MarketMismatch`: the `address = market.vault`
-    // constraint on the vault account, and `require_keys_eq!(position.market, market_key)` in
-    // the handler. This test pins the outcome, not either one individually — removing just one
-    // still passes. That is belt-and-braces working as intended, but do not read the test as
-    // covering the handler check alone.
+    // `require_keys_eq!(position.market, market_key)` in the handler is the ONLY guard that
+    // catches this. The `address = market.vault` constraint looks like a second one and is not:
+    // the instruction builder derives `market` and `vault` from the same mint, and `market.vault`
+    // IS `market_vault_pda(mint)` by construction, so that constraint is trivially satisfied no
+    // matter whose position is passed. It guards a different attack — a mismatched vault supplied
+    // alongside a *correct* market. Delete the `require_keys_eq!` and this test fails (it reverts
+    // on unrelated `MathOverflow` arithmetic instead), so the test is load-bearing for that one
+    // line. Established by mutation, after an earlier draft of this comment claimed the
+    // opposite.
     let (mut env, setup) = dust_collateral();
     let admin = env.admin.pubkey();
     let owner = setup.borrower.pubkey();
@@ -229,7 +233,7 @@ Run: `./scripts/test.sh` — expect 269.
 Then verify each is load-bearing, rebuilding with `cargo build-sbf --tools-version v1.52` before each check:
 
 - Delete the `PromoVaultMismatch` constraint from `liquidate.rs` and `write_off.rs` — the forfeit test must fail.
-- Delete `write_off.rs`'s `require_keys_eq!(position.market, market_key, ...)` — **the wrong-market test still passes.** That is not a broken test: two guards raise `MarketMismatch` here, the handler check and the vault's `address` constraint, and either alone catches it. Remove *both* and it fails. The test pins the property, not either guard, and its comment says so.
+- Delete `write_off.rs`'s `require_keys_eq!(position.market, market_key, ...)` — the wrong-market test must fail, and it fails in an informative way: the transaction still reverts, but on `MathOverflow` rather than `MarketMismatch`. `require_keys_eq!` is the **only** guard for this attack. The `address = market.vault` constraint reads like a second one and is not — the ix builder derives `market` and `vault` from the same mint, and `market.vault` IS `market_vault_pda(mint)` by construction, so it is trivially satisfied whichever position is passed. Removing it *as well* changes nothing observable. (An earlier draft of this plan asserted the opposite — that removing one guard still passed. That was measured against a stale `.so`; rebuild with `cargo build-sbf` before every mutation check.)
 
 - [ ] **Step 4: Commit**
 
@@ -240,9 +244,10 @@ test(plan8): close three coverage gaps, one of them the last unreached error
 
 write_off_loan had no MarketMismatch test, alone among the market-touching
 instructions — and it is the one that writes total_bad_debt, so a wrong market
-charges the loss to lenders who never funded the loan. Two guards reject it and
-both raise MarketMismatch, so removing either alone still passes; the comment
-says so, and removing both fails.
+charges the loss to lenders who never funded the loan. require_keys_eq! is the
+only guard that catches it: the address = market.vault constraint looks like a
+second one but the ix builder derives market and vault from the same mint, so it
+is trivially satisfied. Deleting require_keys_eq! fails this test.
 
 No write-off test had ever run with a surviving sibling loan — every multi-loan
 case repaid loan 0 in full first.

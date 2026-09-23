@@ -162,11 +162,15 @@ fn a_write_off_against_the_wrong_market_is_rejected() {
     // the instruction that writes `total_bad_debt`, so pointing it at the wrong market would
     // charge the loss to lenders who never funded the loan.
     //
-    // Two guards reject this and both raise `MarketMismatch`: the `address = market.vault`
-    // constraint on the vault account, and `require_keys_eq!(position.market, market_key)` in
-    // the handler. This test pins the outcome, not either one individually — removing just one
-    // still passes. That is belt-and-braces working as intended, but do not read the test as
-    // covering the handler check alone.
+    // `require_keys_eq!(position.market, market_key)` in the handler is the ONLY guard that
+    // catches this. The `address = market.vault` constraint looks like a second one and is not:
+    // the instruction builder derives `market` and `vault` from the same mint, and `market.vault`
+    // IS `market_vault_pda(mint)` by construction, so that constraint is trivially satisfied no
+    // matter whose position is passed. It guards a different attack — a mismatched vault supplied
+    // alongside a *correct* market. Delete the `require_keys_eq!` and this test fails (it reverts
+    // on unrelated `MathOverflow` arithmetic instead), so the test is load-bearing for that one
+    // line. Established by mutation, after an earlier draft of this comment claimed the
+    // opposite.
     let (mut env, setup) = dust_collateral();
     let admin = env.admin.pubkey();
     let owner = setup.borrower.pubkey();
