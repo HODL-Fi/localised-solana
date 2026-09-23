@@ -52,6 +52,13 @@ impl LoanSlot {
 #[derive(Debug)]
 pub struct Position {
     pub version: u8,
+    /// Canonical, written once by `open_position` (`init`, so `ctx.bumps.position` is always
+    /// `find_program_address`'s result) and never touched again. The seven other position-PDA
+    /// sites — `take_loan`, `close_position`, `deposit_collateral`, `withdraw_collateral`,
+    /// `redeem_promo`, `expire_promo`, `revoke_promo` — read it back via
+    /// `bump = position.load()?.bump` instead of re-deriving it, which depends on this field
+    /// never holding anything but the canonical bump for as long as `open_position` stays the
+    /// only writer.
     pub bump: u8,
     pub _padding: [u8; 6],
     pub owner: Pubkey,

@@ -3,9 +3,15 @@
 What Plan 8 leaves standing. This is the last plan in the series, so unlike Plans 2–7 there
 is no "next plan" to inherit these — anything here needs its own decision.
 
-**Branch state at close:** 278 tests (60 unit, 218 LiteSVM) passing under both the default
+**Branch state at close:** 281 tests (60 unit, 221 LiteSVM) passing under both the default
 and `--features devnet` builds; `cargo clippy -p hodl_loans --all-targets -- -D warnings`
-clean under both.
+clean under both. This is now reproducible with the repo's own tooling —
+`scripts/test.sh` forwards its arguments to `cargo build-sbf` as well as `cargo test`, so
+`./scripts/test.sh --features devnet` builds and tests against a devnet-featured `.so`
+instead of silently testing a devnet harness against a mainnet binary (fix-round H-1). The
+prior "278 passing under both builds" claim here was never actually run that way; three
+more tests (fix-round M-2) now pin that the seven stored-bump position-PDA constraints
+still reject a foreign `Position`, bringing the total to 281.
 
 ---
 
@@ -94,7 +100,7 @@ highest-value targets are the liquidation math and the share-accounting round-tr
   transaction with an address lookup table.
 - **The compute figures are comparable now, but not single-valued.** The stored-bump change
   removed a geometric `find_program_address` ladder worth up to 10,170 CU, collapsing spreads
-  from ~10,500 CU to between 0 and 109. A max is worth comparing against; it never was before.
+  from ~10,500 CU to between 0 and 48. A max is worth comparing against; it never was before.
 
 ---
 
@@ -111,7 +117,7 @@ Four distinct ways a measurement went wrong, all found during execution:
    Rebuild with `cargo build-sbf` before every mutation check.
 2. **Early stop.** Plain `cargo test` stops launching further test binaries once one fails,
    hiding a mutation's cross-file blast radius. Use `--no-fail-fast`.
-3. **Too few samples.** A 5-run sample showed zero spread where a 20-run sample shows 0–109
+3. **Too few samples.** A 5-run sample showed zero spread where a 20-run sample shows 0–48
    CU, which turned into a false claim that the figures were deterministic.
 4. **`mv`-restored backups.** `mv backup file` preserves the backup's older mtime, so Cargo's
    fingerprint check sees nothing newer than the mutated build and silently reuses the stale

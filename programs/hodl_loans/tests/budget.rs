@@ -47,7 +47,7 @@ fn full_position_stays_under_the_default_compute_budget() {
     // over 55 runs pre-fix).
     //
     // **Plan 8 removed the multi-thousand-CU steps from these figures; it did not make them
-    // literally single-valued.** A residual 0-109 CU of jitter remains (see the note below the
+    // literally single-valued.** A residual 0-48 CU of jitter remains (see the note below the
     // deltas) — small enough to compare a max against, which the geometric ladder never was.
     // Every instruction
     // that pins the position PDA now passes `bump = position.load()?.bump` rather than a bare
@@ -62,15 +62,15 @@ fn full_position_stays_under_the_default_compute_budget() {
     // before this task (`take_loan` 88,095-98,595, `withdraw_collateral` 87,646-98,146, xStock
     // `take_loan` 95,990-104,990): `take_loan` -10,052, `withdraw_collateral` -10,170, xStock
     // `take_loan` -8,535. `revoke_promo` does not exist yet at this point in the plan — Task 7
-    // adds it and is the one that gets to measure its drop. The `liquidate` / `repay_loan`
-    // figures moved the other way, by roughly +300 to +420 CU: they never paid the search
-    // either way, so this small rise is ordinary crate-wide inlining drift from the changed
-    // code elsewhere in the crate (the same effect this file has always attributed a few tens of
-    // CU of `repay_loan` drift to), not a cost the position-PDA fix adds to these instructions
-    // directly. `open_position` still uses a bare bump because it is `init`: there is no stored
-    // bump to read yet.
+    // adds it and is the one that gets to measure its drop. The `liquidate` figures moved the
+    // other way by a uniform +309 to +323 CU; `repay_loan`, which walks no collateral, moved
+    // only +7 to +55 — the control that shows the `liquidate` rise is ordinary crate-wide
+    // inlining drift from the changed code elsewhere in the crate (the same effect this file has
+    // always attributed a few tens of CU of `repay_loan` drift to), not a cost the position-PDA
+    // fix adds to these instructions directly. `open_position` still uses a bare bump because it
+    // is `init`: there is no stored bump to read yet.
     //
-    // Ranges below are min-max over 20 runs. The residual 0-109 CU left on these figures is
+    // Ranges below are min-max over 20 runs. The residual 0-48 CU left on these figures is
     // ordinary jitter, not a step — contrast with the multi-thousand-CU spreads the geometric
     // ladder used to produce on the same instructions.
     let prices = env.price_accounts(&owner);

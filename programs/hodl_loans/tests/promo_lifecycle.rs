@@ -1,5 +1,6 @@
 mod common;
 
+use anchor_lang::prelude::AccountMeta;
 use common::*;
 use hodl_loans::HodlError;
 use solana_signer::Signer;
@@ -314,6 +315,83 @@ fn cross_market_vault_and_market_accounts_are_rejected() {
     env.redeem_promo(&other_borrower, &setup.cngn, 1, GRANT, 8).unwrap();
     let wrong_close = close_position_with_promo_ix(&other_owner, &env.admin.pubkey(), &other);
     assert_hodl_error(env.sponsored(wrong_close, &other_borrower.key), HodlError::MarketMismatch);
+    assert_eq!(env.position(&other_owner).promo_balance, GRANT);
+}
+
+#[test]
+fn expire_promo_rejects_a_foreign_position_via_the_market_mismatch_chokepoint() {
+    // `ExpirePromo` derives `position`'s seeds from the account's OWN stored fields —
+    // `seeds = [POSITION_SEED, position.load()?.owner], bump = position.load()?.bump` — so
+    // `ConstraintSeeds` is satisfied by construction for ANY genuine `Position` account: its own
+    // owner and bump always reproduce its own key. Unlike the five `owner: Signer`-seeded sites
+    // (see `deposit_collateral_rejects_a_foreign_position` in `tests/position.rs`), the seeds
+    // constraint here cannot reject a substituted position at all. What actually rejects one
+    // bound to a different market is `release_promo`'s own
+    // `require_keys_eq!(position.market, promo_vault.market)` chokepoint
+    // (`promos/lifecycle.rs:18`). This test isolates that: `market`/`promo_vault` stay market
+    // A's (matching the position `expire_promo_ix` was built for), only `position` itself is
+    // swapped for a real position bound to a second market. The cross-market coverage above
+    // (`cross_market_vault_and_market_accounts_are_rejected`) swaps `market`/`promo_vault`
+    // instead and leaves `position` alone — a different substitution than this one.
+    let (mut env, setup) = Env::promo_ready();
+    let owner = setup.borrower.pubkey();
+    env.redeem_promo(&setup.borrower, &setup.cngn, 1, GRANT, 7).unwrap();
+
+    // A second market, funded and holding real committed promo of its own.
+    let other = env.create_mint(MintKind::CngnLike, 6);
+    env.create_market_with_promo(&other);
+    let admin = env.admin.pubkey();
+    let other_source = env.create_token_account(&other, &admin);
+    env.mint_to(&other, &other_source, 10_000_000 * ONE_CNGN);
+    let fund_other = fund_promo_vault_ix(&admin, &other, &other_source, 10_000_000 * ONE_CNGN);
+    send(&mut env.svm, &[fund_other], &[&env.admin]).expect("fund market B promo vault");
+    env.create_campaign(&other, 1, 5_000_000 * ONE_CNGN);
+    let other_borrower = env.new_borrower();
+    let other_owner = other_borrower.pubkey();
+    env.redeem_promo(&other_borrower, &other, 1, GRANT, 1).unwrap();
+
+    // expire_promo, correctly named for market A, with market B's own position substituted in.
+    env.warp_seconds(INACTIVITY);
+    let mut wrong_expire = expire_promo_ix(&setup.cngn, &owner);
+    let slot = wrong_expire.accounts.iter().position(|a| a.pubkey == position_pda(&owner)).unwrap();
+    wrong_expire.accounts[slot] = AccountMeta::new(position_pda(&other_owner), false);
+    assert_hodl_error(send(&mut env.svm, &[wrong_expire], &[&env.admin]), HodlError::MarketMismatch);
+
+    // Neither position's promo moved.
+    assert_eq!(env.position(&owner).promo_balance, GRANT);
+    assert_eq!(env.position(&other_owner).promo_balance, GRANT);
+}
+
+#[test]
+fn revoke_promo_rejects_a_foreign_position_via_the_market_mismatch_chokepoint() {
+    // The `RevokePromo` counterpart to `expire_promo_rejects_a_foreign_position_via_the_market_mismatch_chokepoint`
+    // above — same self-referential seeds shape (`promos/lifecycle.rs:166`), same reasoning:
+    // `ConstraintSeeds` cannot reject a substituted position here, only `release_promo`'s
+    // `MarketMismatch` chokepoint can, and does.
+    let (mut env, setup) = Env::promo_ready();
+    let owner = setup.borrower.pubkey();
+    env.redeem_promo(&setup.borrower, &setup.cngn, 1, GRANT, 7).unwrap();
+
+    let other = env.create_mint(MintKind::CngnLike, 6);
+    env.create_market_with_promo(&other);
+    let admin = env.admin.pubkey();
+    let other_source = env.create_token_account(&other, &admin);
+    env.mint_to(&other, &other_source, 10_000_000 * ONE_CNGN);
+    let fund_other = fund_promo_vault_ix(&admin, &other, &other_source, 10_000_000 * ONE_CNGN);
+    send(&mut env.svm, &[fund_other], &[&env.admin]).expect("fund market B promo vault");
+    env.create_campaign(&other, 1, 5_000_000 * ONE_CNGN);
+    let other_borrower = env.new_borrower();
+    let other_owner = other_borrower.pubkey();
+    env.redeem_promo(&other_borrower, &other, 1, GRANT, 1).unwrap();
+
+    // revoke_promo, correctly named for market A, with market B's own position substituted in —
+    // no waiting required, unlike expire_promo.
+    let mut wrong_revoke = revoke_promo_ix(&admin, &setup.cngn, &owner);
+    let slot = wrong_revoke.accounts.iter().position(|a| a.pubkey == position_pda(&owner)).unwrap();
+    wrong_revoke.accounts[slot] = AccountMeta::new(position_pda(&other_owner), false);
+    assert_hodl_error(send(&mut env.svm, &[wrong_revoke], &[&env.admin]), HodlError::MarketMismatch);
+
+    assert_eq!(env.position(&owner).promo_balance, GRANT);
     assert_eq!(env.position(&other_owner).promo_balance, GRANT);
 }
 
