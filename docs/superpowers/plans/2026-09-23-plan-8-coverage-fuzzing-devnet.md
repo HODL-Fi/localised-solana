@@ -1201,7 +1201,7 @@ A deployment is outward-facing and spends real SOL on a public cluster. **This t
 Check against the tree, and record the result either way:
 
 - The two builds produce different binaries (hash them).
-- **`declare_id!` against the deploy keypair.** At the time of writing these *disagree* — `J9sKAhm2EhdJQ3bHeP2KUCxqZ4cYdBc65C3RDr4JjGEd` declared, `CmDBvi4ZiBDND1XzEwKFuH3kontC5Lokd2faXBxEgmci` in `target/deploy/hodl_loans-keypair.json`. Deploying with that keypair puts the program at an address it does not believe it lives at, so every PDA is computed wrong and the failure looks like unrelated seed errors. This is a hard gate.
+- **`declare_id!` against the deploy keypair.** At the time of writing these *disagree* — `J9sKAhm2EhdJQ3bHeP2KUCxqZ4cYdBc65C3RDr4JjGEd` declared, `CmDBvi4ZiBDND1XzEwKFuH3kontC5Lokd2faXBxEgmci` in `target/deploy/hodl_loans-keypair.json`. Deploying with that keypair puts the program at an address it does not believe it lives at. Anchor's generated entrypoint compares the two before dispatch, so every instruction fails immediately with error 4100 (`DeclaredProgramIdMismatch`) and nothing else happens — no PDA derivation, no partial state. A hard gate not because it is subtle but because it wastes a deploy: ~8 SOL of rent on a program that cannot execute a single instruction.
 - `anchor-cli` is 0.31.1 against `anchor-lang` 1.2.0 and there is no `Anchor.toml`, so the runbook uses `solana program deploy`, not `anchor deploy`.
 
 Mark every step you could not run — anything needing the network — as unverified rather than implying it was tested.
@@ -1228,7 +1228,8 @@ Two blockers, both of which fail closed. The build must carry --features
 devnet, or the NGN feed's owner check refuses every health check while deposits
 and repayment keep working. And declare_id! does not match the local deploy
 keypair, so deploying with it would put the program at an address it does not
-believe it lives at — every PDA wrong, failing as unrelated seed errors.
+believe it lives at, so Anchor rejects every instruction with error 4100 before
+dispatch and the deploy buys an inert program.
 
 Records what devnet does not have: a Switchboard NGN feed under the devnet
 program id, devnet Pyth accounts, and cNGN and collateral mints. That is the
