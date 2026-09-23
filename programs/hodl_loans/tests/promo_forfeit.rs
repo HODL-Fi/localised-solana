@@ -3,6 +3,7 @@ mod common;
 use common::*;
 use anchor_lang::error::ErrorCode as AnchorError;
 use anchor_lang::prelude::AccountMeta;
+use anchor_lang::solana_program::instruction::Instruction;
 use hodl_loans::HodlError;
 use solana_signer::Signer;
 
@@ -356,4 +357,55 @@ fn liquidation_at_the_promo_lifted_boundary_never_books_bad_debt() {
     assert_eq!(env.market(&setup.cngn).total_bad_debt, 0);
     assert_eq!(env.position(&owner).promo_balance, 0);
     assert_eq!(env.promo_vault(&setup.cngn).outstanding, 0);
+}
+
+#[test]
+fn a_foreign_promo_vault_token_is_rejected_on_both_forfeit_paths() {
+    // `promo_vault` is `Option`, so its `vault` field cannot be named in an `address`
+    // constraint — the binding is a `constraint` expression instead, and `PromoVaultMismatch`
+    // was the only error in the program raised by code no test reached. It guards the account
+    // forfeiture *drains*: without it, a liquidation could name the real promo vault for its
+    // bookkeeping and a different token account for the transfer.
+    let (mut env, setup) = underwater_with_promo();
+    let owner = setup.borrower.pubkey();
+    let admin = env.admin.pubkey();
+
+    // A second market's promo vault token: a real, program-owned cNGN account of exactly the
+    // right shape, and not this market's.
+    let other = env.create_mint(MintKind::CngnLike, 6);
+    env.create_market_with_promo(&other);
+    let foreign_token = promo_vault_token_pda(&other);
+    assert_ne!(foreign_token, promo_vault_token_pda(&setup.cngn));
+
+    let swap_promo_token = |ix: &mut Instruction| {
+        let real = promo_vault_token_pda(&setup.cngn);
+        let mut swapped = 0;
+        for meta in ix.accounts.iter_mut() {
+            if meta.pubkey == real {
+                meta.pubkey = foreign_token;
+                swapped += 1;
+            }
+        }
+        assert_eq!(swapped, 1, "the promo vault token must appear exactly once");
+    };
+
+    // liquidate
+    let liquidator = env.new_liquidator(&setup.cngn, LOAN);
+    let seized_to = env.create_token_account(&setup.usdc, &liquidator.pubkey());
+    let mut seize = liquidate_ix(
+        &liquidator.pubkey(), &owner, &setup.cngn, &liquidator.cngn, &setup.usdc, &SPL_TOKEN,
+        &seized_to, 0, 1_000 * ONE_CNGN, env.price_accounts(&owner),
+    );
+    swap_promo_token(&mut seize);
+    assert_hodl_error(send(&mut env.svm, &[seize], &[&liquidator.key]), HodlError::PromoVaultMismatch);
+
+    // write_off_loan, which carries the same pair of optional accounts and the same constraint
+    env.set_pyth_price(&setup.usdc, 100_000, 0);
+    let mut write_off = write_off_loan_ix(&admin, &owner, &setup.cngn, 0, env.price_accounts(&owner));
+    swap_promo_token(&mut write_off);
+    assert_hodl_error(send(&mut env.svm, &[write_off], &[&env.admin]), HodlError::PromoVaultMismatch);
+
+    // The position and both vaults are untouched by either attempt.
+    assert_eq!(env.position(&owner).promo_balance, GRANT);
+    assert_eq!(env.promo_vault(&other).cash, 0);
 }
