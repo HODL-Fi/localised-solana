@@ -440,10 +440,17 @@ fn full_all_xstock_position_liquidation_with_promo_forfeit_stays_under_the_defau
     // the note on `full_position_stays_under_the_default_compute_budget`). Same-shape collateral
     // has nothing to do with it — `an_all_xstock_position_stays_under_the_default_compute_budget`
     // above holds eight identical xStocks and is a `take_loan`, so it still moved by thousands.
-    // Measured 120,598-120,615 CU post-metadata (was 120,544 at the min before the xStock fixture gained a real `TokenMetadata` extension in Plan 8 Task 8 — **+54 CU**, the whole measured cost of that change; the all-xStock `take_loan` case moved +0). Unpacking a mint walks TLV entry headers and the program never reads the metadata's contents, so a longer variable-length entry is close to free. Earlier range over 20 runs, a spread of 109 rather than the thousands
-    // `take_loan` used to show — up from 120,224-120,255 CU over 55 runs pre-fix, ordinary
-    // crate-wide inlining drift from the position-PDA fix elsewhere in the crate. Not zero,
-    // though — do not restate this as an exact figure. The ceiling below still leaves the same
+    // Measured 120,598-120,615 CU over 20 runs — a spread of 17, against the thousands
+    // `take_loan` used to show before the stored-bump fix. Up from 120,224-120,255 CU over 55
+    // runs pre-fix: ordinary crate-wide inlining drift from the position-PDA change elsewhere
+    // in the crate, not a cost this instruction pays directly.
+    //
+    // The minimum moved +54 from 120,544 when the xStock fixture gained a real `TokenMetadata`
+    // extension (Plan 8 Task 8) — the entire measured cost of that change; the all-xStock
+    // `take_loan` case moved +0. Unpacking a mint walks TLV entry headers and the program never
+    // reads the metadata's contents, so a longer variable-length entry is close to free.
+    //
+    // Not zero, though — do not restate this as an exact figure. The ceiling below still leaves the same
     // margin the sibling standard-collateral forfeit case above does.
     for m in &mints {
         env.set_pyth_price(m, 100_000, 0);
