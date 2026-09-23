@@ -1,0 +1,4899 @@
+{
+  "address": "q33KxkuB2ntHSBwPnuFGpkiCxxEmmxsAgYAM6Gjx2SN",
+  "metadata": {
+    "name": "hodl_loans",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "HODL fixed-term cNGN loans on Solana"
+  },
+  "instructions": [
+    {
+      "name": "initialize",
+      "discriminator": [
+        175,
+        175,
+        109,
+        31,
+        13,
+        152,
+        155,
+        237
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "docs": [
+            "Must be the program's upgrade authority; becomes the admin."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true
+        },
+        {
+          "name": "program"
+        },
+        {
+          "name": "program_data"
+        },
+        {
+          "name": "system_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "InitializeArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "propose_admin",
+      "discriminator": [
+        121,
+        214,
+        199,
+        212,
+        87,
+        39,
+        117,
+        234
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "proposed",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "accept_admin",
+      "discriminator": [
+        112,
+        42,
+        45,
+        90,
+        116,
+        181,
+        13,
+        170
+      ],
+      "accounts": [
+        {
+          "name": "new_admin",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "set_guardian",
+      "discriminator": [
+        147,
+        243,
+        50,
+        121,
+        154,
+        164,
+        50,
+        30
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "guardian",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "set_whitelister",
+      "discriminator": [
+        134,
+        123,
+        149,
+        180,
+        18,
+        92,
+        75,
+        196
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "whitelister",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "set_promo_signer",
+      "discriminator": [
+        145,
+        85,
+        211,
+        49,
+        132,
+        86,
+        30,
+        39
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "promo_signer",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "set_treasury",
+      "discriminator": [
+        57,
+        97,
+        196,
+        95,
+        195,
+        206,
+        106,
+        136
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "treasury",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "whitelist",
+      "discriminator": [
+        0,
+        143,
+        193,
+        93,
+        69,
+        29,
+        183,
+        140
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config"
+        },
+        {
+          "name": "access",
+          "writable": true
+        },
+        {
+          "name": "system_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "wallet",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "blacklist",
+      "discriminator": [
+        26,
+        247,
+        117,
+        39,
+        228,
+        75,
+        162,
+        78
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config"
+        },
+        {
+          "name": "access",
+          "writable": true
+        },
+        {
+          "name": "system_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "wallet",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "unblacklist",
+      "discriminator": [
+        4,
+        50,
+        22,
+        69,
+        161,
+        91,
+        80,
+        146
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "config"
+        },
+        {
+          "name": "access",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "wallet",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "create_market",
+      "discriminator": [
+        103,
+        226,
+        97,
+        235,
+        200,
+        188,
+        251,
+        254
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config"
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "MarketParams"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "update_market_params",
+      "discriminator": [
+        70,
+        117,
+        202,
+        191,
+        205,
+        174,
+        92,
+        82
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "config"
+        },
+        {
+          "name": "market",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "MarketParams"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "set_market_paused",
+      "discriminator": [
+        233,
+        31,
+        161,
+        248,
+        178,
+        111,
+        102,
+        65
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "signer": true
+        },
+        {
+          "name": "config"
+        },
+        {
+          "name": "market",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "paused",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "sweep_market_excess",
+      "discriminator": [
+        8,
+        208,
+        38,
+        139,
+        18,
+        132,
+        4,
+        110
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "config"
+        },
+        {
+          "name": "market"
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "destination",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "list_collateral",
+      "discriminator": [
+        155,
+        232,
+        47,
+        171,
+        124,
+        206,
+        133,
+        27
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "collateral",
+          "writable": true
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "CollateralParams"
+            }
+          }
+        },
+        {
+          "name": "kind",
+          "type": {
+            "defined": {
+              "name": "CollateralKind"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "update_collateral_params",
+      "discriminator": [
+        244,
+        89,
+        239,
+        156,
+        233,
+        161,
+        22,
+        68
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "config"
+        },
+        {
+          "name": "collateral",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "CollateralParams"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "set_collateral_paused",
+      "discriminator": [
+        154,
+        255,
+        89,
+        75,
+        161,
+        160,
+        11,
+        123
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "signer": true
+        },
+        {
+          "name": "config"
+        },
+        {
+          "name": "collateral",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "paused",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "set_collateral_borrow_paused",
+      "discriminator": [
+        157,
+        134,
+        244,
+        248,
+        110,
+        176,
+        19,
+        57
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "signer": true
+        },
+        {
+          "name": "config"
+        },
+        {
+          "name": "collateral",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "paused",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "delist_collateral",
+      "discriminator": [
+        157,
+        210,
+        88,
+        164,
+        138,
+        181,
+        27,
+        250
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true
+        },
+        {
+          "name": "collateral",
+          "writable": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "sweep_collateral_excess",
+      "discriminator": [
+        133,
+        114,
+        196,
+        133,
+        251,
+        21,
+        25,
+        230
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "config"
+        },
+        {
+          "name": "collateral"
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "destination",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "create_promo_vault",
+      "discriminator": [
+        218,
+        85,
+        61,
+        3,
+        157,
+        170,
+        140,
+        178
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config"
+        },
+        {
+          "name": "market"
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "promo_vault",
+          "writable": true
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "fund_promo_vault",
+      "discriminator": [
+        202,
+        148,
+        228,
+        72,
+        250,
+        32,
+        67,
+        73
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "config"
+        },
+        {
+          "name": "market"
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "promo_vault",
+          "writable": true
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "source",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "withdraw_promo_vault",
+      "discriminator": [
+        40,
+        12,
+        139,
+        206,
+        191,
+        202,
+        91,
+        157
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "config"
+        },
+        {
+          "name": "market"
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "promo_vault",
+          "writable": true
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "destination",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "sweep_promo_excess",
+      "discriminator": [
+        58,
+        156,
+        219,
+        202,
+        143,
+        220,
+        195,
+        222
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "config"
+        },
+        {
+          "name": "market"
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "promo_vault"
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "destination",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "reconcile_promo_vault",
+      "discriminator": [
+        121,
+        240,
+        227,
+        248,
+        199,
+        227,
+        63,
+        72
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "config"
+        },
+        {
+          "name": "market"
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "promo_vault",
+          "writable": true
+        },
+        {
+          "name": "vault"
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "set_promo_cap",
+      "discriminator": [
+        82,
+        139,
+        177,
+        73,
+        147,
+        247,
+        95,
+        79
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "promo_cap_bps",
+          "type": "u16"
+        }
+      ]
+    },
+    {
+      "name": "create_campaign",
+      "discriminator": [
+        111,
+        131,
+        187,
+        98,
+        160,
+        193,
+        114,
+        244
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config"
+        },
+        {
+          "name": "market"
+        },
+        {
+          "name": "promo_vault",
+          "writable": true
+        },
+        {
+          "name": "campaign",
+          "writable": true
+        },
+        {
+          "name": "system_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "campaign_id",
+          "type": "u64"
+        },
+        {
+          "name": "budget",
+          "type": "u64"
+        },
+        {
+          "name": "redeem_until",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "close_campaign",
+      "discriminator": [
+        65,
+        49,
+        110,
+        7,
+        63,
+        238,
+        206,
+        77
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "config"
+        },
+        {
+          "name": "market"
+        },
+        {
+          "name": "promo_vault",
+          "writable": true
+        },
+        {
+          "name": "campaign",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "redeem_promo",
+      "discriminator": [
+        73,
+        231,
+        231,
+        165,
+        112,
+        219,
+        20,
+        108
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "docs": [
+            "Pays the receipt's rent (e.g. the gas-relay sponsor) and is refunded when it is closed."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "owner",
+          "signer": true
+        },
+        {
+          "name": "access"
+        },
+        {
+          "name": "config"
+        },
+        {
+          "name": "market"
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "promo_vault",
+          "writable": true
+        },
+        {
+          "name": "campaign",
+          "writable": true
+        },
+        {
+          "name": "voucher_receipt",
+          "docs": [
+            "Its creation is what stops a voucher being redeemed twice while this receipt lives: the",
+            "second attempt cannot initialize an account that already exists. The PDA seeds",
+            "`[VOUCHER_SEED, campaign, nonce]` do NOT include `voucher_expiry`, so the on-chain",
+            "guarantee is \"one redemption per (campaign, nonce) per expiry epoch\", not per",
+            "(campaign, nonce) outright \u2014 once the receipt is closed past expiry, only backend nonce",
+            "discipline (never reissuing the same nonce with a later expiry) prevents a replay."
+          ],
+          "writable": true
+        },
+        {
+          "name": "instructions_sysvar",
+          "docs": [
+            "through `load_instruction_at_checked`, which validates the layout itself."
+          ]
+        },
+        {
+          "name": "system_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "nonce",
+          "type": "u64"
+        },
+        {
+          "name": "voucher_expiry",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "close_voucher_receipt",
+      "discriminator": [
+        105,
+        49,
+        62,
+        148,
+        87,
+        107,
+        138,
+        117
+      ],
+      "accounts": [
+        {
+          "name": "rent_payer",
+          "writable": true
+        },
+        {
+          "name": "voucher_receipt",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "expire_promo",
+      "discriminator": [
+        3,
+        199,
+        16,
+        118,
+        204,
+        29,
+        97,
+        150
+      ],
+      "accounts": [
+        {
+          "name": "market"
+        },
+        {
+          "name": "promo_vault",
+          "writable": true
+        },
+        {
+          "name": "position",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "revoke_promo",
+      "discriminator": [
+        175,
+        4,
+        192,
+        166,
+        165,
+        142,
+        145,
+        115
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "config"
+        },
+        {
+          "name": "market"
+        },
+        {
+          "name": "promo_vault",
+          "writable": true
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "ngn_feed",
+          "docs": [
+            "below; `read_ngn_price` pins it to `market.ngn_feed`."
+          ],
+          "optional": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "harvest_reserve",
+      "discriminator": [
+        108,
+        167,
+        91,
+        250,
+        137,
+        145,
+        28,
+        111
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "config"
+        },
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "destination",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "open_position",
+      "discriminator": [
+        135,
+        128,
+        47,
+        77,
+        15,
+        152,
+        240,
+        49
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "docs": [
+            "Pays the position's rent (e.g. the gas-relay sponsor) and is refunded on close."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "owner",
+          "signer": true
+        },
+        {
+          "name": "access"
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "system_program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "close_position",
+      "discriminator": [
+        123,
+        134,
+        81,
+        0,
+        49,
+        68,
+        98,
+        98
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true
+        },
+        {
+          "name": "access"
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "rent_payer",
+          "writable": true
+        },
+        {
+          "name": "market",
+          "docs": [
+            "Both required when the position still holds promo: closing it hands the promo back."
+          ],
+          "optional": true
+        },
+        {
+          "name": "promo_vault",
+          "writable": true,
+          "optional": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "deposit_collateral",
+      "discriminator": [
+        156,
+        131,
+        142,
+        116,
+        146,
+        247,
+        162,
+        120
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true
+        },
+        {
+          "name": "access"
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "collateral",
+          "writable": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "owner_token",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "withdraw_collateral",
+      "discriminator": [
+        115,
+        135,
+        168,
+        106,
+        139,
+        214,
+        138,
+        150
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true
+        },
+        {
+          "name": "access"
+        },
+        {
+          "name": "config",
+          "docs": [
+            "Carries `promo_cap_bps`, which bounds how much of a position's promo counts (spec \u00a712)."
+          ]
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "collateral",
+          "writable": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "owner_token",
+          "writable": true
+        },
+        {
+          "name": "market",
+          "docs": [
+            "The market the position borrows from. Required only while loans are active."
+          ],
+          "optional": true
+        },
+        {
+          "name": "ngn_feed",
+          "optional": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "take_loan",
+      "discriminator": [
+        153,
+        53,
+        51,
+        59,
+        222,
+        102,
+        52,
+        131
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true
+        },
+        {
+          "name": "access"
+        },
+        {
+          "name": "config",
+          "docs": [
+            "Carries `promo_cap_bps`, which bounds how much of a position's promo counts (spec \u00a712)."
+          ]
+        },
+        {
+          "name": "promo_vault",
+          "docs": [
+            "Required when the position holds promo: step 3 may expire it, which credits the vault."
+          ],
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "owner_token",
+          "writable": true
+        },
+        {
+          "name": "ngn_feed"
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "tenure_seconds",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "repay_loan",
+      "discriminator": [
+        224,
+        93,
+        144,
+        77,
+        61,
+        17,
+        137,
+        54
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "docs": [
+            "Any whitelisted wallet may repay any position's loan."
+          ],
+          "signer": true
+        },
+        {
+          "name": "access"
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "payer_token",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "loan_id",
+          "type": "u64"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "liquidate",
+      "discriminator": [
+        223,
+        179,
+        226,
+        125,
+        48,
+        46,
+        39,
+        74
+      ],
+      "accounts": [
+        {
+          "name": "liquidator",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "docs": [
+            "Carries `promo_cap_bps`, which bounds how much of a position's promo counts (spec \u00a712)."
+          ]
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "promo_vault",
+          "docs": [
+            "`create_promo_vault` is a separate admin action (`vault.rs`), so a market can run with",
+            "no promo vault at all. Required only when the position holds promo (`promo_balance >",
+            "0`) \u2014 the handler reverts with `PromoAccountsRequired` rather than silently letting a",
+            "liquidator skip the forfeit by omitting these accounts."
+          ],
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "promo_vault_token",
+          "docs": [
+            "The promo vault's cNGN, which forfeiture moves into the market vault (spec \u00a711 step 3).",
+            "`promo_vault` is itself `Option`, so its `vault` field cannot be named in an `address`",
+            "constraint here \u2014 checked as a `constraint` instead, to the same effect."
+          ],
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "liquidator_token",
+          "writable": true
+        },
+        {
+          "name": "collateral",
+          "writable": true
+        },
+        {
+          "name": "collateral_mint"
+        },
+        {
+          "name": "collateral_vault",
+          "writable": true
+        },
+        {
+          "name": "liquidator_collateral",
+          "writable": true
+        },
+        {
+          "name": "ngn_feed"
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "collateral_token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "loan_id",
+          "type": "u64"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "write_off_loan",
+      "discriminator": [
+        48,
+        159,
+        110,
+        65,
+        250,
+        223,
+        92,
+        44
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "config"
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "ngn_feed"
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "promo_vault",
+          "docs": [
+            "Forfeiture moves the position's promo backing into the market vault (spec \u00a711 step 3),",
+            "so a written-off loan still returns what the protocol lent the borrower for free.",
+            "`create_promo_vault` is a separate admin action (`vault.rs`), so a market can run with",
+            "no promo vault at all. Required only when the position holds promo (`promo_balance >",
+            "0`) \u2014 the handler reverts with `PromoAccountsRequired` rather than silently skipping",
+            "the forfeit by omitting these accounts."
+          ],
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "promo_vault_token",
+          "docs": [
+            "`promo_vault` is itself `Option`, so its `vault` field cannot be named in an `address`",
+            "constraint here \u2014 checked as a `constraint` instead, to the same effect."
+          ],
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "loan_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "deposit_liquidity",
+      "discriminator": [
+        245,
+        99,
+        59,
+        25,
+        151,
+        71,
+        233,
+        249
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "docs": [
+            "Pays rent for a new lender account (e.g. the gas-relay sponsor)."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "owner",
+          "signer": true
+        },
+        {
+          "name": "access"
+        },
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "owner_token",
+          "writable": true
+        },
+        {
+          "name": "lender",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "withdraw_liquidity",
+      "discriminator": [
+        149,
+        158,
+        33,
+        185,
+        47,
+        243,
+        253,
+        31
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true
+        },
+        {
+          "name": "access"
+        },
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "owner_token",
+          "writable": true
+        },
+        {
+          "name": "lender",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Access",
+      "discriminator": [
+        117,
+        154,
+        108,
+        210,
+        202,
+        83,
+        96,
+        222
+      ]
+    },
+    {
+      "name": "CollateralAsset",
+      "discriminator": [
+        254,
+        180,
+        112,
+        90,
+        72,
+        6,
+        245,
+        149
+      ]
+    },
+    {
+      "name": "Config",
+      "discriminator": [
+        155,
+        12,
+        170,
+        224,
+        30,
+        250,
+        204,
+        130
+      ]
+    },
+    {
+      "name": "LenderPosition",
+      "discriminator": [
+        165,
+        98,
+        244,
+        204,
+        209,
+        158,
+        88,
+        19
+      ]
+    },
+    {
+      "name": "Market",
+      "discriminator": [
+        219,
+        190,
+        213,
+        55,
+        0,
+        227,
+        198,
+        154
+      ]
+    },
+    {
+      "name": "Position",
+      "discriminator": [
+        170,
+        188,
+        143,
+        228,
+        122,
+        64,
+        247,
+        208
+      ]
+    },
+    {
+      "name": "Campaign",
+      "discriminator": [
+        50,
+        40,
+        49,
+        11,
+        157,
+        220,
+        229,
+        192
+      ]
+    },
+    {
+      "name": "PromoVault",
+      "discriminator": [
+        45,
+        34,
+        35,
+        227,
+        102,
+        148,
+        159,
+        37
+      ]
+    },
+    {
+      "name": "VoucherReceipt",
+      "discriminator": [
+        156,
+        232,
+        107,
+        184,
+        63,
+        186,
+        220,
+        241
+      ]
+    }
+  ],
+  "types": [
+    {
+      "name": "InitializeArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "guardian",
+            "type": "pubkey"
+          },
+          {
+            "name": "whitelister",
+            "type": "pubkey"
+          },
+          {
+            "name": "promo_signer",
+            "type": "pubkey"
+          },
+          {
+            "name": "treasury",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Access",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "wallet",
+            "type": "pubkey"
+          },
+          {
+            "name": "whitelisted",
+            "type": "bool"
+          },
+          {
+            "name": "blacklisted",
+            "type": "bool"
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                64
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "CollateralAsset",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "vault_bump",
+            "type": "u8"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "token_program",
+            "type": "pubkey"
+          },
+          {
+            "name": "vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "decimals",
+            "type": "u8"
+          },
+          {
+            "name": "kind",
+            "type": {
+              "defined": {
+                "name": "CollateralKind"
+              }
+            }
+          },
+          {
+            "name": "pyth_feed_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "price_account",
+            "docs": [
+              "Pyth price account this asset is pinned to. `Pubkey::default()` accepts any verified",
+              "update for `pyth_feed_id` inside `max_price_age_seconds`, so the caller may pick the",
+              "most favourable update in that window; pinning removes that choice.",
+              "Taken from the reserved padding, so the account size is unchanged."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "max_price_age_seconds",
+            "type": "u64"
+          },
+          {
+            "name": "max_conf_bps",
+            "type": "u16"
+          },
+          {
+            "name": "ltv_bps",
+            "type": "u16"
+          },
+          {
+            "name": "liquidation_threshold_bps",
+            "type": "u16"
+          },
+          {
+            "name": "liquidation_bonus_bps",
+            "type": "u16"
+          },
+          {
+            "name": "deposit_cap",
+            "docs": [
+              "Raw token amounts."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "total_deposited",
+            "type": "u64"
+          },
+          {
+            "name": "paused",
+            "docs": [
+              "Blocks new deposits of this asset only."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "borrow_paused",
+            "docs": [
+              "Blocks new *borrowing* backed by this asset. While set, the holding's",
+              "`lends_borrowing_power` is false, which suppresses both ways it could raise",
+              "`borrow_limit`: its own LTV term and the promo cap its value would otherwise unlock.",
+              "It still counts in full at `own_value` and at the liquidation line \u2014 including the",
+              "promo lift, which takes its own ungated cap \u2014 so pausing an asset can neither make a",
+              "live loan liquidatable nor make a position that was liquidatable a moment ago suddenly",
+              "safe. Deposits and seizure are unaffected.",
+              "",
+              "**Withdrawal is not.** `withdraw_collateral` gates on the same `is_healthy()` the",
+              "borrow does, so while a loan is live a borrow-paused asset backs no withdrawal at all;",
+              "`a_borrow_paused_asset_backs_no_withdrawal_while_a_loan_is_live` pins that. Withdrawing",
+              "is exposure-increasing in the same way borrowing is, so this is intended \u2014 but it means",
+              "a pause does strand collateral behind a live loan until the loan is repaid or the pause",
+              "lifted.",
+              "Taken from the reserved padding, so the account size is unchanged."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "max_multiplier",
+            "docs": [
+              "Per-asset ceiling on the mint's scaled-UI multiplier, in `MULTIPLIER_SCALE` fixed",
+              "point. `0` means no per-asset ceiling \u2014 only the global `MAX_MULTIPLIER` applies.",
+              "Exceeding it does not fail the price read: the asset simply stops lending borrowing",
+              "power, exactly as `borrow_paused` does. See the walk in `valuation.rs`.",
+              "Taken from the reserved padding, so the account size is unchanged."
+            ],
+            "type": "u128"
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                79
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "CollateralKind",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Standard"
+          },
+          {
+            "name": "XStock"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CollateralParams",
+      "docs": [
+        "Admin-settable collateral parameters, used by `list_collateral` and `update_collateral_params`."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "pyth_feed_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "price_account",
+            "docs": [
+              "`Pubkey::default()` leaves the asset unpinned (see `CollateralAsset::price_account`)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "max_price_age_seconds",
+            "type": "u64"
+          },
+          {
+            "name": "max_conf_bps",
+            "type": "u16"
+          },
+          {
+            "name": "ltv_bps",
+            "type": "u16"
+          },
+          {
+            "name": "liquidation_threshold_bps",
+            "type": "u16"
+          },
+          {
+            "name": "liquidation_bonus_bps",
+            "type": "u16"
+          },
+          {
+            "name": "deposit_cap",
+            "type": "u64"
+          },
+          {
+            "name": "max_multiplier",
+            "docs": [
+              "See `CollateralAsset::max_multiplier`. Appended, so existing field order is unchanged."
+            ],
+            "type": "u128"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Config",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "pending_admin",
+            "type": {
+              "option": "pubkey"
+            }
+          },
+          {
+            "name": "guardian",
+            "type": "pubkey"
+          },
+          {
+            "name": "whitelister",
+            "type": "pubkey"
+          },
+          {
+            "name": "promo_signer",
+            "type": "pubkey"
+          },
+          {
+            "name": "treasury",
+            "docs": [
+              "Owner of the token accounts that receive harvested reserve, swept donations",
+              "and withdrawn promo funds."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "promo_cap_bps",
+            "type": "u16"
+          },
+          {
+            "name": "collateral_count",
+            "type": "u16"
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                128
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "LenderPosition",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "shares",
+            "type": "u128"
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                64
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Market",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "vault_bump",
+            "type": "u8"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "token_program",
+            "type": "pubkey"
+          },
+          {
+            "name": "vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "decimals",
+            "type": "u8"
+          },
+          {
+            "name": "cash",
+            "docs": [
+              "cNGN the program has recorded as held. Direct transfers to the vault are ignored."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "total_borrows",
+            "docs": [
+              "Outstanding loan principal."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "lp_rate_product",
+            "docs": [
+              "\u03a3 over active loans of principal \u00d7 rate_bps \u00d7 (BPS \u2212 reserve_factor_bps)."
+            ],
+            "type": "u128"
+          },
+          {
+            "name": "accrued_interest",
+            "docs": [
+              "Lender interest accrued but not yet paid, already net of reserve."
+            ],
+            "type": "u128"
+          },
+          {
+            "name": "protocol_reserve",
+            "type": "u64"
+          },
+          {
+            "name": "total_bad_debt",
+            "type": "u128"
+          },
+          {
+            "name": "total_shares",
+            "type": "u128"
+          },
+          {
+            "name": "last_accrual_ts",
+            "type": "i64"
+          },
+          {
+            "name": "interest_rate_bps",
+            "type": "u16"
+          },
+          {
+            "name": "penalty_rate_bps",
+            "type": "u16"
+          },
+          {
+            "name": "reserve_factor_bps",
+            "type": "u16"
+          },
+          {
+            "name": "max_utilization_bps",
+            "type": "u16"
+          },
+          {
+            "name": "min_loan_amount",
+            "type": "u64"
+          },
+          {
+            "name": "max_tenure_seconds",
+            "type": "i64"
+          },
+          {
+            "name": "bad_debt_dust_usd",
+            "type": "u128"
+          },
+          {
+            "name": "ngn_feed",
+            "type": "pubkey"
+          },
+          {
+            "name": "ngn_max_stale_slots",
+            "type": "u64"
+          },
+          {
+            "name": "ngn_min_samples",
+            "type": "u32"
+          },
+          {
+            "name": "ngn_max_spread_bps",
+            "type": "u16"
+          },
+          {
+            "name": "promo_inactivity_seconds",
+            "type": "i64"
+          },
+          {
+            "name": "max_promo_per_position",
+            "type": "u64"
+          },
+          {
+            "name": "paused",
+            "type": "bool"
+          },
+          {
+            "name": "accrual_remainder",
+            "docs": [
+              "Division remainder carried between accruals (numerator units of `lp_rate_product \u00d7 seconds`).",
+              "Taken from the reserved padding, so the account size is unchanged."
+            ],
+            "type": "u128"
+          },
+          {
+            "name": "promo_clock_resumed_at",
+            "docs": [
+              "When the promo inactivity clock last restarted, because the market was unpaused.",
+              "The clock is meant to measure a *borrower's* inactivity, and a paused market is one",
+              "the borrower cannot act on, so time spent paused must not count towards expiry.",
+              "Expiry therefore runs from `max(promo_last_activity_at, promo_clock_resumed_at)`.",
+              "Taken from the reserved padding, so the account size is unchanged."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                232
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "MarketParams",
+      "docs": [
+        "Admin-settable market parameters, used by `create_market` and `update_market_params`."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "interest_rate_bps",
+            "type": "u16"
+          },
+          {
+            "name": "penalty_rate_bps",
+            "type": "u16"
+          },
+          {
+            "name": "reserve_factor_bps",
+            "type": "u16"
+          },
+          {
+            "name": "max_utilization_bps",
+            "type": "u16"
+          },
+          {
+            "name": "min_loan_amount",
+            "type": "u64"
+          },
+          {
+            "name": "max_tenure_seconds",
+            "type": "i64"
+          },
+          {
+            "name": "bad_debt_dust_usd",
+            "type": "u128"
+          },
+          {
+            "name": "ngn_feed",
+            "type": "pubkey"
+          },
+          {
+            "name": "ngn_max_stale_slots",
+            "type": "u64"
+          },
+          {
+            "name": "ngn_min_samples",
+            "type": "u32"
+          },
+          {
+            "name": "ngn_max_spread_bps",
+            "type": "u16"
+          },
+          {
+            "name": "promo_inactivity_seconds",
+            "type": "i64"
+          },
+          {
+            "name": "max_promo_per_position",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CollateralSlot",
+      "docs": [
+        "One collateral holding. `amount == 0` means the slot is free."
+      ],
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "LoanSlot",
+      "docs": [
+        "One fixed-term loan. `active == 0` means the slot is free."
+      ],
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "id",
+            "type": "u64"
+          },
+          {
+            "name": "principal",
+            "type": "u64"
+          },
+          {
+            "name": "original_principal",
+            "type": "u64"
+          },
+          {
+            "name": "repaid",
+            "type": "u64"
+          },
+          {
+            "name": "originated_at",
+            "type": "i64"
+          },
+          {
+            "name": "interest_anchor",
+            "type": "i64"
+          },
+          {
+            "name": "tenure_seconds",
+            "type": "i64"
+          },
+          {
+            "name": "rate_bps",
+            "type": "u16"
+          },
+          {
+            "name": "penalty_rate_bps",
+            "type": "u16"
+          },
+          {
+            "name": "reserve_factor_bps",
+            "type": "u16"
+          },
+          {
+            "name": "active",
+            "type": "u8"
+          },
+          {
+            "name": "_padding",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Position",
+      "docs": [
+        "A borrower's collateral and loans. Zero-copy with fixed offsets so bots can scan it.",
+        "No `Option` fields: `market == Pubkey::default()` means no loan has been taken yet."
+      ],
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "docs": [
+              "Canonical, written once by `open_position` (`init`, so `ctx.bumps.position` is always",
+              "`find_program_address`'s result) and never touched again. The seven other position-PDA",
+              "sites \u2014 `take_loan`, `close_position`, `deposit_collateral`, `withdraw_collateral`,",
+              "`redeem_promo`, `expire_promo`, `revoke_promo` \u2014 read it back via",
+              "`bump = position.load()?.bump` instead of re-deriving it, which depends on this field",
+              "never holding anything but the canonical bump for as long as `open_position` stays the",
+              "only writer."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "_padding",
+            "type": {
+              "array": [
+                "u8",
+                6
+              ]
+            }
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "rent_payer",
+            "type": "pubkey"
+          },
+          {
+            "name": "market",
+            "docs": [
+              "The market this position's loans come from."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "next_loan_id",
+            "type": "u64"
+          },
+          {
+            "name": "promo_balance",
+            "type": "u64"
+          },
+          {
+            "name": "promo_last_activity_at",
+            "type": "i64"
+          },
+          {
+            "name": "collateral",
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "CollateralSlot"
+                  }
+                },
+                8
+              ]
+            }
+          },
+          {
+            "name": "loans",
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "LoanSlot"
+                  }
+                },
+                10
+              ]
+            }
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                64
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Campaign",
+      "docs": [
+        "Spec \u00a712. A budget the promo signer may issue vouchers against, until `redeem_until`."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "campaign_id",
+            "type": "u64"
+          },
+          {
+            "name": "budget",
+            "type": "u64"
+          },
+          {
+            "name": "granted",
+            "type": "u64"
+          },
+          {
+            "name": "redeem_until",
+            "type": "i64"
+          },
+          {
+            "name": "active",
+            "type": "bool"
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "PromoVault",
+      "docs": [
+        "Spec \u00a712. One per market: the cNGN behind every promo balance, and the accounting that keeps",
+        "`outstanding + unissued \u2264 cash` true at all times.",
+        "",
+        "- `cash` is what the program has recorded as held; a direct transfer to the token account is",
+        "ignored until it is swept, exactly as the market and collateral vaults treat donations.",
+        "- `outstanding` is the sum of every position's `promo_balance` \u2014 promo already handed out.",
+        "- `unissued` is the sum over active campaigns of `budget \u2212 granted` \u2014 promo promised to a",
+        "campaign but not yet redeemed."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "vault_bump",
+            "type": "u8"
+          },
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "cash",
+            "type": "u64"
+          },
+          {
+            "name": "outstanding",
+            "type": "u64"
+          },
+          {
+            "name": "unissued",
+            "type": "u64"
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                64
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "VoucherReceipt",
+      "docs": [
+        "Spec \u00a712. Proof that one voucher nonce has been redeemed. Its existence is what prevents a",
+        "replay while it lives: `redeem_promo` creates it, so a second redemption of the same nonce",
+        "cannot init until it is closed. Its PDA seeds are `[VOUCHER_SEED, campaign, nonce]` \u2014 NOT",
+        "including `voucher_expiry`, which is only stored below \u2014 so the on-chain guarantee is \"one",
+        "redemption per (campaign, nonce) per expiry epoch\", not per (campaign, nonce) outright. Once",
+        "this receipt is closed past its expiry, the backend must never reissue the same nonce with a",
+        "later expiry, or the voucher becomes redeemable again."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "campaign",
+            "type": "pubkey"
+          },
+          {
+            "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "voucher_expiry",
+            "type": "i64"
+          },
+          {
+            "name": "rent_payer",
+            "docs": [
+              "Refunded when the receipt is closed, which anyone may do once the voucher has expired."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "AccessUpdated",
+      "type": {
+        "fields": [
+          {
+            "name": "wallet",
+            "type": "pubkey"
+          },
+          {
+            "name": "old_whitelisted",
+            "type": "bool"
+          },
+          {
+            "name": "old_blacklisted",
+            "type": "bool"
+          },
+          {
+            "name": "whitelisted",
+            "type": "bool"
+          },
+          {
+            "name": "blacklisted",
+            "type": "bool"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "AdminAccepted",
+      "type": {
+        "fields": [
+          {
+            "name": "old_admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "new_admin",
+            "type": "pubkey"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "AdminProposed",
+      "type": {
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "old_pending",
+            "type": {
+              "option": "pubkey"
+            }
+          },
+          {
+            "name": "proposed",
+            "type": "pubkey"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "CampaignClosed",
+      "type": {
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "campaign",
+            "type": "pubkey"
+          },
+          {
+            "name": "campaign_id",
+            "type": "u64"
+          },
+          {
+            "name": "granted",
+            "type": "u64"
+          },
+          {
+            "docs": [
+              "The unspent budget handed back to the vault's free cNGN."
+            ],
+            "name": "returned",
+            "type": "u64"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "CampaignCreated",
+      "type": {
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "campaign",
+            "type": "pubkey"
+          },
+          {
+            "name": "campaign_id",
+            "type": "u64"
+          },
+          {
+            "name": "budget",
+            "type": "u64"
+          },
+          {
+            "name": "redeem_until",
+            "type": "i64"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "CollateralBorrowPauseSet",
+      "type": {
+        "fields": [
+          {
+            "name": "collateral",
+            "type": "pubkey"
+          },
+          {
+            "name": "old_paused",
+            "type": "bool"
+          },
+          {
+            "name": "paused",
+            "type": "bool"
+          },
+          {
+            "name": "by",
+            "type": "pubkey"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "CollateralDelisted",
+      "type": {
+        "fields": [
+          {
+            "name": "collateral",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "CollateralDeposited",
+      "type": {
+        "fields": [
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "slot_amount",
+            "type": "u64"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "CollateralListed",
+      "type": {
+        "fields": [
+          {
+            "name": "collateral",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "kind",
+            "type": {
+              "defined": {
+                "name": "CollateralKind"
+              }
+            }
+          },
+          {
+            "name": "params",
+            "type": {
+              "defined": {
+                "name": "CollateralParams"
+              }
+            }
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "CollateralParamsUpdated",
+      "type": {
+        "fields": [
+          {
+            "name": "collateral",
+            "type": "pubkey"
+          },
+          {
+            "name": "old",
+            "type": {
+              "defined": {
+                "name": "CollateralParams"
+              }
+            }
+          },
+          {
+            "name": "new",
+            "type": {
+              "defined": {
+                "name": "CollateralParams"
+              }
+            }
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "CollateralPauseSet",
+      "type": {
+        "fields": [
+          {
+            "name": "collateral",
+            "type": "pubkey"
+          },
+          {
+            "name": "old_paused",
+            "type": "bool"
+          },
+          {
+            "name": "paused",
+            "type": "bool"
+          },
+          {
+            "name": "by",
+            "type": "pubkey"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "CollateralWithdrawn",
+      "type": {
+        "fields": [
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "slot_amount",
+            "type": "u64"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "ConfigInitialized",
+      "type": {
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "guardian",
+            "type": "pubkey"
+          },
+          {
+            "name": "whitelister",
+            "type": "pubkey"
+          },
+          {
+            "name": "promo_signer",
+            "type": "pubkey"
+          },
+          {
+            "name": "treasury",
+            "type": "pubkey"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "ExcessSwept",
+      "type": {
+        "fields": [
+          {
+            "name": "vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "destination",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "LiquidityDeposited",
+      "type": {
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "shares",
+            "type": "u128"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "LiquidityWithdrawn",
+      "type": {
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "shares",
+            "type": "u128"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "LoanLiquidated",
+      "type": {
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "liquidator",
+            "type": "pubkey"
+          },
+          {
+            "name": "loan_id",
+            "type": "u64"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "principal_repaid",
+            "type": "u64"
+          },
+          {
+            "name": "interest_paid",
+            "type": "u64"
+          },
+          {
+            "name": "collateral_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "collateral_seized",
+            "type": "u64"
+          },
+          {
+            "name": "remaining_principal",
+            "type": "u64"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "LoanOpened",
+      "type": {
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "loan_id",
+            "type": "u64"
+          },
+          {
+            "name": "principal",
+            "type": "u64"
+          },
+          {
+            "name": "tenure_seconds",
+            "type": "i64"
+          },
+          {
+            "name": "rate_bps",
+            "type": "u16"
+          },
+          {
+            "name": "penalty_rate_bps",
+            "type": "u16"
+          },
+          {
+            "name": "reserve_factor_bps",
+            "type": "u16"
+          },
+          {
+            "name": "originated_at",
+            "type": "i64"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "LoanPartiallyLiquidated",
+      "type": {
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "liquidator",
+            "type": "pubkey"
+          },
+          {
+            "name": "loan_id",
+            "type": "u64"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "principal_repaid",
+            "type": "u64"
+          },
+          {
+            "name": "interest_paid",
+            "type": "u64"
+          },
+          {
+            "name": "collateral_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "collateral_seized",
+            "type": "u64"
+          },
+          {
+            "name": "remaining_principal",
+            "type": "u64"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "LoanPartiallyRepaid",
+      "type": {
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "payer",
+            "type": "pubkey"
+          },
+          {
+            "name": "loan_id",
+            "type": "u64"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "principal_repaid",
+            "type": "u64"
+          },
+          {
+            "name": "interest_paid",
+            "type": "u64"
+          },
+          {
+            "name": "remaining_principal",
+            "type": "u64"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "LoanRepaid",
+      "type": {
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "payer",
+            "type": "pubkey"
+          },
+          {
+            "name": "loan_id",
+            "type": "u64"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "principal_repaid",
+            "type": "u64"
+          },
+          {
+            "name": "interest_paid",
+            "type": "u64"
+          },
+          {
+            "name": "remaining_principal",
+            "type": "u64"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "LoanWrittenOff",
+      "type": {
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "loan_id",
+            "type": "u64"
+          },
+          {
+            "name": "principal",
+            "type": "u64"
+          },
+          {
+            "docs": [
+              "Principal plus the lender interest released for it, net of any promo forfeited in the",
+              "same call (`forfeited`). The gross figure is `loss + forfeited`."
+            ],
+            "name": "loss",
+            "type": "u128"
+          },
+          {
+            "docs": [
+              "Promo forfeited to lenders in this same write-off, already netted out of `loss` and",
+              "`total_bad_debt`. Zero when the position held no promo, or when it was already forfeited",
+              "by an earlier liquidation."
+            ],
+            "name": "forfeited",
+            "type": "u64"
+          },
+          {
+            "name": "covered_by_reserve",
+            "type": "u64"
+          },
+          {
+            "name": "total_bad_debt",
+            "type": "u128"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "MarketCreated",
+      "type": {
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "vault",
+            "type": "pubkey"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "MarketParamsUpdated",
+      "type": {
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "old",
+            "type": {
+              "defined": {
+                "name": "MarketParams"
+              }
+            }
+          },
+          {
+            "name": "new",
+            "type": {
+              "defined": {
+                "name": "MarketParams"
+              }
+            }
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "MarketPauseSet",
+      "type": {
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "old_paused",
+            "type": "bool"
+          },
+          {
+            "name": "paused",
+            "type": "bool"
+          },
+          {
+            "name": "by",
+            "type": "pubkey"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "PositionClosed",
+      "type": {
+        "fields": [
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "rent_payer",
+            "type": "pubkey"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "PositionOpened",
+      "type": {
+        "fields": [
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "rent_payer",
+            "type": "pubkey"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "PromoCapSet",
+      "type": {
+        "fields": [
+          {
+            "name": "old",
+            "type": "u16"
+          },
+          {
+            "name": "new",
+            "type": "u16"
+          },
+          {
+            "name": "by",
+            "type": "pubkey"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "PromoExpired",
+      "type": {
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "PromoForfeited",
+      "type": {
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "docs": [
+              "Promo removed from the position. Always the position's whole balance."
+            ],
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "docs": [
+              "cNGN that actually reached the market vault. Equal to `amount` except after an issuer",
+              "clawback from the promo vault, where the transfer is clamped to the balance on hand \u2014",
+              "see `forfeit_promo`. An indexer summing what lenders received must use this, not",
+              "`amount`."
+            ],
+            "name": "moved",
+            "type": "u64"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "PromoRedeemed",
+      "type": {
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "campaign_id",
+            "type": "u64"
+          },
+          {
+            "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "promo_balance",
+            "type": "u64"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "PromoReleased",
+      "type": {
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "PromoRevoked",
+      "type": {
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "PromoVaultCreated",
+      "type": {
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "promo_vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "vault",
+            "type": "pubkey"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "PromoVaultFunded",
+      "type": {
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "cash",
+            "type": "u64"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "PromoVaultReconciled",
+      "type": {
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "old_cash",
+            "type": "u64"
+          },
+          {
+            "name": "cash",
+            "type": "u64"
+          },
+          {
+            "name": "by",
+            "type": "pubkey"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "PromoVaultWithdrawn",
+      "type": {
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "cash",
+            "type": "u64"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "ReserveHarvested",
+      "type": {
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "destination",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "old_reserve",
+            "type": "u64"
+          },
+          {
+            "name": "new_reserve",
+            "type": "u64"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "Role",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Guardian"
+          },
+          {
+            "name": "Whitelister"
+          },
+          {
+            "name": "PromoSigner"
+          },
+          {
+            "name": "Treasury"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RoleUpdated",
+      "type": {
+        "fields": [
+          {
+            "name": "role",
+            "type": {
+              "defined": {
+                "name": "Role"
+              }
+            }
+          },
+          {
+            "name": "old",
+            "type": "pubkey"
+          },
+          {
+            "name": "new",
+            "type": "pubkey"
+          }
+        ],
+        "kind": "struct"
+      }
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "NotWhitelisted",
+      "msg": "Wallet is not whitelisted"
+    },
+    {
+      "code": 6001,
+      "name": "Blacklisted",
+      "msg": "Wallet is blacklisted"
+    },
+    {
+      "code": 6002,
+      "name": "Unauthorized",
+      "msg": "Signer is not authorized for this action"
+    },
+    {
+      "code": 6003,
+      "name": "MarketPaused",
+      "msg": "Market is paused"
+    },
+    {
+      "code": 6004,
+      "name": "CollateralPaused",
+      "msg": "Collateral asset is paused"
+    },
+    {
+      "code": 6005,
+      "name": "StalePrice",
+      "msg": "Price is stale"
+    },
+    {
+      "code": 6006,
+      "name": "PriceConfidenceTooWide",
+      "msg": "Price confidence interval is too wide"
+    },
+    {
+      "code": 6007,
+      "name": "PriceAccountMismatch",
+      "msg": "Price account does not match the expected asset"
+    },
+    {
+      "code": 6008,
+      "name": "InvalidPrice",
+      "msg": "Price is invalid"
+    },
+    {
+      "code": 6009,
+      "name": "UnsupportedMintExtension",
+      "msg": "Mint has an unsupported extension"
+    },
+    {
+      "code": 6010,
+      "name": "InvalidParameters",
+      "msg": "Parameters are invalid"
+    },
+    {
+      "code": 6011,
+      "name": "Unhealthy",
+      "msg": "Position would be unhealthy"
+    },
+    {
+      "code": 6012,
+      "name": "NotLiquidatable",
+      "msg": "Position is not liquidatable"
+    },
+    {
+      "code": 6013,
+      "name": "UtilizationCapExceeded",
+      "msg": "Utilization cap exceeded"
+    },
+    {
+      "code": 6014,
+      "name": "InsufficientCash",
+      "msg": "Not enough cash in the market"
+    },
+    {
+      "code": 6015,
+      "name": "NoFreeLoanSlot",
+      "msg": "No free loan slot"
+    },
+    {
+      "code": 6016,
+      "name": "NoFreeCollateralSlot",
+      "msg": "No free collateral slot"
+    },
+    {
+      "code": 6017,
+      "name": "LoanNotFound",
+      "msg": "Loan not found"
+    },
+    {
+      "code": 6018,
+      "name": "DepositCapExceeded",
+      "msg": "Deposit cap exceeded"
+    },
+    {
+      "code": 6019,
+      "name": "AmountTooSmall",
+      "msg": "Amount is too small"
+    },
+    {
+      "code": 6020,
+      "name": "TenureOutOfRange",
+      "msg": "Tenure is out of range"
+    },
+    {
+      "code": 6021,
+      "name": "RepaymentBelowInterest",
+      "msg": "Repayment does not cover interest and penalty"
+    },
+    {
+      "code": 6022,
+      "name": "ZeroPrincipalRepaid",
+      "msg": "Liquidation would repay zero principal"
+    },
+    {
+      "code": 6023,
+      "name": "ZeroShares",
+      "msg": "Deposit would mint zero shares"
+    },
+    {
+      "code": 6024,
+      "name": "InsufficientShares",
+      "msg": "Not enough shares"
+    },
+    {
+      "code": 6025,
+      "name": "CollateralStillInUse",
+      "msg": "Collateral is still in use"
+    },
+    {
+      "code": 6026,
+      "name": "PositionNotEmpty",
+      "msg": "Position is not empty"
+    },
+    {
+      "code": 6027,
+      "name": "WriteOffNotAllowed",
+      "msg": "Write-off is not allowed"
+    },
+    {
+      "code": 6028,
+      "name": "InvalidVoucherSignature",
+      "msg": "Voucher signature is invalid"
+    },
+    {
+      "code": 6029,
+      "name": "VoucherExpired",
+      "msg": "Voucher has expired"
+    },
+    {
+      "code": 6030,
+      "name": "CampaignInactive",
+      "msg": "Campaign is inactive"
+    },
+    {
+      "code": 6031,
+      "name": "CampaignBudgetExceeded",
+      "msg": "Campaign budget exceeded"
+    },
+    {
+      "code": 6032,
+      "name": "PromoCapExceeded",
+      "msg": "Promo cap exceeded"
+    },
+    {
+      "code": 6033,
+      "name": "PromoNotExpired",
+      "msg": "Promo has not expired"
+    },
+    {
+      "code": 6034,
+      "name": "PromoVaultInsufficient",
+      "msg": "Promo vault has insufficient free funds"
+    },
+    {
+      "code": 6035,
+      "name": "MathOverflow",
+      "msg": "Math overflow"
+    },
+    {
+      "code": 6036,
+      "name": "MarketMismatch",
+      "msg": "Position's loans belong to a different market"
+    },
+    {
+      "code": 6037,
+      "name": "InsufficientCollateral",
+      "msg": "Not enough collateral in the position"
+    },
+    {
+      "code": 6038,
+      "name": "PromoAccountsRequired",
+      "msg": "Position holds promo: the market and promo vault accounts are required"
+    },
+    {
+      "code": 6039,
+      "name": "PromoVaultMismatch",
+      "msg": "Promo vault token account does not match the promo vault"
+    },
+    {
+      "code": 6040,
+      "name": "CollateralVaultMismatch",
+      "msg": "Collateral vault token account does not match the collateral asset"
+    },
+    {
+      "code": 6041,
+      "name": "CollateralLimitReached",
+      "msg": "The protocol already lists the maximum number of collateral assets"
+    },
+    {
+      "code": 6042,
+      "name": "VoucherOutlivesCampaign",
+      "msg": "Voucher expiry is later than its campaign's redeem_until"
+    }
+  ],
+  "constants": [
+    {
+      "name": "ACCESS_SEED",
+      "type": "bytes",
+      "value": "[97, 99, 99, 101, 115, 115]"
+    },
+    {
+      "name": "CAMPAIGN_SEED",
+      "type": "bytes",
+      "value": "[99, 97, 109, 112, 97, 105, 103, 110]"
+    },
+    {
+      "name": "COLLATERAL_SEED",
+      "type": "bytes",
+      "value": "[99, 111, 108, 108, 97, 116, 101, 114, 97, 108]"
+    },
+    {
+      "name": "COLLATERAL_VAULT_SEED",
+      "type": "bytes",
+      "value": "[99, 111, 108, 108, 97, 116, 101, 114, 97, 108, 95, 118, 97, 117, 108, 116]"
+    },
+    {
+      "name": "CONFIG_SEED",
+      "type": "bytes",
+      "value": "[99, 111, 110, 102, 105, 103]"
+    },
+    {
+      "name": "LENDER_SEED",
+      "type": "bytes",
+      "value": "[108, 101, 110, 100, 101, 114]"
+    },
+    {
+      "name": "MARKET_SEED",
+      "type": "bytes",
+      "value": "[109, 97, 114, 107, 101, 116]"
+    },
+    {
+      "name": "MARKET_VAULT_SEED",
+      "type": "bytes",
+      "value": "[109, 97, 114, 107, 101, 116, 95, 118, 97, 117, 108, 116]"
+    },
+    {
+      "name": "POSITION_SEED",
+      "type": "bytes",
+      "value": "[112, 111, 115, 105, 116, 105, 111, 110]"
+    },
+    {
+      "name": "PROMO_VAULT_SEED",
+      "type": "bytes",
+      "value": "[112, 114, 111, 109, 111, 95, 118, 97, 117, 108, 116]"
+    },
+    {
+      "name": "PROMO_VAULT_TOKEN_SEED",
+      "type": "bytes",
+      "value": "[112, 114, 111, 109, 111, 95, 118, 97, 117, 108, 116, 95, 116, 111, 107, 101, 110]"
+    },
+    {
+      "name": "VOUCHER_DOMAIN",
+      "docs": [
+        "Domain separator in the voucher message (spec \u00a712). It binds a signature to this program's",
+        "voucher format, so a `promo_signer` key reused elsewhere cannot produce a valid voucher.",
+        "Published in the IDL so the off-chain promo signer reads it rather than hardcoding a copy",
+        "that could drift from the program's."
+      ],
+      "type": "string",
+      "value": "\"hodl_loans:promo_voucher:v1\""
+    },
+    {
+      "name": "VOUCHER_SEED",
+      "type": "bytes",
+      "value": "[118, 111, 117, 99, 104, 101, 114]"
+    }
+  ],
+  "events": [
+    {
+      "name": "AccessUpdated",
+      "discriminator": [
+        60,
+        247,
+        234,
+        150,
+        4,
+        139,
+        239,
+        57
+      ]
+    },
+    {
+      "name": "AdminAccepted",
+      "discriminator": [
+        174,
+        12,
+        76,
+        139,
+        158,
+        99,
+        110,
+        254
+      ]
+    },
+    {
+      "name": "AdminProposed",
+      "discriminator": [
+        129,
+        249,
+        226,
+        227,
+        199,
+        82,
+        110,
+        243
+      ]
+    },
+    {
+      "name": "CampaignClosed",
+      "discriminator": [
+        158,
+        143,
+        128,
+        251,
+        84,
+        131,
+        2,
+        90
+      ]
+    },
+    {
+      "name": "CampaignCreated",
+      "discriminator": [
+        9,
+        98,
+        69,
+        61,
+        53,
+        131,
+        64,
+        152
+      ]
+    },
+    {
+      "name": "CollateralBorrowPauseSet",
+      "discriminator": [
+        10,
+        192,
+        153,
+        199,
+        11,
+        14,
+        41,
+        169
+      ]
+    },
+    {
+      "name": "CollateralDelisted",
+      "discriminator": [
+        185,
+        7,
+        128,
+        246,
+        184,
+        159,
+        123,
+        30
+      ]
+    },
+    {
+      "name": "CollateralDeposited",
+      "discriminator": [
+        244,
+        62,
+        77,
+        11,
+        135,
+        112,
+        61,
+        96
+      ]
+    },
+    {
+      "name": "CollateralListed",
+      "discriminator": [
+        29,
+        63,
+        81,
+        178,
+        255,
+        208,
+        149,
+        10
+      ]
+    },
+    {
+      "name": "CollateralParamsUpdated",
+      "discriminator": [
+        197,
+        162,
+        117,
+        17,
+        186,
+        44,
+        193,
+        130
+      ]
+    },
+    {
+      "name": "CollateralPauseSet",
+      "discriminator": [
+        8,
+        193,
+        24,
+        152,
+        125,
+        58,
+        178,
+        168
+      ]
+    },
+    {
+      "name": "CollateralWithdrawn",
+      "discriminator": [
+        51,
+        224,
+        133,
+        106,
+        74,
+        173,
+        72,
+        82
+      ]
+    },
+    {
+      "name": "ConfigInitialized",
+      "discriminator": [
+        181,
+        49,
+        200,
+        156,
+        19,
+        167,
+        178,
+        91
+      ]
+    },
+    {
+      "name": "ExcessSwept",
+      "discriminator": [
+        231,
+        176,
+        175,
+        65,
+        146,
+        2,
+        209,
+        157
+      ]
+    },
+    {
+      "name": "LiquidityDeposited",
+      "discriminator": [
+        218,
+        155,
+        74,
+        193,
+        59,
+        66,
+        94,
+        122
+      ]
+    },
+    {
+      "name": "LiquidityWithdrawn",
+      "discriminator": [
+        240,
+        120,
+        73,
+        139,
+        154,
+        31,
+        218,
+        68
+      ]
+    },
+    {
+      "name": "LoanLiquidated",
+      "discriminator": [
+        1,
+        29,
+        28,
+        96,
+        66,
+        95,
+        8,
+        204
+      ]
+    },
+    {
+      "name": "LoanOpened",
+      "discriminator": [
+        66,
+        100,
+        157,
+        177,
+        1,
+        226,
+        123,
+        151
+      ]
+    },
+    {
+      "name": "LoanPartiallyLiquidated",
+      "discriminator": [
+        191,
+        51,
+        102,
+        114,
+        130,
+        13,
+        144,
+        28
+      ]
+    },
+    {
+      "name": "LoanPartiallyRepaid",
+      "discriminator": [
+        74,
+        42,
+        141,
+        88,
+        45,
+        115,
+        84,
+        92
+      ]
+    },
+    {
+      "name": "LoanRepaid",
+      "discriminator": [
+        202,
+        183,
+        88,
+        60,
+        211,
+        54,
+        142,
+        243
+      ]
+    },
+    {
+      "name": "LoanWrittenOff",
+      "discriminator": [
+        89,
+        196,
+        180,
+        66,
+        99,
+        174,
+        0,
+        66
+      ]
+    },
+    {
+      "name": "MarketCreated",
+      "discriminator": [
+        88,
+        184,
+        130,
+        231,
+        226,
+        84,
+        6,
+        58
+      ]
+    },
+    {
+      "name": "MarketParamsUpdated",
+      "discriminator": [
+        88,
+        163,
+        120,
+        117,
+        160,
+        118,
+        99,
+        60
+      ]
+    },
+    {
+      "name": "MarketPauseSet",
+      "discriminator": [
+        225,
+        139,
+        3,
+        28,
+        185,
+        26,
+        121,
+        144
+      ]
+    },
+    {
+      "name": "PositionClosed",
+      "discriminator": [
+        157,
+        163,
+        227,
+        228,
+        13,
+        97,
+        138,
+        121
+      ]
+    },
+    {
+      "name": "PositionOpened",
+      "discriminator": [
+        237,
+        175,
+        243,
+        230,
+        147,
+        117,
+        101,
+        121
+      ]
+    },
+    {
+      "name": "PromoCapSet",
+      "discriminator": [
+        151,
+        91,
+        106,
+        141,
+        89,
+        73,
+        92,
+        118
+      ]
+    },
+    {
+      "name": "PromoExpired",
+      "discriminator": [
+        131,
+        185,
+        4,
+        110,
+        77,
+        151,
+        117,
+        121
+      ]
+    },
+    {
+      "name": "PromoForfeited",
+      "discriminator": [
+        104,
+        103,
+        66,
+        90,
+        91,
+        36,
+        35,
+        230
+      ]
+    },
+    {
+      "name": "PromoRedeemed",
+      "discriminator": [
+        158,
+        213,
+        170,
+        212,
+        100,
+        33,
+        199,
+        60
+      ]
+    },
+    {
+      "name": "PromoReleased",
+      "discriminator": [
+        80,
+        237,
+        64,
+        49,
+        181,
+        191,
+        33,
+        241
+      ]
+    },
+    {
+      "name": "PromoRevoked",
+      "discriminator": [
+        102,
+        104,
+        163,
+        160,
+        153,
+        86,
+        154,
+        77
+      ]
+    },
+    {
+      "name": "PromoVaultCreated",
+      "discriminator": [
+        218,
+        79,
+        81,
+        162,
+        175,
+        6,
+        30,
+        187
+      ]
+    },
+    {
+      "name": "PromoVaultFunded",
+      "discriminator": [
+        37,
+        240,
+        149,
+        30,
+        180,
+        57,
+        52,
+        103
+      ]
+    },
+    {
+      "name": "PromoVaultReconciled",
+      "discriminator": [
+        16,
+        74,
+        149,
+        189,
+        114,
+        229,
+        68,
+        175
+      ]
+    },
+    {
+      "name": "PromoVaultWithdrawn",
+      "discriminator": [
+        234,
+        197,
+        197,
+        144,
+        44,
+        132,
+        207,
+        235
+      ]
+    },
+    {
+      "name": "ReserveHarvested",
+      "discriminator": [
+        126,
+        31,
+        100,
+        235,
+        248,
+        240,
+        112,
+        8
+      ]
+    },
+    {
+      "name": "RoleUpdated",
+      "discriminator": [
+        155,
+        222,
+        44,
+        187,
+        5,
+        65,
+        10,
+        212
+      ]
+    }
+  ]
+}
