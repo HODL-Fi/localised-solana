@@ -53,13 +53,30 @@ solana-keygen pubkey target/deploy/hodl_loans-keypair.json → CmDBvi4ZiBDND1XzE
 The Solana upgradeable loader derives the program's on-chain address from whichever
 keypair signs the deploy transaction, not from the `declare_id!` string — that string
 is compiled into the binary as the address the *program itself* believes it lives at.
-Anchor's `#[account(seeds = …)]` PDA derivations, and every `find_program_address` call
-in `tests/common/mod.rs` (`config_pda`, `market_pda`, `position_pda`, …), use
-`declare_id!`'s value. Deploy with `hodl_loans-keypair.json` today and the live program
-sits at `CmDBv...` while every PDA the program computes internally (and every PDA a
-client computes against `hodl_loans::ID`) is derived from `J9sK...` — a different seed
-namespace entirely. Every instruction that touches a PDA fails, and the failure surface
-looks like unrelated `ConstraintSeeds` / seed-mismatch errors, not an address problem.
+Deploy with `hodl_loans-keypair.json` today and the live program sits at `CmDBv...`
+while believing it lives at `J9sK...`.
+
+**What that actually does — verified in the macro source, not assumed.** Anchor's
+generated `try_entry` compares the runtime's program id against `declare_id!` as its
+very first action, before dispatching to any instruction
+(`anchor-syn-1.2.0/src/codegen/program/entry.rs:61`):
+
+```rust
+if *program_id != ID {
+    return Err(anchor_lang::error::ErrorCode::DeclaredProgramIdMismatch.into());
+}
+```
+
+So **every instruction fails immediately with Anchor error 4100, "The declared program
+id does not match the actual program id"**. Execution never reaches PDA derivation,
+nothing is partially applied, and no funds are at risk. The program is inert and it says
+exactly why.
+
+An earlier draft of this runbook claimed the failure surfaces as confusing
+`ConstraintSeeds` / seed-mismatch errors. That was wrong — the entrypoint check fires
+long before any seeds are computed. The real cost of getting this wrong is a wasted
+deploy (≈8 SOL of rent on a program that cannot execute a single instruction) plus a
+redeploy at the correct address, not a debugging maze.
 
 **This must be resolved before any deploy. The options, in the order they fit the
 common case:**
@@ -69,7 +86,7 @@ common case:**
 | **A. Mint a fresh keypair, update `declare_id!`** | `solana-keygen new -o target/deploy/hodl_loans-keypair.json --force`, then copy its pubkey into `declare_id!("...")` in `src/lib.rs`, rebuild. | Default choice for a devnet rehearsal — nobody has ever deployed at `J9sK...`, and a devnet program id has no reason to match a hypothetical future mainnet id. |
 | **B. Locate the private key for `J9sKAhm2EhdJQ3bHeP2KUCxqZ4cYdBc65C3RDr4JjGEd`** | If this pubkey was deliberately reserved (e.g. a vanity address minted earlier and stored outside this working tree — a secrets vault, a teammate's machine), replace `target/deploy/hodl_loans-keypair.json` with the real keypair file. | Only if `J9sK...` is a real reservation someone can produce the private key for. A pubkey alone cannot be reverse-engineered into a keypair. |
 | **C. Regrind a vanity keypair matching the existing prefix** | `solana-keygen grind --starts-with J9sK:1` (or similar) — probabilistically expensive, and will not reproduce the *exact* existing pubkey, only one sharing a prefix. | Rarely worth it; only if the exact string matters for branding and nobody has key B. |
-| **D. Keep `declare_id!` as-is, deploy with the mismatched keypair anyway** | Not offered as a real option — the PDA-seed failure above is not cosmetic. | Never. |
+| **D. Keep `declare_id!` as-is, deploy with the mismatched keypair anyway** | Not a real option. The program answers every instruction with error 4100 and does nothing else, so the deploy buys a non-functional program and its rent. | Never. |
 
 This runbook does not pick A vs B for you — that is a decision about who holds what
 keys. It only asserts that A or B must happen, and that a devnet rehearsal is the

@@ -24,9 +24,14 @@ declare_id!    J9sKAhm2EhdJQ3bHeP2KUCxqZ4cYdBc65C3RDr4JjGEd   (src/lib.rs)
 deploy keypair CmDBvi4ZiBDND1XzEwKFuH3kontC5Lokd2faXBxEgmci   (target/deploy/hodl_loans-keypair.json)
 ```
 
-Deploying with that keypair puts the program at an address it does not believe it lives at,
-so every PDA it derives is computed against the wrong program id and the failure surfaces as
-unrelated seed errors. This is a key-custody decision, not a code one — the runbook
+Deploying with that keypair puts the program at an address it does not believe it lives at.
+Anchor's generated entrypoint compares the two before dispatching anything
+(`anchor-syn-1.2.0/src/codegen/program/entry.rs:61`), so **every instruction fails
+immediately with error 4100, "The declared program id does not match the actual program id"**
+— no PDA derivation, no partial state, no funds at risk. The cost is a wasted deploy (≈8 SOL
+of rent on an inert program) and a redeploy, not a debugging maze. An earlier draft of this
+note claimed it surfaces as confusing seed errors; that was wrong. This is a key-custody
+decision, not a code one — the runbook
 (`docs/superpowers/runbooks/2026-09-23-devnet-deployment.md`) lays out the options as Gate A.
 Nobody should deploy before it is settled.
 
