@@ -1,5 +1,6 @@
 mod common;
 
+use anchor_lang::prelude::Pubkey;
 use common::*;
 use solana_signer::Signer;
 
@@ -520,4 +521,70 @@ fn full_all_xstock_position_liquidation_with_promo_forfeit_stays_under_the_defau
     let cu = send_cu(&mut env.svm, &[lq], &[&liquidator.key]).unwrap();
     assert_eq!(env.position(&owner).promo_balance, 0, "the forfeit must actually have fired");
     assert!(cu < 130_000, "liquidate-with-forfeit at 8 xStock slots / 10 loans used {cu} CU");
+}
+
+/// `set_promo_cap` is the one instruction whose cost scales with an admin-controlled list:
+/// `MAX_LISTED_COLLATERAL` assets, each deserialized, PDA-re-derived and re-validated. The
+/// bound on that list was derived entirely from `MAX_TX_ACCOUNT_LOCKS` — nothing has ever
+/// measured the compute, and 96 assets is well past what the 200,000 default budget covers.
+/// This measures the real per-asset cost and states what a full list implies.
+#[test]
+fn set_promo_cap_costs_scale_with_the_asset_list() {
+    let mut env = Env::initialized();
+    let admin = env.admin.pubkey();
+    let mut assets: Vec<Pubkey> = Vec::new();
+
+    // Ten is enough to fit a legacy transaction and to fix the slope; the interesting figure
+    // is per-asset, not the total at ten.
+    for _ in 0..10 {
+        assets.push(env.list_spl_collateral(6));
+    }
+    let at_ten = send_cu(&mut env.svm, &[set_promo_cap_ix(&admin, 2_000, &assets)], &[&env.admin]).unwrap();
+
+    // The account count must equal `collateral_count` exactly, so a shorter list cannot be
+    // measured on the same env — take the two-asset reading from a fresh one and subtract.
+    let mut small = Env::initialized();
+    let mut two_assets = Vec::new();
+    for _ in 0..2 {
+        two_assets.push(small.list_spl_collateral(6));
+    }
+    let small_admin = small.admin.pubkey();
+    let at_two =
+        send_cu(&mut small.svm, &[set_promo_cap_ix(&small_admin, 2_000, &two_assets)], &[&small.admin]).unwrap();
+
+    let per_asset = (at_ten - at_two) / 8;
+    // **Measured, and unlike the walking figures elsewhere in this file these are
+    // deterministic** — no position PDA, so no `find_program_address` bump search: 10,023 CU
+    // at two assets, 31,095 at ten, **2,634 CU per asset**, reproduced with zero spread across
+    // 8 runs (5 against one SBF build, 3 against a from-scratch rebuild to rule out a stale
+    // `.so`). That is a 294-byte Borsh deserialize plus the `create_program_address` this
+    // instruction re-derives per asset (~1,587, see the syscall analysis on
+    // `full_position_stays_under_the_default_compute_budget` above) plus `validate`.
+    //
+    // At the `MAX_LISTED_COLLATERAL` bound of 96 that extrapolates to **~257,600 CU — past the
+    // 200,000 default budget.** An admin at a full asset list must send an explicit
+    // `ComputeBudgetInstruction::set_compute_unit_limit`; without one, `set_promo_cap` starts
+    // failing at 75 assets (74 still fits: 10,023 + 2,634*72 = 199,671 CU; 75 assets does not:
+    // 10,023 + 2,634*73 = 202,305 CU). It fits well inside the 1.4M maximum and the extra
+    // program key still leaves ~100 of the 128 account locks, so the 96 bound is sound — but
+    // the default budget stops covering it first, which is not something the bound's own
+    // derivation (account locks) would ever tell you.
+    assert!(
+        (2_400..2_900).contains(&per_asset),
+        "per-asset cost moved to {per_asset} CU from the measured 2,634 — re-derive what the \
+         96-asset bound implies for compute before accepting this"
+    );
+    let at_bound = at_two + per_asset * (hodl_loans::MAX_LISTED_COLLATERAL as u64 - 2);
+    assert!(
+        at_bound > 200_000,
+        "a full asset list now fits the default budget ({at_bound} CU) — the warning above is \
+         stale and should be removed"
+    );
+    // And the default budget runs out well before the bound does.
+    let affordable = 2 + (200_000 - at_two) / per_asset;
+    assert!(
+        affordable < hodl_loans::MAX_LISTED_COLLATERAL as u64,
+        "{affordable} assets now fit the default budget, at or past the {} bound",
+        hodl_loans::MAX_LISTED_COLLATERAL
+    );
 }
