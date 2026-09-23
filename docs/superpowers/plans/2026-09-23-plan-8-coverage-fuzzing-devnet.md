@@ -28,6 +28,7 @@
 
 - Anchor 1.2.0. Build and test with `./scripts/test.sh`, which rebuilds the SBF program first. **Plain `cargo test` reuses a stale `.so`** and will pass against code you have just changed. `cargo test --lib` is safe for unit tests alone; anything touching LiteSVM needs the rebuild.
 - **"Green" means no failures AND no compile errors.** Grepping for `FAILED` alone misses a test binary that did not compile — check for `error[` too.
+- **Run mutation checks with `cargo test -p hodl_loans --no-fail-fast`.** Plain `cargo test` stops launching further test binaries once one reports a failure, so a mutation whose blast radius crosses files looks smaller than it is. Task 3 found a second failing test this way that an earlier measurement had missed. Combine with the rebuild rule above: `cargo build-sbf --tools-version v1.52 && cargo test -p hodl_loans --no-fail-fast`.
 - All arithmetic is checked: no raw `+ - *` on values that could overflow, no `unwrap()` on arithmetic, no bare `as` narrowing casts.
 - `cargo clippy -p hodl_loans --all-targets -- -D warnings` clean, and also clean under `--features devnet` once Task 8 lands. Do not silence a lint with `#[allow]`.
 - New `HodlError` variants are **appended**, never inserted — codes are `6000 + position`.
@@ -449,7 +450,7 @@ Run: `./scripts/test.sh` — expect 272.
 Two checks, each with a rebuild first:
 
 - Change `LoanRepaid`'s `payer` field in `repay_loan.rs` to emit `owner` instead. Exactly one test must fail — and **before this task, none would have.**
-- Make `available_cash()` return `self.cash` outright. All sixteen pre-existing tests in `loans.rs` still pass; only the new cap test fails.
+- Make `available_cash()` return `self.cash` outright. All sixteen pre-existing tests in `loans.rs` still pass and the new cap test fails — but run this one with `--no-fail-fast`, because the blast radius is **two tests, not one**: `available_cash()` has exactly two consumers, `take_loan.rs:89` (the utilization cap, what the new test targets) and `withdraw_liquidity.rs:47`, whose pre-existing `liquidity.rs::withdrawals_are_limited_to_cash_minus_reserve` also fails. An earlier draft of this plan said "only the new cap test fails", which is true within `loans.rs` and misleading suite-wide.
 
 - [ ] **Step 5: Commit**
 
