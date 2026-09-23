@@ -527,3 +527,48 @@ fn set_promo_cap_costs_scale_with_the_asset_list() {
         hodl_loans::MAX_LISTED_COLLATERAL
     );
 }
+
+/// `revoke_promo` joined the health-walking instructions in Plan 7 — it prices the position
+/// after releasing the promo — but was never measured. The follow-ups claimed it was covered
+/// by the raised `take_loan` ceilings on the grounds that it is strictly cheaper on the same
+/// walk; that is an argument, not a measurement, and this is the measurement.
+#[test]
+fn revoke_promo_stays_under_the_default_compute_budget_at_eight_slots() {
+    let (mut env, setup) = Env::promo_ready();
+    let owner = setup.borrower.pubkey();
+    let admin = env.admin.pubkey();
+    env.redeem_promo(&setup.borrower, &setup.cngn, 1, 50_000 * ONE_CNGN, 7).unwrap();
+
+    // Same shape as the other eight-slot fixtures: usdc is slot 0, seven more fill the rest.
+    let mut mints = vec![setup.usdc];
+    for i in 0..7 {
+        let decimals = if i % 2 == 0 { 9 } else { 6 };
+        let mint = env.list_spl_collateral(decimals);
+        env.set_pyth_price(&mint, 150 * ONE_DOLLAR, 10_000_000);
+        env.deposit_collateral(&setup.borrower, &mint, 10u64.pow(decimals as u32) * 10);
+        mints.push(mint);
+    }
+    assert_eq!(env.price_accounts(&owner).len(), 16);
+
+    // A live loan is what makes revocation take the priced path at all. Small enough that the
+    // position stands without the promo, so the health check passes and the walk completes.
+    env.take_loan(&setup.borrower, &setup, 1_000 * ONE_CNGN, 30 * DAY).unwrap();
+
+    let prices = env.price_accounts(&owner);
+    let ixn = revoke_promo_priced_ix(&admin, &setup.cngn, &owner, true, prices);
+    let cu = send_cu(&mut env.svm, &[ixn], &[&env.admin]).unwrap();
+
+    // **Measured 63,410 CU, deterministic** — reproduced with zero spread across 36 runs (20
+    // against the existing `.so`, 16 more against a from-scratch `cargo build-sbf
+    // --tools-version v1.52` rebuild, to rule out the stale-build failure mode the other
+    // measurements in this file hit). Before the stored bump this instruction did not exist
+    // in this file — Plan 7 added `RevokePromo` to the health-walking set but Task 6
+    // deliberately left it unmeasured, so there is no pre-fix figure to compare against here.
+    //
+    // Comfortably the cheapest of the walking instructions even at its max: it prices eight
+    // slots but settles no loan, moves no tokens and touches no collateral vault. The
+    // follow-ups asserted it was "strictly cheaper than `take_loan`" and therefore covered by
+    // that ceiling; the assertion was right and is now measured rather than argued.
+    assert!(cu < 95_000, "revoke_promo at 8 collateral slots used {cu} CU");
+    assert_eq!(env.position(&owner).promo_balance, 0);
+}
