@@ -1008,7 +1008,7 @@ impl Env {
     /// Writes the Switchboard NGN/USD result at the current slot with 5 samples.
     pub fn set_ngn_price(&mut self, value: i128, std_dev: i128) {
         let slot = self.svm.get_sysvar::<Clock>().slot;
-        self.set_account_data(&ngn_feed(), &switchboard_on_demand::ON_DEMAND_MAINNET_PID, pull_feed_data(value, std_dev, slot, 5));
+        self.set_account_data(&ngn_feed(), &hodl_loans::constants::SWITCHBOARD_ON_DEMAND_PID, pull_feed_data(value, std_dev, slot, 5));
     }
 
     /// The same NGN feed bytes `set_ngn_price` writes, but owned by an account of the

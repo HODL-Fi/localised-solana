@@ -18,9 +18,10 @@ use crate::state::Market;
 /// whichever authority controls the real feed's writes — that is a genuine assumption, recorded
 /// in spec §20 item 4, and an owner check cannot address it.
 ///
-/// Pinned to the MAINNET program id. A devnet deployment reads a feed owned by
-/// `ON_DEMAND_DEVNET_PID` and would be refused here; that is a deliberate trade, since this
-/// program's own id is mainnet too, and it is recorded for the devnet plan.
+/// Pinned to `constants::SWITCHBOARD_ON_DEMAND_PID`, chosen at compile time by the `devnet`
+/// feature. A build for the wrong cluster reads a feed owned by the other program's id and is
+/// refused here; see `constants::SWITCHBOARD_ON_DEMAND_PID` for why that trade is made at
+/// compile time rather than through a `Config` field.
 ///
 /// Only the 128-byte aggregated `result` is copied out (by offset, unaligned), keeping the
 /// 3.2 KB feed off the stack. `value` is the price and `std_dev` the spread.
@@ -28,7 +29,7 @@ pub fn read_ngn_price(account: &AccountInfo, market: &Market, clock: &Clock) -> 
     require_keys_eq!(account.key(), market.ngn_feed, HodlError::PriceAccountMismatch);
     require_keys_eq!(
         *account.owner,
-        switchboard_on_demand::ON_DEMAND_MAINNET_PID,
+        crate::constants::SWITCHBOARD_ON_DEMAND_PID,
         HodlError::PriceAccountMismatch
     );
     let data = account.try_borrow_data()?;
@@ -76,7 +77,7 @@ pub mod tests {
     }
 
     fn read(key: Pubkey, data: &mut [u8], m: &Market, slot: u64) -> Result<UsdPrice> {
-        read_owned_by(key, data, m, slot, switchboard_on_demand::ON_DEMAND_MAINNET_PID)
+        read_owned_by(key, data, m, slot, crate::constants::SWITCHBOARD_ON_DEMAND_PID)
     }
 
     fn read_owned_by(

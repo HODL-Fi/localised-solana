@@ -173,7 +173,7 @@ fn stale_uncertain_or_unverified_prices_block_borrowing() {
 
     // Too few Switchboard samples, then too wide a spread (2.01% > 2%).
     let slot = env.svm.get_sysvar::<anchor_lang::prelude::Clock>().slot;
-    env.set_account_data(&ngn_feed(), &switchboard_on_demand::ON_DEMAND_MAINNET_PID, pull_feed_data(NGN_USD, NGN_SPREAD, slot, 2));
+    env.set_account_data(&ngn_feed(), &hodl_loans::constants::SWITCHBOARD_ON_DEMAND_PID, pull_feed_data(NGN_USD, NGN_SPREAD, slot, 2));
     assert_hodl_error(env.take_loan(b, &setup, amount, 30 * DAY), HodlError::StalePrice);
     env.set_ngn_price(NGN_USD, NGN_USD / 10_000 * 201);
     assert_hodl_error(env.take_loan(b, &setup, amount, 30 * DAY), HodlError::PriceConfidenceTooWide);

@@ -111,6 +111,27 @@ pub const MAX_MULTIPLIER: u128 = 1_000_000 * MULTIPLIER_SCALE;
 /// the dust collateral it leaves behind).
 pub const MAX_BAD_DEBT_DUST_USD: u128 = 1_000 * USD_SCALE;
 
+/// The Switchboard On-Demand program that must own the NGN feed (`oracle/switchboard.rs`).
+///
+/// Chosen at **compile time**, not stored in `Config`, and that is the whole point. The owner
+/// check exists because `Market::ngn_feed` is an admin-settable bare `Pubkey` with nothing
+/// behind it — a mis-set feed would have the program read 3.2 KB of arbitrary bytes as a
+/// price. Putting the expected *owner* in an account would reintroduce exactly that shape one
+/// level up: another admin-settable value that, set wrong, turns the check off. A deployed
+/// binary cannot be misconfigured after the fact.
+///
+/// The cost is two binaries to keep straight, and a devnet build that is silently wrong if
+/// someone forgets `--features devnet`. `the_switchboard_pid_matches_the_build` below turns
+/// that into a test failure rather than a production one.
+///
+/// The `switchboard_on_demand` crate has its own selector, but it is client-only: it reads
+/// `std::env::var("SB_ENV")`, which does not exist on SBF. The two PID constants themselves
+/// are plain and usable on-chain, so we choose between them ourselves.
+#[cfg(not(feature = "devnet"))]
+pub const SWITCHBOARD_ON_DEMAND_PID: Pubkey = switchboard_on_demand::ON_DEMAND_MAINNET_PID;
+#[cfg(feature = "devnet")]
+pub const SWITCHBOARD_ON_DEMAND_PID: Pubkey = switchboard_on_demand::ON_DEMAND_DEVNET_PID;
+
 #[constant]
 pub const CONFIG_SEED: &[u8] = b"config";
 #[constant]
@@ -192,6 +213,26 @@ mod tests {
             "MAX_LISTED_COLLATERAL ({MAX_LISTED_COLLATERAL}) + {SET_PROMO_CAP_FIXED_ACCOUNTS} \
              exceeds MAX_TX_ACCOUNT_LOCKS ({MAX_TX_ACCOUNT_LOCKS}): set_promo_cap would be \
              unsendable at a full asset list"
+        );
+    }
+
+    #[test]
+    fn the_switchboard_pid_matches_the_build() {
+        // The one failure mode of choosing this at compile time: a binary built for the wrong
+        // cluster is indistinguishable until the first health check fails on-chain. Asserting
+        // the constant against the feature turns that into a test failure — `cargo test` and
+        // `cargo test --features devnet` each pin their own half, so a mainnet build that
+        // somehow selected the devnet id (or the reverse) cannot ship green.
+        if cfg!(feature = "devnet") {
+            assert_eq!(SWITCHBOARD_ON_DEMAND_PID, switchboard_on_demand::ON_DEMAND_DEVNET_PID);
+        } else {
+            assert_eq!(SWITCHBOARD_ON_DEMAND_PID, switchboard_on_demand::ON_DEMAND_MAINNET_PID);
+        }
+        // And the two are genuinely different, so the assertion above is not vacuous on a
+        // future crate version that collapsed them.
+        assert_ne!(
+            switchboard_on_demand::ON_DEMAND_MAINNET_PID,
+            switchboard_on_demand::ON_DEMAND_DEVNET_PID
         );
     }
 }
