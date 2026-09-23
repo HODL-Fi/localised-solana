@@ -784,7 +784,9 @@ Run: `./scripts/test.sh` — expect 274, unchanged.
 
 Then re-measure every figure in `tests/budget.rs`: turn each `assert!(cu < N, ...)` into a `println!`, run the budget test 16+ times, take min–max, restore the assertions.
 
-What the author measured, max-to-max: `take_loan` **−8,680**, `withdraw_collateral` **−8,680**, xStock `take_loan` **−7,163**, `revoke_promo` **−13,432**. The three `liquidate` figures went the *other* way by ~260 CU — they never constrained the position by seeds, so they paid no search and see only the extra account read.
+**Only re-measure figures that exist in `budget.rs` at this point.** At Task 6 the file carries `take_loan`, `withdraw_collateral`, the three `liquidate` figures, `repay_loan`, the xStock pair, and Task 5's `set_promo_cap`. It does **not** yet carry `revoke_promo` — Task 7 adds that, and measures it post-bump. Do not go looking for it.
+
+What the author measured, max-to-max, on the figures you will have: `take_loan` **−8,680**, `withdraw_collateral` **−8,680**, xStock `take_loan` **−7,163**. The three `liquidate` figures went the *other* way by ~260 CU — they never constrained the position by seeds, so they paid no search and see only the extra account read. `set_promo_cap` should not move at all (it touches no position PDA); if it does, report it. The comment block you install in Step 3 also cites a `revoke_promo` −**13,432**: that is the end-state figure this plan reaches at Task 7, deliberately left in the comment so the finished file reads coherently. It is not something for you to reproduce.
 
 The more useful result is that the spreads collapse: `take_loan` 10,500 → 0, `revoke_promo` 13,500 → 0.
 
