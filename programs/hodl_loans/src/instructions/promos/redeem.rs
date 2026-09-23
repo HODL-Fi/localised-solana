@@ -20,7 +20,7 @@ pub struct RedeemPromo<'info> {
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Box<Account<'info, Config>>,
     pub market: Box<Account<'info, Market>>,
-    #[account(mut, seeds = [POSITION_SEED, owner.key().as_ref()], bump)]
+    #[account(mut, seeds = [POSITION_SEED, owner.key().as_ref()], bump = position.load()?.bump)]
     pub position: AccountLoader<'info, Position>,
     #[account(
         mut,

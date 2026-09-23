@@ -43,99 +43,41 @@ fn full_position_stays_under_the_default_compute_budget() {
     }
 
     // 10th (last) loan slot: the health check walks all 8 collateral slots, the promo cap and
-    // the 9 existing overdue loans. Measured 88,095-98,595 CU over 55 runs (was 74,763-79,263 CU
-    // over 17 runs pre-Plan-7; was 87,461-93,461 CU over 55 runs after Task 1, before this
-    // task's own `lends_borrowing_power` gate — see the Task 3 note below the syscall analysis).
+    // the 9 existing overdue loans. Measured 88,512-88,543 CU over 20 runs (was 88,095-98,595 CU
+    // over 55 runs pre-fix).
     //
-    // These figures are NOT deterministic, and the cause is the **borrower keypair**, not the
-    // collateral. `TakeLoan` and `WithdrawCollateral` declare the position with
-    // `seeds = [POSITION_SEED, owner.key().as_ref()], bump` — a *bare* bump, so Anchor emits
-    // `find_program_address`, which tries candidate bumps from 255 downward at ~1,500 CU each.
-    // A randomly-keyed borrower's canonical bump is 255 with p≈1/2, 254 with p≈1/4, and so on:
-    // a geometric ladder of ~1,500 CU steps, with an unbounded tail rather than one bounded by
-    // the slot count. `Liquidate` and `RepayLoan` take the position with no seeds constraint at
-    // all, which is why their spreads are ~31-62 CU while these are thousands.
+    // **These figures are deterministic as of Plan 8, and were not before.** Every instruction
+    // that pins the position PDA now passes `bump = position.load()?.bump` rather than a bare
+    // `bump`, so Anchor reads the stored bump instead of emitting `find_program_address`,
+    // which tried candidates from 255 downward at ~1,500 CU each. A randomly-keyed borrower's
+    // canonical bump is 255 with p≈1/2, 254 with p≈1/4, and so on — a geometric ladder with an
+    // unbounded tail, and that is what every "measured X-Y over N runs" range in this file's
+    // history was measuring. `Liquidate` and `RepayLoan` never constrained the position by
+    // seeds, which is why their spreads were ~31-62 CU while the others ran to thousands.
     //
-    // Each range below is min-max over 55 runs and the tail is not fully characterised.
-    // Compare against the max, never a single sample — and note the max grows with sample
-    // size, which is exactly why the derivation below uses min-to-min.
+    // What the change bought, max-to-max against the ranges this file carried immediately
+    // before this task (`take_loan` 88,095-98,595, `withdraw_collateral` 87,646-98,146, xStock
+    // `take_loan` 95,990-104,990): `take_loan` -10,052, `withdraw_collateral` -10,170, xStock
+    // `take_loan` -8,535. `revoke_promo` does not exist yet at this point in the plan — Task 7
+    // adds it and is the one that gets to measure its drop. The `liquidate` / `repay_loan`
+    // figures moved the other way, by roughly +300 to +420 CU: they never paid the search
+    // either way, so this small rise is ordinary crate-wide inlining drift from the changed
+    // code elsewhere in the crate (the same effect this file has always attributed a few tens of
+    // CU of `repay_loan` drift to), not a cost the position-PDA fix adds to these instructions
+    // directly. `open_position` still uses a bare bump because it is `init`: there is no stored
+    // bump to read yet.
     //
-    // **The `create_program_address` syscall this walk added costs ~1,587-1,588 CU per
-    // collateral slot, stable — ~12,700 CU at eight slots.** This is a Task 1 finding, measured
-    // against Task 1's OWN 55-run sample — the figures this paragraph cites below are the "was
-    // ... after Task 1" parentheticals on the headlines above and on the xStock `take_loan` test
-    // further down, not the current top-line ranges, which this task's own later change has
-    // since moved further (see the Task 3 addendum after this analysis). That is min-to-min
-    // against the pre-Plan-7 baselines: (87,461-74,763)/8 = 1,587.25 for `take_loan` at Task 1,
-    // (86,883-74,182)/8 = 1,587.6 for `withdraw_collateral` at Task 1.
-    //
-    // Subtracting the recorded range ENDPOINTS instead does not give that number, and the gap is
-    // not noise: max-to-max at Task 1 is (93,461-79,263)/8 = 1,774.75, and (92,883-78,682)/8 =
-    // 1,775.125 for `withdraw_collateral` — both a real ~190 CU/slot higher, not a rounding
-    // difference. The cause is unequal bucket coverage, not a variable cost: Task 1's 55-run
-    // samples hit 5 distinct ~1,500-CU-spaced slot-order buckets for both figures (confirmed in
-    // the raw per-run data — 87,461/88,961/90,461/91,961/93,461 and
-    // 86,883/88,383/89,883/91,383/92,883, each with ±30 CU of sub-noise on top; checked against
-    // the raw runs, not just the two recorded endpoints), while the pre-Plan-7 baseline's
-    // 17 runs only span a 4,500 CU range — 4 buckets at the same 1,500 CU step, inferred from its
-    // documented spread since that raw data is git history, not something anyone holds to
-    // re-measure. A 5-bucket max minus a 4-bucket max charges the syscall for one extra,
-    // unsampled step it didn't cause; min-to-min avoids this because bucket 0 (cheapest slot
-    // order) is common enough to land in both a 17-run and a 55-run batch. The xStock
-    // `take_loan` case is the control that shows the mechanism cleanly, using only figures still
-    // written down elsewhere in this file: pre-Plan-7 (17 runs, 82,670-88,670, on that test
-    // below) and post-Task-1 (55 runs, 95,364-101,364, the "was ... after Task 1" parenthetical
-    // on that same test) both happen to span 5 buckets, so min-to-min and max-to-max agree
-    // exactly — 12,694 either way. That is Task 1's own delta; it is not this task's, which adds
-    // a further, separate shift on top (see the addendum below).
-    //
-    // The two `liquidate` paths below (with and without a promo forfeit) are a separate, genuine
-    // effect, not this same artifact: both are stable (essentially single-valued, no stepped
-    // bucketing) on both sides of the change, so no coverage correction applies, and — at Task 1
-    // — their measured delta was still only ~12,046-12,077 CU across the same eight slots
-    // (~1,506-1,510 CU/slot), about 81 CU per slot below the ~1,587-1,588 figure above (~650
-    // across all eight). Worth stating plainly: every CU/slot number here is one 8-slot total
-    // divided by 8, and nothing in this file varies the slot count — so none of it separates a
-    // true per-slot term from a fixed per-instruction one, and that is the likeliest home for
-    // the ~650 gap.
-    // `repay_loan`, which walks no collateral, moved only +30 CU at Task 1's observed max
-    // (19,247-19,278 CU vs. 19,248 CU before pre-Plan-7). Adding code to the crate shifts
-    // inlining decisions across it, so figures drift by tens of CU on changes that do not touch
-    // the measured path at all. Treat a drift of that order as noise and anything near 1,500 as
-    // the slot-order variance above. (All of the above is Task 1's own measurement, kept as
-    // written at the time; the addendum below is this task's, on top of it.)
-    //
-    // **Task 3 adds another shift on top of everything above.** `lends_borrowing_power` gates
-    // two accumulations per collateral slot inside `compute_health` (the LTV term and the
-    // promo-cap term) and adds a call to `over_multiplier_ceiling` per slot in this walk, and —
-    // like Task 1's syscall — also shifts inlining decisions elsewhere in the crate. Re-measured
-    // over a fresh 55 runs (a new sample, not Task 1's): all SIX eight-slot paths moved, not
-    // five — `take_loan` here by +634 min-to-min (87,461 → 88,095), `withdraw_collateral` below
-    // by +763 (86,883 → 87,646), the no-forfeit `liquidate` below by +763
-    // (108,208 → 108,971), the forfeit `liquidate` in the sibling test by +763
-    // (112,938 → 113,701), the all-xStock `take_loan` by +626 (95,364 → 95,990), and the
-    // all-xStock forfeit `liquidate` further down by +755 (119,469 → 120,224). That spans
-    // +626 to +763 CU (a 137 CU spread across the six) — small against the ~1,500 CU
-    // slot-order bucket step, but not uniform, and not worth calling uniform: it is one new
-    // per-slot branch's cost plus whatever that branch does to inlining nearby, not a fixed
-    // constant. `repay_loan`, which walks no collateral, DID move too — by +3 CU at the min
-    // (19,247 → 19,250) and +20 CU at the max (19,278 → 19,298) — small enough to be ordinary
-    // inlining drift rather than the gate itself, but it is not exactly unchanged, so the
-    // comment below does not call it that.
-    //
-    // The cost buys a local admission argument in place of a whole-program one, and these
-    // markers exist to make a change of this size visible rather than to veto it; nothing
-    // here is near the 200,000 default budget. Spec §15 and
-    // `docs/superpowers/plans/2026-09-21-plan-7-followups.md` carry the reasoning.
+    // Ranges below are min-max over 20 runs. The residual 0-109 CU left on these figures is
+    // ordinary jitter, not a step — contrast with the multi-thousand-CU spreads the geometric
+    // ladder used to produce on the same instructions.
     let prices = env.price_accounts(&owner);
     let ixn = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 1_000 * ONE_CNGN, 30 * DAY, prices);
     let cu = send_cu(&mut env.svm, &[ixn], &[&env.admin, &setup.borrower.key]).unwrap();
     assert!(cu < 115_000, "take_loan at 8 collateral slots / 9 existing overdue loans used {cu} CU");
 
     // withdraw_collateral's post-withdrawal health check walks the same 8 slots, the promo cap
-    // and now 10 loans. Measured 87,646-98,146 CU over 55 runs (was 74,182-78,682 CU over 17
-    // runs pre-Plan-7; was 86,883-92,883 CU over 55 runs after Task 1); see the note above and
-    // its Task 3 addendum.
+    // and now 10 loans. Measured 87,976 CU, reproduced with zero spread across 20 runs (was
+    // 87,646-98,146 CU over 55 runs pre-fix); see the note above.
     let token = env.create_token_account(&setup.usdc, &owner);
     let wd = withdraw_collateral_ix(&owner, &setup.usdc, &SPL_TOKEN, &token, Some(&setup.cngn), ONE_USDC, env.price_accounts(&owner));
     let cu = send_cu(&mut env.svm, &[wd], &[&env.admin, &setup.borrower.key]).unwrap();
@@ -143,10 +85,11 @@ fn full_position_stays_under_the_default_compute_budget() {
 
     // liquidate prices all 8 collateral slots and all 10 loans, then moves two token types.
     // This position holds NO promo, so `forfeit_promo` resolves its two extra `Option` accounts
-    // and takes the zero-balance early return rather than paying for a third CPI — the two
-    // accounts alone are still ~9,900 CU over the pre-Task-7 baseline of 86,320. Measured
-    // 108,971-109,033 CU over 55 runs, up from 96,162 pre-Plan 7 (was 108,208-108,239 CU over
-    // 55 runs after Task 1; see the note above and its Task 3 addendum). This is
+    // and takes the zero-balance early return rather than paying for a third CPI. Measured
+    // 109,294-109,342 CU over 20 runs (was 108,971-109,033 CU over 55 runs pre-fix) —
+    // `liquidate` never constrained the position by seeds, so it paid no search either way; the
+    // small rise is ordinary crate-wide inlining drift from the position-PDA fix elsewhere in
+    // the crate, not a cost this instruction itself now pays — see the note above. This is
     // the CHEAP no-forfeit path, not the most expensive liquidate path
     // overall — see `full_position_liquidation_with_promo_forfeit_stays_under_the_default_compute_budget`
     // below for the case where the forfeit actually fires (token CPI + event).
@@ -165,15 +108,10 @@ fn full_position_stays_under_the_default_compute_budget() {
     assert!(cu < 120_000, "liquidate at 8 collateral slots / 10 loans used {cu} CU");
 
     // repay_loan needs no price accounts but still scans all 10 loan slots to find loan 0.
-    // Measured 19,250-19,298 CU over 55 runs (was 19,248 CU pre-Plan 7; was 19,247-19,278 CU
-    // over 55 runs after Task 1) — repay_loan walks no collateral, so this is ordinary inlining
-    // drift, not the syscall cost or the borrow-pause gate itself; see the note above. It DID
-    // move again this task, by +3 CU at the min and +20 CU at the max — small, but real, and it
-    // is the control that shows the other six eight-slot figures' larger +626-763 CU shift is
-    // `lends_borrowing_power`'s own per-slot cost, not just crate-wide inlining noise. That
-    // band is not uniform — three of the six (`withdraw_collateral`, and both non-xStock
-    // `liquidate` paths) land at exactly +763, the other three at +634, +626 and +755 — but all
-    // six are an order of magnitude past `repay_loan`'s own drift.
+    // Measured 19,305 CU, reproduced with zero spread across 20 runs (was 19,250-19,298 CU over
+    // 55 runs pre-fix) — repay_loan walks no collateral and never constrained the position by
+    // seeds, so this small rise is ordinary crate-wide inlining drift, not a cost the
+    // position-PDA fix adds to this instruction directly; see the note above.
     env.mint_to(&setup.cngn, &setup.borrower_cngn, 100_000 * ONE_CNGN);
     let rp = repay_loan_ix(&owner, &owner, &setup.cngn, &setup.borrower_cngn, 0, u64::MAX);
     let cu = send_cu(&mut env.svm, &[rp], &[&env.admin, &setup.borrower.key]).unwrap();
@@ -233,10 +171,9 @@ fn full_position_liquidation_with_promo_forfeit_stays_under_the_default_compute_
 
     // liquidate prices all 8 collateral slots and all 10 loans, moves the liquidator's
     // repayment and the seized collateral, and now also forfeits the promo balance: a third
-    // token CPI on top of the no-promo case's two. Measured 113,701-113,732 CU over 55 runs, up
-    // from 100,884-100,915 pre-Plan 7 (was 112,938-112,986 CU over 55 runs after Task 1) — see
-    // the note on `full_position_stays_under_the_default_compute_budget` above and its Task 3
-    // addendum.
+    // token CPI on top of the no-promo case's two. Measured 114,021-114,052 CU over 20 runs
+    // (was 113,701-113,732 CU over 55 runs pre-fix) — see the note on
+    // `full_position_stays_under_the_default_compute_budget` above.
     for m in &mints {
         env.set_pyth_price(m, 100_000, 0);
     }
@@ -401,16 +338,15 @@ fn an_all_xstock_position_stays_under_the_default_compute_budget() {
     }
 
     // 10th (last) loan slot: the health check unpacks 8 mints on top of the usual 8 collateral
-    // slots, the promo cap and 9 existing loans. **Measured 95,990-104,990 CU over 55 runs —
+    // slots, the promo cap and 9 existing loans. **Measured 96,407-96,455 CU over 20 runs —
     // this is the figure spec §15 points at, and the only place it is written down. Quote the
     // range, not a sample.**
     //
-    // Up from 82,670-88,670 pre-Plan 7 — a total rise of 13,320 CU min-to-min (95,990-82,670),
-    // not the ~12,700 CU the syscall alone accounts for: 12,694 of it is one
-    // `create_program_address` syscall per collateral slot, added at Task 1 (95,364-82,670,
-    // still written down as the "was ... after Task 1" figure two lines up), and the remaining
-    // 626 is this task's own `lends_borrowing_power` gate (95,990-95,364). See the note on
-    // `full_position_stays_under_the_default_compute_budget` above and its Task 3 addendum.
+    // Down 8,535 CU max-to-max from the 95,990-104,990 CU range this file carried immediately
+    // before this task: `TakeLoan` now reads the position's stored bump
+    // (`bump = position.load()?.bump`) instead of paying `find_program_address`'s
+    // geometric-ladder search. See the note on
+    // `full_position_stays_under_the_default_compute_budget` above.
     //
     // It is a floor for mainnet, not an estimate of it: `MintKind::XStock` initializes a
     // metadata *pointer* but writes no `TokenMetadata` extension, so the fixture mint is
@@ -497,17 +433,15 @@ fn full_all_xstock_position_liquidation_with_promo_forfeit_stays_under_the_defau
     //
     // This figure is stable where the `take_loan` ones are not, and the reason is the
     // instruction, not the collateral: `Liquidate` takes the position with no seeds constraint,
-    // so it never pays `find_program_address`'s bump search (see the note on
-    // `full_position_stays_under_the_default_compute_budget`). Same-shape collateral has
-    // nothing to do with it — `an_all_xstock_position_stays_under_the_default_compute_budget`
-    // below holds eight identical xStocks and still spreads 9,000 CU, because it is a
-    // `take_loan`. Measured 120,224-120,255 CU over 55 runs, a spread of ~31 rather
-    // than ~1,500 — up from 107,425-107,487 pre-Plan 7 (was 119,469-119,561 CU over 55 runs
-    // after Task 1, a further +755 CU at the min from this task's `lends_borrowing_power` gate;
-    // see the note on `full_position_stays_under_the_default_compute_budget` above and its
-    // Task 3 addendum). Not zero, though —
-    // do not restate this as an exact figure. The ceiling below still leaves the same margin the
-    // sibling standard-collateral forfeit case above does.
+    // so it never paid `find_program_address`'s bump search even before this task's fix (see
+    // the note on `full_position_stays_under_the_default_compute_budget`). Same-shape collateral
+    // has nothing to do with it — `an_all_xstock_position_stays_under_the_default_compute_budget`
+    // above holds eight identical xStocks and is a `take_loan`, so it still moved by thousands.
+    // Measured 120,544-120,653 CU over 20 runs, a spread of 109 rather than the thousands
+    // `take_loan` used to show — up from 120,224-120,255 CU over 55 runs pre-fix, ordinary
+    // crate-wide inlining drift from the position-PDA fix elsewhere in the crate. Not zero,
+    // though — do not restate this as an exact figure. The ceiling below still leaves the same
+    // margin the sibling standard-collateral forfeit case above does.
     for m in &mints {
         env.set_pyth_price(m, 100_000, 0);
     }
@@ -558,8 +492,10 @@ fn set_promo_cap_costs_scale_with_the_asset_list() {
     // at two assets, 31,095 at ten, **2,634 CU per asset**, reproduced with zero spread across
     // 8 runs (5 against one SBF build, 3 against a from-scratch rebuild to rule out a stale
     // `.so`). That is a 294-byte Borsh deserialize plus the `create_program_address` this
-    // instruction re-derives per asset (~1,587, see the syscall analysis on
-    // `full_position_stays_under_the_default_compute_budget` above) plus `validate`.
+    // instruction re-derives per asset (~1,587 CU per syscall) plus `validate`. Unaffected by
+    // this task's position-PDA fix, as expected — re-confirmed identical (10,023 / 31,095 /
+    // 2,634, zero spread) across 20 further runs taken alongside the rest of this file's
+    // re-measurement.
     //
     // At the `MAX_LISTED_COLLATERAL` bound of 96 that extrapolates to **~257,600 CU — past the
     // 200,000 default budget.** An admin at a full asset list must send an explicit
