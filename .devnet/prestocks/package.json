@@ -1,0 +1,14 @@
+{
+  "name": "prestocks-devnet",
+  "private": true,
+  "description": "Devnet tooling for PreStocks-shaped collateral: mock Token-2022 mints and Switchboard On-Demand price feeds.",
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.32.1",
+    "@solana/spl-token": "^0.4.15",
+    "@solana/spl-token-metadata": "^0.1.6",
+    "@solana/web3.js": "^1.99.0",
+    "@switchboard-xyz/common": "^5.8.5",
+    "@switchboard-xyz/on-demand": "^3.10.6",
+    "rpc-websockets": "7.11.0"
+  }
+}
