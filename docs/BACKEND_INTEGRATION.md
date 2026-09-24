@@ -22,7 +22,9 @@ For a backend that builds, signs and sends transactions to the HODL fixed-loans 
   every asset as Pyth, sending a `PriceUpdateV2` where a Switchboard feed belongs and getting
   `PriceAccountMismatch` (6007) on every priced instruction for that asset.
 - **Reference client:** `setup-cli/src/bin/` — Rust, but the account layouts are the same
-  whatever language you build in. `take_loan.rs` is the one worth reading.
+  whatever language you build in. Read `take_loan.rs` for the Pyth/`Standard` shape and
+  `prestocks_loan.rs` for the Switchboard/`XStock` one; the difference between them is exactly
+  the difference your client has to handle.
 - **Live devnet addresses:** `.devnet/addresses.env`.
 
 ---
