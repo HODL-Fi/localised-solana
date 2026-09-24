@@ -80,25 +80,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_multiplier: 0,
     };
 
-    let ix = Instruction::new_with_bytes(
-        hodl_loans::ID,
-        &hodl_loans::instruction::ListCollateral {
-            params,
-            kind: hodl_loans::CollateralKind::XStock,
-        }
-        .data(),
-        hodl_loans::accounts::ListCollateral {
-            admin: admin.pubkey(),
-            config: pda(&[hodl_loans::CONFIG_SEED]),
-            mint,
-            collateral,
-            vault,
-            token_program: anchor_spl::token_2022::ID,
-            system_program: system_program::ID,
-        }
-        .to_account_metas(None),
-    );
+    // Listing creates the asset; re-running re-points it. Both take the same validated
+    // `CollateralParams`, so a feed that had to be recreated (a wrong `minResponses` makes a feed
+    // permanently uncrankable) is a re-run rather than a delisting.
+    let already_listed = rpc.get_account(&collateral).is_ok();
+    let ix = if already_listed {
+        Instruction::new_with_bytes(
+            hodl_loans::ID,
+            &hodl_loans::instruction::UpdateCollateralParams { params }.data(),
+            hodl_loans::accounts::UpdateCollateralParams {
+                admin: admin.pubkey(),
+                config: pda(&[hodl_loans::CONFIG_SEED]),
+                collateral,
+            }
+            .to_account_metas(None),
+        )
+    } else {
+        Instruction::new_with_bytes(
+            hodl_loans::ID,
+            &hodl_loans::instruction::ListCollateral {
+                params,
+                kind: hodl_loans::CollateralKind::XStock,
+            }
+            .data(),
+            hodl_loans::accounts::ListCollateral {
+                admin: admin.pubkey(),
+                config: pda(&[hodl_loans::CONFIG_SEED]),
+                mint,
+                collateral,
+                vault,
+                token_program: anchor_spl::token_2022::ID,
+                system_program: system_program::ID,
+            }
+            .to_account_metas(None),
+        )
+    };
 
+    println!("  action     {}", if already_listed { "update_collateral_params" } else { "list_collateral" });
     println!("  mint       {mint}");
     println!("  feed       {feed}");
     println!("  feed_hash  {}", std::env::var("PRESTOCKS_FEED_HASH")?.trim());
@@ -108,9 +126,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bh = rpc.get_latest_blockhash()?;
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&admin.pubkey()), &[&admin], bh);
     match rpc.send_and_confirm_transaction(&tx) {
-        Ok(sig) => println!("\n  LIST_COLLATERAL OK  {sig}"),
+        Ok(sig) => println!("\n  OK  {sig}"),
         Err(e) => {
-            println!("\n  LIST_COLLATERAL FAILED: {e}");
+            println!("\n  FAILED: {e}");
             return Err(e.into());
         }
     }

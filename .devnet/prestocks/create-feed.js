@@ -68,6 +68,7 @@ const SYMBOL = (process.argv[2] || "").toUpperCase();
   const hash = String(hashHex).replace(/^0x/, "");
   if (!/^[0-9a-f]{64}$/.test(hash)) throw new Error(`crossbar returned no usable feed hash: ${hashHex}`);
   console.log(`hash     ${hash}  (cid ${cid})`);
+  console.log(`minResp  ${Number(process.env.MIN_RESPONSES || 1)}  (jobs: 1)`);
 
   // 2. simulate — proves the job resolves before an account is spent on it
   const sim = await fetch(`${CROSSBAR}/simulate/${hash}`);
@@ -85,7 +86,7 @@ const SYMBOL = (process.argv[2] || "").toUpperCase();
     queue,
     feedHash: Buffer.from(hash, "hex"),
     maxVariance: 1.0,
-    minResponses: 2,
+    minResponses: Number(process.env.MIN_RESPONSES || 1),
     numSignatures: 3,
     payer: payer.publicKey,
   });

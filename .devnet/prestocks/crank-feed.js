@@ -19,11 +19,13 @@ const RPC = process.env.RPC || "https://api.devnet.solana.com";
 const CROSSBAR = process.env.CROSSBAR_URL || "http://localhost:8099";
 const FEED = process.argv[2] || process.env.PRESTOCKS_FEED;
 
-// Byte offsets into PullFeedAccountData, past the 8-byte Anchor discriminator. Same layout the
+// Byte offset of `feed_hash` in the account, past the 8-byte Anchor discriminator. Same layout the
 // program walks in oracle/switchboard.rs; read by offset here for the same reason — no need to
-// materialise 3.2 KB to look at two fields.
-const DISC = 8;
-const OFF_FEED_HASH = DISC + 32 * 32 + 8 /* submissions */ + 32 /* authority */ + 32 /* queue */;
+// materialise 3.2 KB to look at one field.
+//
+//   8 discriminator + 32 x sizeof(OracleSubmission) + 32 authority + 32 queue
+//   OracleSubmission = Pubkey(32) + slot u64(8) + landed_at u64(8) + value i128(16) = 64
+const OFF_FEED_HASH = 8 + 32 * 64 + 32 + 32; // 2120
 
 (async () => {
   if (!FEED) { console.error("usage: node crank-feed.js <FEED_PUBKEY>"); process.exit(2); }

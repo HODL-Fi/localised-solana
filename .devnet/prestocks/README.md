@@ -14,125 +14,121 @@ Proven in LiteSVM by `programs/hodl_loans/tests/switchboard_collateral.rs` (7 te
 one bisects the borrow ceiling under each source and asserts they agree to the raw unit:
 **1,215,049,478,079** raw cNGN for one share at $1,023.01 and a 1.4861347 multiplier.
 
-## Devnet state
+## Devnet state — working end to end
 
 | | |
 |---|---|
-| mock OPENAI mint | `ECbSTTymP6eUkNy4Q8VF4DNJNULXxKz63iUk7vnen2xR` ✅ created |
-| Switchboard feed | `J9SkmK6UVDie4K6PgFF6kQJjt7j6NjyNLQs6B2JMX8EM` ✅ created, ⛔ not yet answered by oracles |
-| feed job | resolves on Crossbar at **$1,023.62** per display token ✅ |
-| program redeploy | ⛔ blocked on devnet SOL |
-| listing / deposit / take_loan | ⛔ waits on the redeploy |
+| program | `q33KxkuB2ntHSBwPnuFGpkiCxxEmmxsAgYAM6Gjx2SN`, upgraded and byte-verified `6b56f19b…` |
+| mock OPENAI mint | `ECbSTTymP6eUkNy4Q8VF4DNJNULXxKz63iUk7vnen2xR` |
+| Switchboard feed | `DTXX9vQdGojn88EZCNKhjHNJ4yPn2T8TiFWsyRCwUKHc` — 3 oracles, `std_dev` 0 |
+| collateral asset | `JBoLjsAw3X1zt7VCGYS5FZQ8A5kKmoVdfVv1mMAnao1g` |
+| price the program reads | **$1,023.62** per display token |
+| borrowed | **2,001,000 cNGN** against 2 shares |
 
 The mint carries `metadataPointer, scaledUiAmountConfig, permanentDelegate, transferHook,
 defaultAccountState, pausableConfig, tokenMetadata` — every one inside
-`XSTOCK_COLLATERAL_EXTENSIONS` — with the multiplier set to the live mainnet value of
-**1.4861347**, deliberately not 1, so the scaled-UI path is actually exercised.
+`XSTOCK_COLLATERAL_EXTENSIONS` — with the multiplier at the live mainnet **1.4861347**,
+deliberately not 1, so the scaled-UI path is actually exercised.
 
 It does **not** carry the mainnet mints' 100 bps `TransferFeeConfig`. That is the one way these
 mocks do not mirror the real asset, and it means devnet cannot be used to argue the mainnet mints
 are safe to list. `deposit_collateral` credits the amount it asks to transfer, so a fee would
-credit a position 1% more than the shared vault received.
+credit a position more than the shared per-mint vault received.
 
-## Blocker 1 — devnet SOL for the redeploy
+### The price binds, not just the plumbing
 
-The devnet program was deployed with `--max-len` at the exact binary size, so it has **no upgrade
-headroom**, and the new binary is 5,920 bytes larger (1,154,296 vs 1,148,376).
+`take_loan` succeeding proves the accounts line up. It does not prove the *price* is doing
+anything. Bracketing does:
 
 ```
-balance now   3.51 SOL   (7aGwNxgBd25Meyvj8Q3FYiGG5rp37bc3r7U8Ut3Tq7D6)
-extend        0.26 SOL   permanent, for 51,624 extra bytes
-deploy buffer 5.86 SOL   held during the upgrade, refunded when it completes
-needed        ~6.2 SOL at peak  →  about 2.7 SOL short
+2 raw shares × 1.4861347 = 2.9722694 display × $1023.6165 = $3,042.56
+at 50% LTV                                                = $1,521.28
+at $0.000753652729/NGN                                    ≈ 2,018,575 cNGN
+
+2,500,000 cNGN  ->  Unhealthy (6011)
+2,000,000 cNGN  ->  OK
 ```
 
-`solana airdrop` is rate-limited. https://faucet.solana.com gives 5 SOL a day against a GitHub
-login, which clears it.
+The pool had to be topped up first (`fund_market`). At 994,000 cNGN the utilization cap refused
+anything past ~894,600, so the bracket measured the **cap** and reported `InsufficientCash` — the
+same masking trap the LiteSVM bisection hit, in the same shape, twice in one day.
 
-Then:
+### Migration: assets listed by the old binary are untouched
+
+Decoded off chain after the upgrade with `check-collateral.js`:
+
+```
+wSOL  (listed by the OLD binary)   price_source Pyth   max_price_age_seconds 60   sb_* all zero
+OPENAI (listed by the new one)     price_source SwitchboardOnDemand   sb_max_stale_slots 150
+```
+
+Both accounts are still 302 bytes (8 discriminator + `INIT_SPACE` 294), and wSOL's 0.5 wSOL
+deposit is intact. That is the claim `PriceSource::Pyth = 0` was designed to make, checked against
+live data rather than only in LiteSVM.
+
+## What actually went wrong with the first three feeds
+
+Worth recording because the wrong diagnosis survived three feeds and a commit.
+
+`ORACLE_UNAVAILABLE: No oracle responses received` from every gateway, for a feed Crossbar could
+resolve and simulate perfectly. **The cause was `minResponses: 2` on a feed with one job.** A
+single job can never produce two responses, so the aggregation never reaches quorum and the
+oracles return nothing. `min_responses: 1` on the identical job cranked first time.
+
+| feed | jobs | `min_responses` | answers? |
+|---|---|---|---|
+| `J9SkmK6UVDie…` | 1 (prestocks, filter path) | 2 | no |
+| `4TMd3L3WfGDL…` | 1 (prestocks, positional path) | 2 | no |
+| `B5tPYx7Jmpkn…` | 1 (open.er-api.com — a URL known reachable) | 2 | no |
+| `GDgs76wotM4m…` (NGN) | **2** | 2 | yes |
+| `DTXX9vQdGojn…` | 1 (prestocks, filter path) | **1** | **yes** |
+
+Two things I got right and one I got wrong. Right: the JSONPath was not the problem, and
+prestocks.com was not blocking the oracles — the positional feed and the er-api control ruled those
+out. Wrong: I read the control's failure as evidence the oracles had not *indexed* a new feed,
+because the only property I noticed the three failures sharing was being new. They also all had one
+job against `min_responses: 2`, and my control changed the URL while holding that constant — so it
+could never have separated the two. A control has to vary only the variable under test.
+
+**So: set `min_responses ≤ number of jobs`.** A feed created otherwise is permanently uncrankable
+and has to be replaced; `list_prestocks` re-points an existing listing for exactly that reason.
+
+## Redoing it from scratch
 
 ```bash
-cd ~/work/hodl/lendbit-solana
-cargo build-sbf --tools-version v1.52 --features devnet     # 1,154,296 bytes
+docker start crossbar || docker run -d --name crossbar -p 8099:8080 \
+  -e SOLANA_DEVNET_RPC=https://api.devnet.solana.com \
+  -e SOLANA_MAINNET_RPC=https://api.mainnet-beta.solana.com \
+  switchboardlabs/crossbar:latest
 
-# Extend first — the upgrade fails outright if the account cannot hold the new binary.
-solana program extend q33KxkuB2ntHSBwPnuFGpkiCxxEmmxsAgYAM6Gjx2SN 51624 --url devnet
+cd .devnet/prestocks
+node create-mint.js OPENAI 1000          # -> OPENAI_MINT
+node create-feed.js OPENAI               # -> OPENAI_FEED, OPENAI_FEED_HASH
 
-solana program deploy target/deploy/hodl_loans.so \
-  --program-id ~/.config/solana/hodl_loans-devnet.json --url devnet
-solana program dump q33KxkuB2ntHSBwPnuFGpkiCxxEmmxsAgYAM6Gjx2SN /tmp/onchain.so --url devnet
-shasum -a 256 /tmp/onchain.so target/deploy/hodl_loans.so    # must match
-```
-
-**Build with `--features devnet`.** Without it you get the mainnet program id and the mainnet
-Switchboard program id, and every health check fails while deposits keep working.
-
-## Blocker 2 — the oracle network has not picked up the new feed
-
-Crossbar resolves the feed and simulates it correctly:
-
-```bash
-curl -s http://localhost:8099/simulate/solana/devnet/J9SkmK6UVDie4K6PgFF6kQJjt7j6NjyNLQs6B2JMX8EM
-# [{"results":["1023.6193398956366"], ...}]
-```
-
-But asking for signed updates returns nothing, and through the hosted Crossbar the gateways say
-`ORACLE_UNAVAILABLE: No oracle responses received`.
-
-This is **not** the JSONPath and **not** prestocks.com. Established by three feeds:
-
-| feed | job | oracles answer? |
-|---|---|---|
-| `J9SkmK6UVDie…` | prestocks + `$[?(@.symbol=='OPENAI')].markPrice` | no |
-| `4TMd3L3WfGDL…` | prestocks + `$[5].markPrice` (simplest possible path) | no |
-| `B5tPYx7Jmpkn…` | **open.er-api.com** + `$.rates.NGN` — a URL the working NGN feed already proves reachable | **no** |
-| `GDgs76wotM4m…` | the NGN feed, created a day earlier | **yes**, right now |
-
-The control failing is what settles it: the only property the three failing feeds share and the
-working one does not is *being new*. The oracle network answers a day-old feed and not a
-minutes-old one, so this reads as an indexing delay on their side. Retry with:
-
-```bash
-cd .devnet/prestocks && node crank-feed.js J9SkmK6UVDie4K6PgFF6kQJjt7j6NjyNLQs6B2JMX8EM
-```
-
-If it is still silent after a few hours, create a fresh feed and try again before assuming
-anything about the job — a feed account is cheap and the diagnosis above cost three of them.
-
-## Then, in order
-
-```bash
-set -a; . ../addresses.env; set +a
-
-# 1. list the mock as Switchboard-priced XStock collateral (LTV 50 / LT 75 / bonus 10,
-#    deposit cap 100 display tokens)
 cd ../../setup-cli
-PRESTOCKS_MINT=$OPENAI_MINT PRESTOCKS_FEED=$OPENAI_FEED \
-PRESTOCKS_FEED_HASH=$OPENAI_FEED_HASH cargo run --quiet --bin list_prestocks
+PRESTOCKS_MINT=… PRESTOCKS_FEED=… PRESTOCKS_FEED_HASH=… cargo run --bin list_prestocks
+AMOUNT_CNGN=4000000 cargo run --bin fund_market       # only if the pool is thin
 
-# 2. crank the feed, then borrow INSIDE the freshness window
-cd ../.devnet/prestocks && node crank-feed.js $OPENAI_FEED
+# Crank BOTH feeds and borrow in one go — 150 slots is about 60 seconds.
+cd ../.devnet/sb        && CROSSBAR_URL=http://localhost:8099 node crank-ngn-feed.js
+cd ../prestocks         && node crank-feed.js $OPENAI_FEED
+cd ../../setup-cli      && AMOUNT_CNGN=2000000 cargo run --bin prestocks_loan
 ```
 
-```bash
-# 3. borrow, inside the window the crank just opened
-cd ../../setup-cli && cargo run --quiet --bin prestocks_loan
-```
+If the program needs rebuilding: `cargo build-sbf --tools-version v1.52 --features devnet`.
+**Without `--features devnet`** you get the mainnet program id and the mainnet Switchboard program
+id, and every health check fails while deposits keep working. The devnet program account was
+extended to 1,200,000 bytes, so it now has room for a larger binary; it originally had none.
 
-`prestocks_loan` uses a **dedicated borrower** (`.devnet/prestocks/borrower.json`, created on first
-run) rather than the admin wallet, because the admin's position already holds wSOL — a position
-holding two assets needs every one of their price accounts fresh in the same transaction, which
-here would mean Pyth SOL/USD *and* the PreStocks feed *and* NGN. Every step is idempotent, so a
-failed borrow retries without redoing the setup. It has not been run: it would spend devnet SOL
-that blocker 1 needs.
+`prestocks_loan` uses a **dedicated borrower** (`.devnet/prestocks/borrower.json`, git-ignored)
+rather than the admin wallet, because the admin's position already holds wSOL — a position holding
+two assets needs every one of their price accounts fresh in the same transaction, which here would
+mean Pyth SOL/USD *and* the PreStocks feed *and* NGN. Its remaining accounts are **three**, because
+the asset is an `XStock`: the `CollateralAsset` PDA, the **Switchboard feed** (not a Pyth account —
+`price_source` decides), then the **mint** for its multiplier.
 
-Its remaining accounts are **three**, because the asset is an `XStock`: the `CollateralAsset` PDA,
-the **Switchboard feed** (not a Pyth account — the asset's `price_source` decides), then the
-**mint** for its multiplier. `setup-cli/src/bin/take_loan.rs` is the wSOL/Pyth equivalent and is
-unchanged.
-
-In production the pull instructions go **ahead of `take_loan` in the same transaction**, which
-makes freshness structural rather than a race against `sb_max_stale_slots` (150 slots, ~60s).
+In production the pull instructions go **ahead of `take_loan` in the same transaction**, which makes
+freshness structural rather than a race against `sb_max_stale_slots`.
 
 ## Scripts
 
@@ -142,9 +138,15 @@ makes freshness structural rather than a race against `sb_max_stale_slots` (150 
 | `create-mint.js SYMBOL [SUPPLY]` | devnet Token-2022 mock, multiplier preset, supply minted |
 | `create-feed.js SYMBOL` | store the job on Crossbar → simulate it → create the feed |
 | `crank-feed.js FEED` | land oracle updates, then print what the program will read |
+| `check-collateral.js LABEL=ADDR …` | decode a `CollateralAsset` off chain, to check `price_source` |
 
-`create-feed.js` takes `PRESTOCKS_PATH` and `PRESTOCKS_URL` overrides; both exist only for the
-diagnosis above.
+`create-feed.js` takes `PRESTOCKS_PATH`, `PRESTOCKS_URL` and `MIN_RESPONSES` overrides. The first
+two exist only for the diagnosis above; `MIN_RESPONSES` defaults to 1 and must not exceed the
+number of jobs.
+
+On the setup-cli side: `list_prestocks` (list or re-point), `fund_market` (mint cNGN and deposit it
+as liquidity — devnet only, it relies on the admin holding the mock mint's authority), and
+`prestocks_loan` (borrow end to end).
 
 Crossbar must be running locally — the hosted one's `/store` returns the hash of an empty payload
 and its `/simulate/jobs` is broken too (the known-good NGN job fails there identically):
