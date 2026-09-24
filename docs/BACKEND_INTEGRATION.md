@@ -1,0 +1,172 @@
+# Backend integration guide
+
+For a backend that builds, signs and sends transactions to the HODL fixed-loans program.
+
+- **IDL:** `idl/hodl_loans-devnet.json` — 43 instructions, 9 account types, 43 errors, with
+  the devnet address baked in. Swap `address` for the mainnet program id when you deploy.
+- **Reference client:** `setup-cli/src/bin/` — Rust, but the account layouts are the same
+  whatever language you build in. `take_loan.rs` is the one worth reading.
+- **Live devnet addresses:** `.devnet/addresses.env`.
+
+---
+
+## 1. The thing that will bite you first: oracle freshness
+
+Every priced instruction reads **two** oracles, and both must be fresh **in the same
+transaction that uses them**.
+
+| | source | freshness bound | where |
+|---|---|---|---|
+| collateral price | Pyth pull (`PriceUpdateV2`) | `max_price_age_seconds`, currently **60s** | per collateral asset |
+| NGN/USD | Switchboard On-Demand (`PullFeedAccountData`) | `ngn_max_stale_slots`, currently **150 slots ≈ 60s** | per market |
+
+`MAX_PRICE_AGE_SECONDS = 60` is a **hard protocol ceiling**, not a parameter you can raise —
+`list_collateral` rejects anything above it with `InvalidParameters` (6010).
+
+**Build one transaction shaped like this:**
+
+```
+[ Pyth: post price update        ]  ← from Hermes
+[ Switchboard: pull feed update  ]  ← 1–2 instructions
+[ take_loan / withdraw_collateral / liquidate / write_off_loan ]
+```
+
+Do **not** refresh in a preceding transaction and borrow in the next. It works most of the
+time and fails intermittently with `StalePrice` (6005) under load or congestion — the worst
+kind of bug to debug in production.
+
+**Priced instructions** (need both oracles): `take_loan`, `withdraw_collateral`, `liquidate`,
+`write_off_loan`, and `revoke_promo` when the position has a live loan.
+
+**Unpriced** (no oracle accounts needed): `deposit_liquidity`, `withdraw_liquidity`,
+`open_position`, `close_position`, `deposit_collateral`, `repay_loan`, plus the whole admin
+surface. If your first milestone is plumbing, start here — none of it can fail on oracles.
+
+---
+
+## 2. Remaining accounts: the layout that is not in the IDL
+
+Priced instructions take **variable trailing accounts** that Anchor's IDL does not describe.
+Getting these wrong is the second most common failure.
+
+For each collateral slot on the position **holding a non-zero amount**, in slot order, append:
+
+```
+1. CollateralAsset PDA   readonly   ["collateral", mint]
+2. PriceUpdateV2         readonly   the Pyth account for that asset
+3. the mint itself       readonly   ONLY when the asset is kind == XStock
+```
+
+The third account exists because an xStock's scaled-UI multiplier lives on the mint. A
+`Standard` asset must **not** include it — the program counts accounts positionally.
+
+Slots with a zero amount are skipped entirely. So the account list changes as a user deposits
+and withdraws; derive it from the position each time rather than caching.
+
+Reference: `setup-cli/src/bin/take_loan.rs`, and `price_accounts()` in
+`programs/hodl_loans/tests/common/mod.rs`.
+
+---
+
+## 3. PDAs
+
+All derived from the program id. Seeds are byte strings.
+
+| account | seeds |
+|---|---|
+| `Config` | `["config"]` |
+| `Access` (per wallet) | `["access", wallet]` |
+| `Market` | `["market", borrowable_mint]` |
+| market vault | `["market_vault", borrowable_mint]` |
+| `Lender` | `["lender", market_pda, owner]` |
+| `CollateralAsset` | `["collateral", collateral_mint]` |
+| collateral vault | `["collateral_vault", collateral_mint]` |
+| `Position` (per wallet) | `["position", owner]` |
+| `PromoVault` | `["promo_vault", **market_pda**]` |
+| promo vault token | `["promo_vault_token", **market_pda**]` |
+| `Campaign` | `["campaign", …]` |
+| `VoucherReceipt` | `["voucher", …]` |
+
+**Note the two promo seeds hang off the market PDA, not the mint.** Deriving them from the
+mint compiles fine and fails on-chain. It cost time here; it will cost you time too.
+
+---
+
+## 4. Error codes worth handling explicitly
+
+Anchor custom errors are `6000 + variant position`. Full list in the IDL's `errors` array.
+
+| code | name | what your backend should do |
+|---|---|---|
+| 6000 | `NotWhitelisted` | wallet needs `whitelist` first — surface as an onboarding step, not an error |
+| 6002 | `Unauthorized` | signer is not the role the instruction requires |
+| 6003 | `MarketPaused` | guardian paused it; retry later, do not loop |
+| 6005 | `StalePrice` | **refresh the oracles and rebuild the transaction**, do not just retry |
+| 6007 | `PriceAccountMismatch` | wrong price account for the asset, or the wrong-cluster binary |
+| 6010 | `InvalidParameters` | admin params out of bounds (e.g. `max_price_age_seconds > 60`) |
+| 6011 | `Unhealthy` | the borrow would breach LTV — show the user their limit |
+| 6013 | `UtilizationCapExceeded` | market is out of lendable cash; surface, do not retry |
+| 6019 | `AmountTooSmall` | below `min_loan_amount` (currently 1,000 cNGN) |
+| 6035 | `MathOverflow` | should not happen; log with the full instruction for investigation |
+
+`6007` on **every** priced instruction while deposits still succeed is the signature of a
+binary built for the wrong cluster. Check the build flags before debugging anything else.
+
+---
+
+## 5. Decimals and scaling
+
+- cNGN is **6 decimals**. `min_loan_amount` of 1,000 cNGN is `1_000_000_000` raw units.
+- The NGN feed reports **USD per NGN** (~0.00075), not NGN per USD. If you compute expected
+  values off-chain, invert accordingly or your numbers will be off by ~1.3 million.
+- `MAX_COLLATERAL_DECIMALS = 12`. Listing above that fails loudly at `list_collateral`.
+
+---
+
+## 6. Transaction size, not compute, is the binding limit on `liquidate`
+
+At 8 standard collateral slots, `liquidate` measures **1,185 bytes** against the 1,232-byte
+legacy limit. An all-xStock position (which adds a mint account per slot) will not fit —
+use a **v0 transaction with an address lookup table** for liquidations.
+
+Measured compute, for budgeting priority fees (`programs/hodl_loans/tests/budget.rs`):
+
+| instruction | CU |
+|---|---|
+| `take_loan`, 8 slots / 9 existing loans | ~88,500 |
+| `withdraw_collateral`, 8 slots / 10 loans | ~88,000 |
+| `liquidate` + forfeit, 8 slots | ~114,000 |
+| `repay_loan`, 10 loan slots | ~19,300 |
+| `set_promo_cap` | **2,634 per listed asset** |
+
+`set_promo_cap` is the one to watch: past **74 listed assets** it exceeds the 200,000 default
+budget and needs an explicit `ComputeBudgetInstruction::set_compute_unit_limit`.
+`MAX_LISTED_COLLATERAL` is 96, so this is reachable.
+
+---
+
+## 7. Setup order
+
+Mirrors `Env::initialized()` → `loan_ready()` in the test harness, which is the tested path:
+
+1. `initialize` — **must be signed by the program's upgrade authority**; that wallet becomes admin
+2. `create_market` per borrowable mint
+3. `create_promo_vault` — **required**: `take_loan`, `liquidate` and `write_off_loan` all name
+   it, so a market without one cannot be borrowed against
+4. `list_collateral` per asset
+5. `whitelist` per wallet
+6. `deposit_liquidity` — lenders fund before anyone can borrow
+
+---
+
+## 8. Events
+
+39 event types, all in the IDL with their 8-byte discriminators. Anchor emits them as
+`Program data: <base64>` log lines: 8-byte discriminator followed by the Borsh body.
+
+For an indexer, match on the discriminator rather than parsing log text.
+`decode_events` in `programs/hodl_loans/tests/common/mod.rs` is a 15-line reference
+implementation.
+
+One correctness note the test suite pins: `LoanRepaid` carries **both** `owner` and `payer`,
+and they differ when a third party repays. Do not attribute repayments to `owner`.
