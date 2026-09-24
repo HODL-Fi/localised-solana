@@ -1,0 +1,11 @@
+{
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.32.1",
+    "@pythnetwork/hermes-client": "^2.1.0",
+    "@pythnetwork/pyth-solana-receiver": "^0.13.0",
+    "@solana/web3.js": "^1.99.0",
+    "@switchboard-xyz/common": "^5.8.5",
+    "@switchboard-xyz/on-demand": "^3.10.6",
+    "rpc-websockets": "^7.11.0"
+  }
+}
