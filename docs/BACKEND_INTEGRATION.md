@@ -59,7 +59,7 @@ prices move fastest.
 
 ```
 [ Pyth: post price update        ]  ← from Hermes
-[ Switchboard: pull feed update  ]  ← 1–2 instructions
+[ Switchboard: pull feed update  ]  ← ONE feed only — see §9
 [ take_loan / withdraw_collateral / liquidate / write_off_loan ]
 ```
 
@@ -67,8 +67,15 @@ Do **not** refresh in a preceding transaction and borrow in the next. It works m
 time and fails intermittently with `StalePrice` (6005) under load or congestion — the worst
 kind of bug to debug in production.
 
-**Priced instructions** (need both oracles): `take_loan`, `withdraw_collateral`, `liquidate`,
-`write_off_loan`, and `revoke_promo` when the position has a live loan.
+**Exception — two Switchboard feeds.** Only one Switchboard update fits in a transaction (§9). With
+the NGN feed *and* a Switchboard-priced collateral, the NGN feed has to be refreshed in a
+transaction of its own immediately before; bundle the collateral feed, and rebuild both on
+`StalePrice`. That is the shape the HODL backend ships.
+
+**Priced instructions** (need both oracles): `take_loan`, `liquidate`, `write_off_loan`,
+`withdraw_collateral` **only while the position has an active loan** (with none, pass `market` and
+`ngn_feed` as `None` and no remaining accounts), and `revoke_promo` when the position has a live
+loan.
 
 **Unpriced** (no oracle accounts needed): `deposit_liquidity`, `withdraw_liquidity`,
 `open_position`, `close_position`, `deposit_collateral`, `repay_loan`, plus the whole admin
@@ -138,6 +145,7 @@ Anchor custom errors are `6000 + variant position`. Full list in the IDL's `erro
 | code | name | what your backend should do |
 |---|---|---|
 | 6000 | `NotWhitelisted` | wallet needs `whitelist` first — surface as an onboarding step, not an error |
+| 6001 | `Blacklisted` | wallet is blocked; do not retry, route to support |
 | 6002 | `Unauthorized` | signer is not the role the instruction requires |
 | 6003 | `MarketPaused` | guardian paused it; retry later, do not loop |
 | 6005 | `StalePrice` | **refresh the oracles and rebuild the transaction**, do not just retry |
@@ -145,8 +153,14 @@ Anchor custom errors are `6000 + variant position`. Full list in the IDL's `erro
 | 6010 | `InvalidParameters` | admin params out of bounds (e.g. `max_price_age_seconds > 60`) |
 | 6011 | `Unhealthy` | the borrow would breach LTV — show the user their limit |
 | 6013 | `UtilizationCapExceeded` | market is out of lendable cash; surface, do not retry |
+| 6014 | `InsufficientCash` | vault holds less cash than the loan; same handling as 6013. When bracketing a borrow limit, a thin pool reports this (or 6013) **before** `Unhealthy`, so a bisection measures the pool, not the collateral |
 | 6019 | `AmountTooSmall` | below `min_loan_amount` (currently 1,000 cNGN) |
+| 6021 | `RepaymentBelowInterest` | a repayment must cover interest + penalty due; tell the user the minimum |
 | 6035 | `MathOverflow` | should not happen; log with the full instruction for investigation |
+| 6037 | `InsufficientCollateral` | withdrawing more than the slot holds |
+
+Not ours but you will see it: **6056 `ChecksumMismatch`** from the Switchboard program
+(`Aio4ga…`) means a second feed update was put in the same transaction — see §9.
 
 `6007` on **every** priced instruction while deposits still succeed is the signature of a
 binary built for the wrong cluster. Check the build flags before debugging anything else.
@@ -254,3 +268,55 @@ tx 2  [compute budget][secp (collateral)][submit collateral][take_loan]  sponsor
 
 The collateral price is structurally fresh. NGN is one transaction older — seconds, against a
 150-slot window — and on `StalePrice` the backend rebuilds both.
+
+---
+
+## 10. Everything else the HODL backend learned wiring this up (devnet, 2026-09-25)
+
+Reference implementation: `localised-backend` `src/loans/` (`loans-chain.service.ts` for the
+transaction plumbing, `loans.lib.ts` for the pure maths and the secp patch).
+
+**Signing and fees.** Every instruction a user signs has a separate fee/rent payer except where the
+user *is* the payer: `open_position` takes `payer` distinct from `owner`, so a sponsor can open a
+position for a wallet holding no SOL. Put the sponsor first as fee payer, have the owner sign, and
+have the sponsor sign last. `repay_loan`'s `payer` is the cNGN source and must be the signer whose
+token account pays.
+
+**`withdraw_collateral` prices the position *after* the withdrawal.** The handler decrements the
+slot before `load_health`, so the remaining accounts must describe the post-withdrawal slots — a
+slot drained to zero is skipped. Withdrawing everything while a loan is open therefore leaves
+nothing to price and can never pass; refuse it off-chain with "repay first".
+
+**`repay_loan` takes `min(amount, total owed)`** and requires `amount ≥ interest + penalty`. Interest
+accrues every second between reading the position and landing, so for a full repayment send a
+little more than the balance you read (two minutes of interest is plenty) — the program charges
+the exact amount.
+
+**Reading a Switchboard price off-chain the way the program does.** `PullFeedAccountData` holds the
+aggregated `CurrentResult` at byte **2264** (located against a live devnet feed): `value` i128 at
++0, `num_samples` u8 at +96, `slot` u64 at +104. `value` is scaled by 1e18. Use this for display and
+borrow-limit estimates so they match what the program enforces.
+
+**Crossbar.**
+- Use `fetchSolanaUpdates(network, [feed], payer, numSignatures)` — one feed per call. `fetchUpdateIx`
+  also calls `/gateways`, which a self-hosted Crossbar does not serve.
+- A fetch takes ~3–10 s. Fetch the bundled collateral update *while* the NGN crank lands, not after;
+  that cut a borrow from ~37 s to ~15 s end to end.
+- The instructions come back built against Crossbar's own copy of `@solana/web3.js`; re-wrap them in
+  your own `TransactionInstruction`s if your versions differ.
+
+**The lookup table drifts.** Which oracles answer — and so which oracle accounts a pull names —
+changes between fetches. Keep the table, and before each borrow extend it with any non-signer,
+non-program key it lacks. An extended table is usable only from the next slot; wait for it.
+
+**ScaledUiAmount.** The program moves raw units; people think in display units
+(`raw × multiplier / 10^decimals`). With a multiplier like 1.4861347 no raw amount maps to a round
+display number, and flooring in both directions turns "deposit 2" into `1.999999999`. Round to the
+nearest raw unit on the way in, clamp to the balance actually held, and round display output. RPC
+`jsonParsed` token balances (`uiAmountString`) already apply the multiplier.
+
+**cNGN on devnet is Token-2022** (`GqKF9H…`), so `take_loan`/`repay_loan` pass the Token-2022
+program and cNGN associated token accounts are Token-2022 ATAs.
+
+**RPC.** A single borrow makes ~20 reads; the public devnet endpoint starts returning 429 partway
+through. Use a keyed provider.

@@ -41,9 +41,9 @@ credit a position more than the shared per-mint vault received.
 anything. Bracketing does:
 
 ```
-2 raw shares × 1.4861347 = 2.9722694 display × $1023.6165 = $3,042.56
-at 50% LTV                                                = $1,521.28
-at $0.000753652729/NGN                                    ≈ 2,018,575 cNGN
+2 raw shares × 1.4861347 = 2.9722694 display × $1023.6165 = $3,042.46
+at 50% LTV                                                = $1,521.23
+at $0.000753652729/NGN                                    ≈ 2,018,479 cNGN
 
 2,500,000 cNGN  ->  Unhealthy (6011)
 2,000,000 cNGN  ->  OK
