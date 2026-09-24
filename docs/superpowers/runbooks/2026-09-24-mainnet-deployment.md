@@ -13,24 +13,18 @@ code quality.
 
 ## Before anything: four decisions
 
-### D1. Which program id? — **1 minute, blocks the build**
+### D1. Program id — **DONE**
 
-`declare_id!` for the non-devnet build is `J9sKAhm2EhdJQ3bHeP2KUCxqZ4cYdBc65C3RDr4JjGEd`.
-**No keypair for it exists on this machine**, and nothing is deployed at that address on
-mainnet. So either:
+The previously declared `J9sKAhm2EhdJQ3bHeP2KUCxqZ4cYdBc65C3RDr4JjGEd` had no keypair
+anywhere and nothing was ever deployed at it, so it was unusable. Replaced:
 
-- someone produces that private key from wherever it was reserved, or
-- generate a fresh one and update the non-devnet arm of `declare_id!` in
-  `programs/hodl_loans/src/lib.rs`.
-
-```bash
-solana-keygen new -o ~/.config/solana/hodl_loans-mainnet.json   # NOT in the repo
-solana-keygen pubkey ~/.config/solana/hodl_loans-mainnet.json
+```
+mainnet program id  5t7smXPGCvTMXYUAJ2uU4Zk4uPggkN7KdanoywHrveMd
+keypair             ~/.config/solana/hodl_loans-mainnet.json   (outside the repo)
 ```
 
-A pubkey cannot be reverse-engineered into a keypair, so if nobody has `J9sKAh…`, option two
-is the only one. **Back the chosen keypair up off this machine before deploying** — losing it
-means the program can never be upgraded.
+> **Back that keypair up off this machine before deploying.** It is the only key that can
+> ever upgrade the program, and `target/`-adjacent files are not backed up by anything.
 
 ### D2. Pin the collateral price account — **security-relevant, do not skip**
 
@@ -42,8 +36,24 @@ On mainnet that is a real value leak — a borrower shops the best SOL price in 
 window and borrows more than they should.
 
 **Mainnet Pyth is maintained.** Sampled just now, `7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE`
-cycled 14s → 42s → 55s old at $114.81. So **pin it**: set `price_account` to that address in
-`list_collateral`.
+cycled 14s → 42s → 55s old at $114.81. So **pin it**.
+
+**DONE** — `setup-cli` now pins automatically off devnet. It has its own `devnet` feature
+forwarding to `hodl_loans/devnet`, so:
+
+```bash
+cargo run --bin setup-cli                       # devnet: devnet ids, UNPINNED
+cargo run --no-default-features --bin setup-cli # mainnet: mainnet ids, PINNED
+```
+
+Check which you built before running anything against real money:
+
+```bash
+cargo run --quiet --no-default-features --bin whoami
+#   program id     5t7smXPGCvTMXYUAJ2uU4Zk4uPggkN7KdanoywHrveMd
+#   switchboard    SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv
+#   devnet feature false
+```
 
 One caveat that follows: 55s against a 60s bound is thin. Under congestion you will see
 occasional `StalePrice` (6005). Either post your own Hermes update in the transaction (needs

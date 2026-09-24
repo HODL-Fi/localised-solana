@@ -7,8 +7,15 @@ publish = false
 # One-shot devnet setup driver. Deliberately NOT a workspace member: it pulls the
 # full solana-client tree, which has no business in the program's dependency graph
 # or its build times. Run it from this directory.
+# Default build targets DEVNET. Build with --no-default-features for mainnet: that flips
+# hodl_loans::ID to the mainnet program id AND makes the driver pin the collateral price
+# account, which is the correct choice off devnet.
+[features]
+default = ["devnet"]
+devnet = ["hodl_loans/devnet"]
+
 [dependencies]
-hodl_loans = { path = "../programs/hodl_loans", features = ["devnet", "no-entrypoint"] }
+hodl_loans = { path = "../programs/hodl_loans", features = ["no-entrypoint"] }
 anchor-lang = "1.2.0"
 anchor-spl = "1.2.0"
 solana-client = "3"

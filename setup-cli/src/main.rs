@@ -19,7 +19,31 @@ use solana_sdk::{
 };
 use std::str::FromStr;
 
-const RPC: &str = "https://api.devnet.solana.com";
+/// Devnet by default; set RPC_URL to point elsewhere. The binary must be built with the
+/// feature matching the cluster (`--features devnet` for devnet), because hodl_loans::ID is
+/// compile-time — a mismatch is caught by Anchor's entrypoint as error 4100.
+fn rpc_url() -> String {
+    std::env::var("RPC_URL").unwrap_or_else(|_| "https://api.devnet.solana.com".into())
+}
+
+/// Pyth's sponsored SOL/USD price account. Same address on devnet and mainnet — the
+/// push-oracle program id is identical on both, so the PDA is too. Only the update cadence
+/// differs, and that difference decides whether to pin (see `pin_price_account`).
+const PYTH_SOL_USD: &str = "7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE";
+
+/// Pin the collateral to a specific price account, or leave it unpinned.
+///
+/// `state/collateral.rs:26` spells out the cost of unpinned: the caller may pick the most
+/// favourable update inside `max_price_age_seconds`. On mainnet that is a value leak — a
+/// borrower shops the best price in a 60s window and over-borrows — so PIN there.
+///
+/// Devnet stays unpinned because Pyth's sponsored devnet account is barely maintained
+/// (measured climbing past 180s stale against a 60s bound); pinning it there makes every
+/// priced call fail. Unpinned lets a client post its own fresh update instead.
+fn pin_price_account() -> bool {
+    // Default: pin unless this is explicitly a devnet build.
+    !cfg!(feature = "devnet") || std::env::var("PIN_PRICE").is_ok()
+}
 const ONE: u64 = 1_000_000; // both mints are 6-decimal
 
 fn pda(seeds: &[&[u8]]) -> Pubkey {
@@ -32,7 +56,7 @@ fn ix<D: InstructionData, A: ToAccountMetas>(data: D, accounts: A) -> Instructio
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let kp_path = std::env::var("HOME")? + "/.config/solana/id.json";
     let admin = read_keypair_file(&kp_path).map_err(|e| format!("{kp_path}: {e}"))?;
-    let rpc = RpcClient::new_with_commitment(RPC.to_string(), CommitmentConfig::confirmed());
+    let rpc = RpcClient::new_with_commitment(rpc_url(), CommitmentConfig::confirmed());
 
     let cngn = Pubkey::from_str(&std::env::var("CNGN_MINT")?)?;
     // Listed in a later pass, once this one is confirmed on-chain.
@@ -228,7 +252,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         hodl_loans::instruction::ListCollateral {
             params: hodl_loans::CollateralParams {
                 pyth_feed_id: sol_usd_feed,
-                price_account: Pubkey::default(),
+                price_account: if pin_price_account() {
+                    Pubkey::from_str(PYTH_SOL_USD)?
+                } else {
+                    Pubkey::default()
+                },
                 max_price_age_seconds: 60,
                 max_conf_bps: 200,
                 ltv_bps: 7_000,
@@ -249,7 +277,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             system_program: system_program::ID,
         },
     )])?;
-    println!("  wSOL collateral {wsol_collateral}");
+    println!(
+        "  wSOL collateral {wsol_collateral}  ({})",
+        if pin_price_account() { "PINNED to the Pyth SOL/USD account" } else { "unpinned" }
+    );
 
     println!("\ndone.");
     println!("  config     {config}");

@@ -27,11 +27,19 @@ pub use state::*;
 // (`DeclaredProgramIdMismatch`) and does nothing else. The cost is a wasted deploy, not a
 // debugging maze.
 //
-// The devnet keypair lives at `~/.config/solana/hodl_loans-devnet.json` — outside the repo,
-// because `target/` is gitignored AND wiped by `cargo clean`, and losing a program keypair
-// means losing the ability to upgrade that deployment. Back it up.
+// Keypairs live OUTSIDE the repo, in ~/.config/solana/:
+//   mainnet  hodl_loans-mainnet.json  -> 5t7smXPGCvTMXYUAJ2uU4Zk4uPggkN7KdanoywHrveMd
+//   devnet   hodl_loans-devnet.json   -> q33KxkuB2ntHSBwPnuFGpkiCxxEmmxsAgYAM6Gjx2SN
+//
+// The mainnet id was regenerated on 2026-09-24: the previously declared
+// J9sKAhm2EhdJQ3bHeP2KUCxqZ4cYdBc65C3RDr4JjGEd had no keypair anywhere and nothing was ever
+// deployed at it, so it was unusable. Nothing is lost by replacing it.
+//
+// They are outside the repo because `target/` is gitignored AND wiped by `cargo clean`,
+// and losing a program keypair means losing the ability to upgrade that deployment.
+// Back them up.
 #[cfg(not(feature = "devnet"))]
-declare_id!("J9sKAhm2EhdJQ3bHeP2KUCxqZ4cYdBc65C3RDr4JjGEd");
+declare_id!("5t7smXPGCvTMXYUAJ2uU4Zk4uPggkN7KdanoywHrveMd");
 #[cfg(feature = "devnet")]
 declare_id!("q33KxkuB2ntHSBwPnuFGpkiCxxEmmxsAgYAM6Gjx2SN");
 
@@ -242,7 +250,7 @@ mod tests {
     /// runbook is what catches that, by hashing both binaries before the deploy.
     #[test]
     fn the_declared_program_id_matches_the_build() {
-        let mainnet: Pubkey = "J9sKAhm2EhdJQ3bHeP2KUCxqZ4cYdBc65C3RDr4JjGEd".parse().unwrap();
+        let mainnet: Pubkey = "5t7smXPGCvTMXYUAJ2uU4Zk4uPggkN7KdanoywHrveMd".parse().unwrap();
         let devnet: Pubkey = "q33KxkuB2ntHSBwPnuFGpkiCxxEmmxsAgYAM6Gjx2SN".parse().unwrap();
         assert_ne!(mainnet, devnet, "the two arms must be distinct addresses");
         assert_eq!(ID, if cfg!(feature = "devnet") { devnet } else { mainnet });
