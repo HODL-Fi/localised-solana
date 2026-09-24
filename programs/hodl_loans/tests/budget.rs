@@ -376,6 +376,54 @@ fn an_all_xstock_position_stays_under_the_default_compute_budget() {
     assert!(size > PACKET_DATA_SIZE, "8 xStock slots now fit a legacy transaction ({size} bytes)");
 }
 
+/// The same position priced by Switchboard instead of Pyth — now the most expensive health check
+/// the program can run, because a Switchboard read also compares the feed's 32-byte `feed_hash`
+/// against the asset's, on top of everything the xStock path already pays for.
+///
+/// Measured against its Pyth twin above rather than asserted in isolation: what a backend needs is
+/// the delta, since that is what decides whether a Switchboard-priced position still fits the
+/// default 200,000 CU budget.
+#[test]
+fn an_all_switchboard_xstock_position_stays_under_the_default_compute_budget() {
+    let (mut env, setup) = Env::loan_ready();
+    let borrower = env.new_borrower();
+    let owner = borrower.pubkey();
+    let borrower_cngn = env.create_token_account(&setup.cngn, &owner);
+    let setup = LoanSetup { borrower, borrower_cngn, ..setup };
+
+    // 8 slots, each an xStock priced by its own Switchboard feed at $200 a display share.
+    for _ in 0..8 {
+        let mint = env.list_switchboard_xstock(XSTOCK_DECIMALS, 200_000_000_000_000_000_000);
+        env.deposit_collateral(&setup.borrower, &mint, 8 * ONE_XSTOCK);
+    }
+    // Same account count as the Pyth xStock case: the price account is one account either way.
+    assert_eq!(env.price_accounts(&owner).len(), 24);
+
+    for i in 0..9 {
+        let prices = env.price_accounts(&owner);
+        let ixn = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 1_000 * ONE_CNGN, 30 * DAY, prices);
+        send_cu(&mut env.svm, &[ixn], &[&env.admin, &setup.borrower.key]).unwrap_or_else(|e| panic!("take_loan #{i} failed: {e}"));
+    }
+
+    // 10th (last) loan slot, same shape as the Pyth case above. **Measured 94,101-94,118 CU over
+    // 8 runs. Quote the range, not a sample.**
+    //
+    // That is 2,300-2,350 CU BELOW the Pyth xStock range (96,407-96,455), which is the opposite
+    // of what the extra `feed_hash` comparison suggests. The reader is why: the Switchboard path
+    // copies 128 bytes of `CurrentResult` out by offset, while the Pyth path runs
+    // `PriceUpdateV2::try_deserialize` over the whole account. Eight slots of that difference
+    // more than pays for eight 32-byte hash compares.
+    //
+    // Do not read this as "Switchboard is cheaper than Pyth" in general — it is cheaper *here*,
+    // at eight slots, with this fixture. A single devnet `take_loan` measured the Switchboard
+    // xStock path at 38,061 CU against wSOL's 36,072, but those differ by a mint unpack
+    // (`XStock` vs `Standard`), not by price source, so that pair says nothing about the reader.
+    let prices = env.price_accounts(&owner);
+    let ixn = take_loan_ix(&owner, &setup.cngn, &setup.borrower_cngn, 1_000 * ONE_CNGN, 30 * DAY, prices);
+    let cu = send_cu(&mut env.svm, &[ixn], &[&env.admin, &setup.borrower.key]).unwrap();
+    assert!(cu < 115_000, "take_loan at 8 Switchboard xStock slots / 9 existing loans used {cu} CU");
+}
+
 /// The most expensive `liquidate` call the program can be asked to run: 8 xStock collateral
 /// slots (three accounts and a mint unpack each, instead of two accounts and none) combined
 /// with 10 active overdue loans AND a promo forfeit. xStocks (Plan 4) and the forfeit path

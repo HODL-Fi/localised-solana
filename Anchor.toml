@@ -1,0 +1,32 @@
+# Present so `anchor idl build` has a workspace to stand in — it refuses with "Not in workspace"
+# otherwise, which is why `idl/hodl_loans-devnet.json` had no recorded way to be regenerated and
+# silently went stale when `CollateralAsset` gained `price_source`.
+#
+# Nothing else goes through Anchor. Every build and deploy uses `cargo build-sbf --tools-version
+# v1.52` directly (see scripts/test.sh), and the tests are plain `cargo test` against LiteSVM, not
+# an Anchor test runner. Do not add `anchor build` to any workflow: it would not pass
+# `--tools-version v1.52`.
+#
+# Regenerate both IDLs after any change to an instruction, account or error:
+#
+#   anchor idl build -- --features devnet > idl/hodl_loans-devnet.json
+#   anchor idl build                      > idl/hodl_loans-mainnet.json
+#
+# The feature flag matters: it selects which program id `declare_id!` bakes into the `address`
+# field, and a backend pointed at the wrong one fails every instruction.
+
+[toolchain]
+anchor_version = "1.2.0"
+
+[programs.devnet]
+hodl_loans = "q33KxkuB2ntHSBwPnuFGpkiCxxEmmxsAgYAM6Gjx2SN"
+
+[programs.mainnet]
+hodl_loans = "5t7smXPGCvTMXYUAJ2uU4Zk4uPggkN7KdanoywHrveMd"
+
+[provider]
+cluster = "devnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "./scripts/test.sh"

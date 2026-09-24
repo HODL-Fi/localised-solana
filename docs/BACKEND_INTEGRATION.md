@@ -2,8 +2,25 @@
 
 For a backend that builds, signs and sends transactions to the HODL fixed-loans program.
 
-- **IDL:** `idl/hodl_loans-devnet.json` — 43 instructions, 9 account types, 43 errors, with
-  the devnet address baked in. Swap `address` for the mainnet program id when you deploy.
+- **IDL:** `idl/hodl_loans-devnet.json` and `idl/hodl_loans-mainnet.json` — 43 instructions,
+  9 account types, 56 types, 43 errors. Take the one for the cluster you are on; do not edit the
+  other. The two files are byte-identical apart from the program id, and the program id appears in
+  **two** places — the top-level `address`, and `initialize`'s `program` account, which is pinned to
+  it so the instruction can check the upgrade authority. An earlier version of this guide said to
+  swap `address`, which would have left the second one wrong.
+
+  Regenerate both after any change to an instruction, account or error (see `Anchor.toml`):
+
+  ```bash
+  anchor idl build -- --features devnet > idl/hodl_loans-devnet.json
+  anchor idl build                      > idl/hodl_loans-mainnet.json
+  ```
+
+  This matters more than it sounds. The IDL is how your client learns `CollateralAsset` has a
+  `price_source` at all. A client deserializing with a pre-`price_source` IDL still succeeds —
+  the account size did not change, the four new fields came out of `reserved` — and then treats
+  every asset as Pyth, sending a `PriceUpdateV2` where a Switchboard feed belongs and getting
+  `PriceAccountMismatch` (6007) on every priced instruction for that asset.
 - **Reference client:** `setup-cli/src/bin/` — Rust, but the account layouts are the same
   whatever language you build in. `take_loan.rs` is the one worth reading.
 - **Live devnet addresses:** `.devnet/addresses.env`.
@@ -153,11 +170,19 @@ Measured compute, for budgeting priority fees (`programs/hodl_loans/tests/budget
 
 | instruction | CU |
 |---|---|
-| `take_loan`, 8 slots / 9 existing loans | ~88,500 |
+| `take_loan`, 8 `Standard` slots / 9 existing loans | ~88,500 |
+| `take_loan`, 8 **Pyth** xStock slots / 9 existing loans | 96,407-96,455 |
+| `take_loan`, 8 **Switchboard** xStock slots / 9 existing loans | 94,101-94,118 |
 | `withdraw_collateral`, 8 slots / 10 loans | ~88,000 |
 | `liquidate` + forfeit, 8 slots | ~114,000 |
 | `repay_loan`, 10 loan slots | ~19,300 |
 | `set_promo_cap` | **2,634 per listed asset** |
+
+The price source barely moves compute, and what movement there is runs the *other* way from what
+you might guess: Switchboard comes in ~2,300 CU below Pyth at eight slots, because its reader
+copies 128 bytes of `CurrentResult` out by offset while Pyth runs a full `PriceUpdateV2`
+deserialization. Eight slots of that outweighs eight 32-byte `feed_hash` compares. Do not
+generalise it past eight slots — budget from the row you are actually in.
 
 `set_promo_cap` is the one to watch: past **74 listed assets** it exceeds the 200,000 default
 budget and needs an explicit `ComputeBudgetInstruction::set_compute_unit_limit`.
@@ -173,7 +198,12 @@ Mirrors `Env::initialized()` → `loan_ready()` in the test harness, which is th
 2. `create_market` per borrowable mint
 3. `create_promo_vault` — **required**: `take_loan`, `liquidate` and `write_off_loan` all name
    it, so a market without one cannot be borrowed against
-4. `list_collateral` per asset
+4. `list_collateral` per asset. For a Switchboard-priced asset the feed must exist first, because
+   `price_account` is mandatory on that path and the asset records the feed's `sb_feed_hash`.
+   Listing does not require the feed to be *working* — borrowing does. One trap worth inheriting:
+   a pull feed created with `min_responses` greater than its number of jobs can never reach quorum
+   and is permanently uncrankable, with no error at creation time. Set `min_responses ≤ jobs`; see
+   `.devnet/prestocks/README.md`.
 5. `whitelist` per wallet
 6. `deposit_liquidity` — lenders fund before anyone can borrow
 
@@ -190,3 +220,35 @@ implementation.
 
 One correctness note the test suite pins: `LoanRepaid` carries **both** `owner` and `payer`,
 and they differ when a third party repays. Do not attribute repayments to `owner`.
+
+---
+
+## 9. Bundling Switchboard updates — measured on devnet 2026-09-25
+
+§1 says to put every oracle update in the same transaction as the priced instruction. With two
+Switchboard feeds (NGN + a Switchboard-priced collateral) that is **not possible** as the SDK ships:
+
+1. **One secp-verified feed update per transaction.** `PullFeedSubmitResponseConsensus` checks its
+   signatures against the *first* secp256k1 instruction in the transaction. Two updates in one
+   transaction: the first submit passes, the second always fails `ChecksumMismatch` (6056),
+   whichever feed is second.
+2. **Switchboard hardcodes the secp instruction index to 0.** Crossbar's `pullIxns[0]` carries
+   `signature_instruction_index = eth_address_instruction_index = message_instruction_index = 0`
+   for every signature. Anything ahead of it (a compute-budget instruction) makes the precompile
+   fail with custom error 2. Rewrite the three index bytes of each 11-byte offset record
+   (`data[1 + 11*i + {2, 5, 10}]`) to the secp instruction's real position.
+3. **`ngn_min_samples` is 3 on the devnet market**, so the NGN crank needs `numSignatures >= 3`;
+   two signatures lands a 2-sample result and `take_loan` fails `StalePrice` (6005) on the sample
+   check, not the slot check.
+4. **Size.** Collateral pull (3 signatures) + `take_loan` is 850 bytes with an address lookup
+   table holding the non-signer, non-program accounts — it does not fit without one.
+
+The shape that works (landed `3hBBs2cz…` on devnet):
+
+```
+tx 1  [compute budget][secp (NGN, 3 sigs)][submit NGN]                   sponsor signs
+tx 2  [compute budget][secp (collateral)][submit collateral][take_loan]  sponsor + owner sign, v0 + ALT
+```
+
+The collateral price is structurally fresh. NGN is one transaction older — seconds, against a
+150-slot window — and on `StalePrice` the backend rebuilds both.

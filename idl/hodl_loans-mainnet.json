@@ -1,5 +1,5 @@
 {
-  "address": "q33KxkuB2ntHSBwPnuFGpkiCxxEmmxsAgYAM6Gjx2SN",
+  "address": "5t7smXPGCvTMXYUAJ2uU4Zk4uPggkN7KdanoywHrveMd",
   "metadata": {
     "name": "hodl_loans",
     "version": "0.1.0",
@@ -1391,7 +1391,7 @@
         },
         {
           "name": "program",
-          "address": "q33KxkuB2ntHSBwPnuFGpkiCxxEmmxsAgYAM6Gjx2SN"
+          "address": "5t7smXPGCvTMXYUAJ2uU4Zk4uPggkN7KdanoywHrveMd"
         },
         {
           "name": "program_data"
