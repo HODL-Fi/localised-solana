@@ -6,7 +6,7 @@ use crate::errors::HodlError;
 use crate::events::{
     CollateralBorrowPauseSet, CollateralDelisted, CollateralListed, CollateralParamsUpdated, CollateralPauseSet,
 };
-use crate::state::{CollateralAsset, CollateralKind, CollateralParams, Config};
+use crate::state::{CollateralAsset, CollateralKind, CollateralParams, Config, PriceSource};
 use crate::token::extensions::require_collateral_mint_on_entry;
 
 #[derive(Accounts)]
@@ -120,7 +120,14 @@ pub fn handle_list_collateral(
         paused: false,
         borrow_paused: false,
         max_multiplier: 0,
-        reserved: [0; 79],
+        // Every parameter field is zeroed here and then overwritten by `apply_params`, which
+        // `validate` has already vetted. `PriceSource::Pyth` is the zero discriminant, so this
+        // initialiser needs no special case for it.
+        price_source: PriceSource::Pyth,
+        sb_feed_hash: [0; 32],
+        sb_max_stale_slots: 0,
+        sb_min_samples: 0,
+        reserved: [0; 34],
     };
     asset.apply_params(&params);
     ctx.accounts.collateral.set_inner(asset);

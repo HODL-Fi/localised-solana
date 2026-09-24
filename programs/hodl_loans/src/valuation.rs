@@ -6,9 +6,9 @@ use crate::math::health::{compute_health, CollateralValue, Health};
 use crate::math::price::UsdPrice;
 use crate::math::loan::loan_balance;
 use crate::oracle::pyth::read_pyth_price;
-use crate::oracle::switchboard::read_ngn_price;
+use crate::oracle::switchboard::{read_collateral_price, read_ngn_price};
 use crate::constants::{COLLATERAL_SEED, MULTIPLIER_ONE};
-use crate::state::{CollateralAsset, CollateralKind, Market, Position};
+use crate::state::{CollateralAsset, CollateralKind, Market, Position, PriceSource};
 use crate::token::scaled_ui::read_xstock_multiplier;
 
 /// Accounts per used collateral slot in `remaining_accounts`: `(CollateralAsset, PriceUpdateV2)`
@@ -63,13 +63,21 @@ pub fn load_collateral_values(
         if asset.price_account != Pubkey::default() {
             require_keys_eq!(price_info.key(), asset.price_account, HodlError::PriceAccountMismatch);
         }
-        let price = read_pyth_price(
-            price_info,
-            &asset.pyth_feed_id,
-            asset.max_price_age_seconds,
-            asset.max_conf_bps,
-            clock,
-        )?;
+        // The account at `cursor + 1` is whatever this asset's source expects — a Pyth
+        // `PriceUpdateV2` or a Switchboard `PullFeedAccountData`. Each reader checks the owning
+        // program, so supplying the wrong shape fails with `PriceAccountMismatch` rather than
+        // reading one layout as the other. The stride is unaffected: a price account is one
+        // account either way.
+        let price = match asset.price_source {
+            PriceSource::Pyth => read_pyth_price(
+                price_info,
+                &asset.pyth_feed_id,
+                asset.max_price_age_seconds,
+                asset.max_conf_bps,
+                clock,
+            )?,
+            PriceSource::SwitchboardOnDemand => read_collateral_price(price_info, &asset, clock)?,
+        };
         // An xStock passes its mint too: the multiplier its issuer applies to balances lives
         // there, and Pyth prices the display token, not the raw unit.
         // The match is exhaustive, so a third `CollateralKind` has to state its own stride and

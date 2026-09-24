@@ -172,6 +172,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 liquidation_bonus_bps: 500,
                 deposit_cap: u64::MAX,
                 max_multiplier: 0,
+                // Pyth-priced. A Switchboard-priced asset sets price_source and the three
+                // sb_* fields instead; see list_prestocks.
+                price_source: hodl_loans::PriceSource::Pyth,
+                sb_feed_hash: [0u8; 32],
+                sb_max_stale_slots: 0,
+                sb_min_samples: 0,
             },
             kind: hodl_loans::CollateralKind::Standard,
         },
@@ -264,6 +270,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 liquidation_bonus_bps: 500,
                 deposit_cap: u64::MAX,
                 max_multiplier: 0,
+                // Pyth-priced. A Switchboard-priced asset sets price_source and the three
+                // sb_* fields instead; see list_prestocks.
+                price_source: hodl_loans::PriceSource::Pyth,
+                sb_feed_hash: [0u8; 32],
+                sb_max_stale_slots: 0,
+                sb_min_samples: 0,
             },
             kind: hodl_loans::CollateralKind::Standard,
         },

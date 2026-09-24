@@ -193,6 +193,17 @@ impl Env {
         self.svm.set_sysvar(&clock);
     }
 
+    /// Advances the slot without moving the wall clock.
+    ///
+    /// The two collateral price sources are bounded in different units — Pyth in seconds,
+    /// Switchboard in slots — so `warp_seconds` cannot age a Switchboard result and this cannot
+    /// age a Pyth one. That asymmetry is real on chain, not a harness artefact.
+    pub fn warp_slots(&mut self, slots: u64) {
+        let mut clock: Clock = self.svm.get_sysvar();
+        clock.slot += slots;
+        self.svm.set_sysvar(&clock);
+    }
+
     pub fn fetch<T: AccountDeserialize>(&self, key: &Pubkey) -> T {
         let account = self.svm.get_account(key).expect("account exists");
         T::try_deserialize(&mut account.data.as_slice()).expect("account deserializes")
@@ -639,6 +650,30 @@ pub fn default_collateral_params(mint: &Pubkey) -> hodl_loans::CollateralParams 
         liquidation_bonus_bps: 500,
         deposit_cap: u64::MAX,
         max_multiplier: 0,
+        price_source: hodl_loans::PriceSource::Pyth,
+        sb_feed_hash: [0; 32],
+        sb_max_stale_slots: 0,
+        sb_min_samples: 0,
+    }
+}
+
+/// xStock launch values priced by a Switchboard On-Demand pull feed instead of Pyth: the shape
+/// a PreStocks token needs, because Pyth publishes no on-chain feed for a private-company SPV
+/// mark. The account must be pinned and the job hash recorded — `CollateralParams::validate`
+/// refuses the listing otherwise.
+pub fn switchboard_collateral_params(mint: &Pubkey) -> hodl_loans::CollateralParams {
+    hodl_loans::CollateralParams {
+        price_source: hodl_loans::PriceSource::SwitchboardOnDemand,
+        pyth_feed_id: [0; 32],
+        max_price_age_seconds: 0,
+        price_account: sb_feed_account(mint),
+        sb_feed_hash: sb_feed_hash(mint),
+        sb_max_stale_slots: 150,
+        sb_min_samples: 3,
+        ltv_bps: 5_000,
+        liquidation_threshold_bps: 7_500,
+        liquidation_bonus_bps: 1_000,
+        ..default_collateral_params(mint)
     }
 }
 
@@ -920,6 +955,44 @@ pub fn ngn_feed() -> Pubkey {
     default_market_params().ngn_feed
 }
 
+/// Where tests store a mint's Switchboard `PullFeedAccountData`.
+pub fn sb_feed_account(mint: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[b"sbfeed", mint.as_ref()],
+        &hodl_loans::constants::SWITCHBOARD_ON_DEMAND_PID,
+    )
+    .0
+}
+
+/// The job hash a Switchboard-priced test asset is bound to: the mint's bytes inverted, so it is
+/// deterministic per mint and cannot be mistaken for `feed_id`, which is the mint's bytes as-is.
+/// A test that mixed the two up would pass for the wrong reason.
+pub fn sb_feed_hash(mint: &Pubkey) -> [u8; 32] {
+    let mut hash = mint.to_bytes();
+    hash.iter_mut().for_each(|byte| *byte = !*byte);
+    hash
+}
+
+/// `pull_feed_data` with the `feed_hash` set. Only the collateral path reads that field.
+pub fn pull_feed_data_hashed(
+    value: i128,
+    std_dev: i128,
+    slot: u64,
+    num_samples: u8,
+    feed_hash: [u8; 32],
+) -> Vec<u8> {
+    use switchboard_on_demand::{Discriminator, PullFeedAccountData};
+    let mut feed: PullFeedAccountData = bytemuck::Zeroable::zeroed();
+    feed.result.value = value;
+    feed.result.std_dev = std_dev;
+    feed.result.slot = slot;
+    feed.result.num_samples = num_samples;
+    feed.feed_hash = feed_hash;
+    let mut data = PullFeedAccountData::DISCRIMINATOR.to_vec();
+    data.extend_from_slice(bytemuck::bytes_of(&feed));
+    data
+}
+
 /// Raw Switchboard `PullFeedAccountData` with only the aggregated result set.
 pub fn pull_feed_data(value: i128, std_dev: i128, slot: u64, num_samples: u8) -> Vec<u8> {
     use switchboard_on_demand::{Discriminator, PullFeedAccountData};
@@ -1037,6 +1110,35 @@ impl Env {
         self.set_account_data(&ngn_feed(), &hodl_loans::constants::SWITCHBOARD_ON_DEMAND_PID, pull_feed_data(value, std_dev, slot, 5));
     }
 
+    /// Writes a Switchboard result for a Switchboard-priced collateral asset at the current
+    /// slot with 5 samples, bound to the job hash the asset was listed with. `value` is
+    /// 18-decimal, as Switchboard reports.
+    pub fn set_switchboard_price(&mut self, mint: &Pubkey, value: i128, std_dev: i128) {
+        self.write_switchboard_feed(mint, value, std_dev, 5, sb_feed_hash(mint));
+    }
+
+    /// The same result, bound to a **different** job — what a feed authority repointing a pinned
+    /// account produces. Address, owner and discriminator all still check out.
+    pub fn repoint_switchboard_feed(&mut self, mint: &Pubkey, value: i128, std_dev: i128) {
+        self.write_switchboard_feed(mint, value, std_dev, 5, [0xEE; 32]);
+    }
+
+    pub fn write_switchboard_feed(
+        &mut self,
+        mint: &Pubkey,
+        value: i128,
+        std_dev: i128,
+        num_samples: u8,
+        feed_hash: [u8; 32],
+    ) {
+        let slot = self.svm.get_sysvar::<Clock>().slot;
+        self.set_account_data(
+            &sb_feed_account(mint),
+            &hodl_loans::constants::SWITCHBOARD_ON_DEMAND_PID,
+            pull_feed_data_hashed(value, std_dev, slot, num_samples, feed_hash),
+        );
+    }
+
     /// The same NGN feed bytes `set_ngn_price` writes, but owned by an account of the
     /// caller's choosing. Only a test that wants the owner check to fire has any use for this.
     pub fn set_ngn_price_owned_by(&mut self, owner: &Pubkey, value: i128, std_dev: i128) {
@@ -1059,8 +1161,18 @@ impl Env {
     /// One listed asset's health accounts: `(CollateralAsset, PriceUpdateV2)`, plus the mint
     /// when the asset is an `XStock` (its multiplier lives there).
     pub fn collateral_accounts(&self, mint: &Pubkey) -> Vec<AccountMeta> {
-        let mut metas = price_pairs(&[*mint]);
-        if self.collateral(mint).kind == hodl_loans::CollateralKind::XStock {
+        let asset = self.collateral(mint);
+        // The price account is whatever this asset's source expects. The stride does not change
+        // — one price account either way — only which account goes in the slot.
+        let price = match asset.price_source {
+            hodl_loans::PriceSource::Pyth => pyth_account(mint),
+            hodl_loans::PriceSource::SwitchboardOnDemand => sb_feed_account(mint),
+        };
+        let mut metas = vec![
+            AccountMeta::new_readonly(collateral_pda(mint), false),
+            AccountMeta::new_readonly(price, false),
+        ];
+        if asset.kind == hodl_loans::CollateralKind::XStock {
             metas.push(AccountMeta::new_readonly(*mint, false));
         }
         metas
@@ -1477,6 +1589,23 @@ impl Env {
         );
         send(&mut self.svm, &[instruction], &[&self.admin]).expect("list xstock");
         self.set_pyth_price(&mint, dollars * ONE_DOLLAR, 0);
+        mint
+    }
+
+    /// A live-shaped xStock priced by a Switchboard pull feed rather than Pyth — a PreStocks
+    /// token's shape. `value` is 18-decimal USD per **display** token, which is what the
+    /// PreStocks API's `markPrice` is.
+    pub fn list_switchboard_xstock(&mut self, decimals: u8, value: i128) -> Pubkey {
+        let mint = self.create_mint(MintKind::XStock, decimals);
+        let instruction = list_collateral_ix(
+            &self.admin.pubkey(),
+            &mint,
+            &TOKEN_2022,
+            switchboard_collateral_params(&mint),
+            hodl_loans::CollateralKind::XStock,
+        );
+        send(&mut self.svm, &[instruction], &[&self.admin]).expect("list switchboard xstock");
+        self.set_switchboard_price(&mint, value, 0);
         mint
     }
 

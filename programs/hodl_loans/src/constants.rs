@@ -53,6 +53,17 @@ pub const MAX_COLLATERAL_DECIMALS: u8 = 12;
 /// the debt side of every health check and can drift further behind than the collateral feeds.
 pub const MAX_NGN_STALE_SLOTS: u64 = 150;
 
+/// Upper bound on `CollateralParams::sb_max_stale_slots` — the slot-denominated equivalent of
+/// `MAX_PRICE_AGE_SECONDS` for a collateral asset priced by a Switchboard On-Demand pull feed.
+///
+/// Switchboard's `CurrentResult` carries a `slot` and no timestamp, so a Switchboard-priced
+/// asset can only be bounded in slots. 150 slots is the same 60 seconds at the 400 ms target,
+/// which keeps the two collateral price sources equally strict on paper. They are not equally
+/// strict in practice: slots stretch to 400-650 ms under load, so a slot bound drifts further
+/// behind wall clock exactly when prices move fastest. That is the same trade
+/// `MAX_NGN_STALE_SLOTS` already takes for the debt side of every health check.
+pub const MAX_COLLATERAL_STALE_SLOTS: u64 = 150;
+
 /// Upper bound on `Config::collateral_count`, derived from `set_promo_cap`, the one
 /// instruction that must name **every** listed asset at once: its `remaining_accounts` count
 /// has to equal `collateral_count` exactly.
