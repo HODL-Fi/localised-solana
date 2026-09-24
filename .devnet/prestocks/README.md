@@ -114,10 +114,22 @@ PRESTOCKS_FEED_HASH=$OPENAI_FEED_HASH cargo run --quiet --bin list_prestocks
 cd ../.devnet/prestocks && node crank-feed.js $OPENAI_FEED
 ```
 
-For `take_loan`, the remaining accounts for this asset are **three**, because it is an `XStock`:
-`CollateralAsset` PDA, the **Switchboard feed** (not a Pyth account), then the **mint** for its
-multiplier. `setup-cli/src/bin/take_loan.rs` currently appends a Pyth pair for wSOL and needs the
-third account plus the feed substituted for a PreStocks position.
+```bash
+# 3. borrow, inside the window the crank just opened
+cd ../../setup-cli && cargo run --quiet --bin prestocks_loan
+```
+
+`prestocks_loan` uses a **dedicated borrower** (`.devnet/prestocks/borrower.json`, created on first
+run) rather than the admin wallet, because the admin's position already holds wSOL — a position
+holding two assets needs every one of their price accounts fresh in the same transaction, which
+here would mean Pyth SOL/USD *and* the PreStocks feed *and* NGN. Every step is idempotent, so a
+failed borrow retries without redoing the setup. It has not been run: it would spend devnet SOL
+that blocker 1 needs.
+
+Its remaining accounts are **three**, because the asset is an `XStock`: the `CollateralAsset` PDA,
+the **Switchboard feed** (not a Pyth account — the asset's `price_source` decides), then the
+**mint** for its multiplier. `setup-cli/src/bin/take_loan.rs` is the wSOL/Pyth equivalent and is
+unchanged.
 
 In production the pull instructions go **ahead of `take_loan` in the same transaction**, which
 makes freshness structural rather than a race against `sb_max_stale_slots` (150 slots, ~60s).
