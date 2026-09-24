@@ -148,9 +148,12 @@ Every account starts with `version: u8` and `bump: u8`, and ends with reserved p
 |---|---|
 | `mint`, `token_program`, `vault`, `decimals` | Collateral mint, program, custody vault (seeds `["collateral_vault", mint]`, owned by this PDA), decimals |
 | `kind` | `Standard` or `XStock` (enables Token-2022 extension checks and the scaled-UI multiplier) |
-| `pyth_feed_id: [u8; 32]` | Pyth feed |
-| `price_account` | The one Pyth price account accepted for this asset (a sponsored push feed). `Pubkey::default()` leaves it unpinned, accepting any verified update for the feed inside the age window |
-| `max_price_age_seconds`, `max_conf_bps` | Pyth read limits; the age may not exceed `MAX_PRICE_AGE_SECONDS` |
+| `price_source` | `Pyth` or `SwitchboardOnDemand`. `Pyth` is discriminant `0`, so assets listed before the field existed read as `Pyth` out of zeroed padding |
+| `pyth_feed_id: [u8; 32]` | Pyth feed. Zero on the Switchboard path |
+| `price_account` | The one price account accepted for this asset. On the Pyth path a sponsored push feed, and `Pubkey::default()` leaves it unpinned, accepting any verified update for the feed inside the age window. **Mandatory on the Switchboard path** |
+| `max_price_age_seconds`, `max_conf_bps` | Read limits. The age applies to Pyth only and may not exceed `MAX_PRICE_AGE_SECONDS`; the confidence bound applies to both sources |
+| `sb_feed_hash: [u8; 32]` | Switchboard only: the job definition the feed must be running, checked against `PullFeedAccountData.feed_hash` on every read. Zero on the Pyth path |
+| `sb_max_stale_slots`, `sb_min_samples` | Switchboard only: freshness in slots (at most `MAX_COLLATERAL_STALE_SLOTS`) and the submission quorum. Zero on the Pyth path |
 | `ltv_bps`, `liquidation_threshold_bps`, `liquidation_bonus_bps` | Risk parameters |
 | `deposit_cap`, `total_deposited` | Raw token amounts |
 | `paused` | Blocks new deposits of this asset |
@@ -195,7 +198,17 @@ Every account starts with `version: u8` and `bump: u8`, and ends with reserved p
 
 ### Price reads
 
-**Pyth (collateral):**
+A collateral asset names its own oracle in `price_source`. Both sources take exactly one price
+account, so the account count never changes; each reader checks the owning program, so supplying
+the wrong shape fails with `PriceAccountMismatch` rather than reading one layout as the other.
+
+Two sources exist because Pyth cannot price every asset the protocol wants to accept. It publishes
+no on-chain feed for a private-company SPV mark, and its sponsored equity feeds do not keep up with
+a 60-second ceiling at all — exchange-hours assets stop publishing at the close. A continuously
+marked asset read through a Switchboard job over the issuer's own endpoint fits the ceiling that
+Pyth equity feeds structurally cannot.
+
+**Pyth (collateral, `price_source: Pyth`):**
 - The account must be owned by the Pyth receiver program (`rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ`), and, when the asset pins one, be exactly `collateral.price_account`.
 - Pull updates are ephemeral accounts anyone may post, so without a pinned account the caller chooses which verified update inside `max_price_age_seconds` to present — the most favourable price in that window. Pinning removes the choice; `MAX_PRICE_AGE_SECONDS` bounds it for assets with no sponsored feed to pin.
 - **Liveness risk of a pinned feed.** A pinned `PriceUpdateV2` is a sponsored push account with a fixed write authority — a liquidator cannot refresh it directly. If the sponsor's crank stalls beyond `max_price_age_seconds`, every position holding that asset becomes un-liquidatable, and because `write_off_loan` prices the position the same way, the bad-debt escape hatch closes at the same time. The remedy is operational: `update_collateral_params` unpins the asset, through the admin multisig's timelock (§18).
@@ -203,8 +216,16 @@ Every account starts with `version: u8` and `bump: u8`, and ends with reserved p
 - Reject when `conf × BPS > price × max_conf_bps`.
 - Convert price and confidence to `USD_SCALE` using the feed exponent. **The price rounds down and the confidence rounds up**, and the asymmetry is deliberate: collateral counts at `price − conf` and debt at `price + conf`, so a confidence rounded down would value collateral too high *and* debt too low. Rounding the uncertainty up is the only direction conservative for both. The same rule applies to the Switchboard spread below. The exponent comes from the feed account, so the shift is computed with a checked add — an absurd exponent is `InvalidPrice`, not an aborted transaction.
 
+**Switchboard (collateral, `price_source: SwitchboardOnDemand`):**
+- The account address must equal `collateral.price_account`, which is **mandatory** on this path — unpinned is refused at `list_collateral`. Unpinned is coherent for Pyth because a `PriceUpdateV2` carries a verified feed id of its own; a `PullFeedAccountData` carries no such binding, so any account owned by the Switchboard program with the right discriminator would satisfy an unpinned read.
+- The account must be owned by `SWITCHBOARD_ON_DEMAND_PID` and carry the `PullFeedAccountData` discriminator and full length.
+- **`feed_hash` must equal `collateral.sb_feed_hash`.** The pin alone is not sufficient: a pull feed's `authority` may rewrite the account's `feed_hash`, repointing a pinned address from the job the asset was listed against to any other job, with address, owner and discriminator all still checking out. This check is what makes that fail instead of silently repricing the collateral. It is a genuine asymmetry with the NGN feed below, which is pinned by address only.
+- Read the aggregated `result`. Fail with `StalePrice` when `result.slot` is 0, older than `sb_max_stale_slots`, or has fewer than `sb_min_samples` samples. Require a positive value.
+- The spread is `result.std_dev`, bounded by the asset's `max_conf_bps` — the same field the Pyth path uses, so one asset's confidence policy reads the same whichever oracle prices it.
+- Freshness is denominated in **slots**, not seconds, because `CurrentResult` carries a slot and no timestamp. `MAX_COLLATERAL_STALE_SLOTS = 150` is the same 60 seconds as `MAX_PRICE_AGE_SECONDS` at the 400 ms target; under congestion slots run 400-650 ms, so the two sources are equally strict on paper and the slot bound drifts further behind wall clock in practice.
+
 **Switchboard (cNGN):**
-- The account address must equal `market.ngn_feed`, and its data must carry the `PullFeedAccountData` discriminator.
+- The account address must equal `market.ngn_feed`, and its data must carry the `PullFeedAccountData` discriminator. Unlike a Switchboard-priced collateral asset, the NGN feed is **not** hash-bound: the same repoint applies to it, but its job hash is not recorded on `Market`, so binding it is a migration rather than a code change.
 - Read the aggregated `result`. Fail with `StalePrice` when `result.slot` is 0, older than `ngn_max_stale_slots`, or has fewer than `ngn_min_samples` samples. Require a positive value.
 - The spread is `result.std_dev`. Reject when it exceeds `ngn_max_spread_bps` of the value.
 - Treat 1 cNGN as 1 NGN.
@@ -228,12 +249,15 @@ A `Standard` asset has multiplier 1.
 ### Price accounts
 
 For health checks, the instruction's remaining accounts are, for each non-empty collateral slot **in slot order**:
-- `Standard`: `(CollateralAsset, PriceUpdateV2)` — two accounts. The mint is not passed: the asset carries the decimals, and its own `mint` field identifies it.
-- `XStock`: `(CollateralAsset, PriceUpdateV2, mint)` — three, because the multiplier lives on the mint.
+- `Standard`: `(CollateralAsset, price account)` — two accounts. The mint is not passed: the asset carries the decimals, and its own `mint` field identifies it.
+- `XStock`: `(CollateralAsset, price account, mint)` — three, because the multiplier lives on the mint.
+
+The price account is a Pyth `PriceUpdateV2` or a Switchboard `PullFeedAccountData` according to the
+asset's `price_source`. It is one account either way, so the stride depends on `kind` alone.
 
 The program loops over the position's slots, not over the accounts supplied, advancing a cursor by two or three depending on the asset's kind. For each slot it requires:
 - the `CollateralAsset` to be program-owned and its `mint` to equal `slot.mint`;
-- the price account to carry that asset's feed ID, and to be the asset's `price_account` when it pins one;
+- the price account to carry that asset's feed identity — the Pyth feed id, or the Switchboard `feed_hash` — and to be the asset's `price_account` when it pins one, which the Switchboard path always does;
 - for an `XStock`, the third account's key to equal `slot.mint`.
 
 After the loop the cursor must land exactly on the end of the supplied accounts. A missing, extra or mismatched account fails with `PriceAccountMismatch`.
@@ -263,6 +287,14 @@ Collateral rules, enforced by `list_collateral` and `update_collateral_params`:
 - `1_000 ≤ ltv_bps`
 - `ltv_bps + config.promo_cap_bps ≤ liquidation_threshold_bps`
 - `liquidation_threshold_bps × (BPS + liquidation_bonus_bps) ≤ BPS²`
+- `max_conf_bps ≤ BPS`, and `max_multiplier` is either `0` (no ceiling) or within `[MULTIPLIER_ONE, MAX_MULTIPLIER]`
+- **per source**, and each must leave the other's fields zero:
+  - `Pyth`: `pyth_feed_id ≠ 0`; `0 < max_price_age_seconds ≤ MAX_PRICE_AGE_SECONDS`; `sb_feed_hash`, `sb_max_stale_slots` and `sb_min_samples` all zero
+  - `SwitchboardOnDemand`: `sb_feed_hash ≠ 0`; `price_account ≠ default`; `0 < sb_max_stale_slots ≤ MAX_COLLATERAL_STALE_SLOTS`; `sb_min_samples ≥ 1`; `pyth_feed_id` and `max_price_age_seconds` zero
+
+  The zero rule is not tidiness. A Pyth asset carrying `sb_max_stale_slots`, or a Switchboard asset
+  carrying `max_price_age_seconds`, advertises a freshness bound nothing on its path reads — an
+  operator tunes it, nothing changes, and the asset looks tighter than it is.
 
 Market rules, enforced by `create_market` and `update_market_params`:
 
@@ -693,3 +725,8 @@ These facts determine exact code paths and must be confirmed first:
    **Resolved 2026-09-18 (mainnet RPC):** AAPLX `XsbEhLAtcf6HdfpFZ5xEMdqW8nfAvcsP5bdudRLJzJp`, TSLAX `XsDoVfqeBukxuZHWhdvWHBhgEHjGNst4MLodqsJHzoB`, NVDAX `Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh` — each Token-2022, 8 decimals, freeze authority set, carrying `MetadataPointer`, `TokenMetadata`, `PermanentDelegate`, `Pausable`, `ScaledUiAmount`, `ConfidentialTransferMint`, `TransferHook` (program `null`) and `DefaultAccountState` (`initialized`), and nothing else. `DefaultAccountState` was **not** in §14's allowed set; rejecting it would have rejected every real xStock, so §14 now allows it and checks its value. Full RPC output: `docs/superpowers/research/2026-09-18-xstocks-facts.md`.
 4. **Switchboard On-Demand NGN/USD feed:** the source list, the result field that gives spread or standard deviation, the update cost, and who cranks it.
 5. **Pyth feed IDs** for SOL/USD, USDC/USD and USDT/USD.
+6. **PreStocks mints and pricing** (`https://prestocks.com/api/prestocks`): token program, decimals, extensions, whether the quoted price is per display or raw token, and whether any on-chain oracle prices them.
+   **Resolved 2026-09-24 (mainnet RPC + Pyth/Hermes/Crossbar).** Eight Token-2022 mints, 9 decimals, one issuer authority (`WV9PJN7XTmTLVwbutCLFxp8TyePee6Xq5mRq6Fti5Wc`) holding permanent delegate, freeze, pause, transfer-fee, scaled-UI and transfer-hook authority. The API quotes **per display token**, confirmed arithmetically: OPENAI's raw supply 1,901.808687 × multiplier 1.4861347 = 2,826.3439 = the API's `supply`. Full detail in `.devnet/prestocks/FINDINGS.md`. Three consequences:
+   - **They cannot be listed today, and the refusal is correct.** Every mint carries `TransferFeeConfig` (live at **100 bps**, uncapped, issuer-adjustable) and `ConfidentialTransferFeeConfig`, neither in §14's `XStock` set. `deposit_collateral` credits the amount it asks to transfer, so a fee credits a position more than the shared per-mint vault received, and the shortfall is socialised across positions. Supporting them requires fee-aware accounting on every path that moves collateral — **not done**.
+   - **Pyth cannot price them.** Its catalogue has index feeds for OPENAI, ANTHROPIC and SPCX only, none of the three has a push account on any shard on either cluster, and Hermes returns 401 without a key. This is what motivated `price_source` in §8.
+   - **The 60-second ceiling rules out sponsored equity feeds generally**, including the Backed xStocks of item 3: `Equity.US.AAPL/USD` was 41 days stale on mainnet and 84 on devnet when checked. Even with a Hermes key, exchange-hours assets stop publishing at the close, so no key makes them borrowable overnight. Continuously marked assets fit the ceiling that exchange-hours ones structurally cannot.

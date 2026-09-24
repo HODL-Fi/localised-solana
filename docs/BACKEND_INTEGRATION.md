@@ -17,11 +17,24 @@ transaction that uses them**.
 
 | | source | freshness bound | where |
 |---|---|---|---|
-| collateral price | Pyth pull (`PriceUpdateV2`) | `max_price_age_seconds`, currently **60s** | per collateral asset |
+| collateral price | Pyth pull (`PriceUpdateV2`) | `max_price_age_seconds`, currently **60s** | per collateral asset, `price_source: Pyth` |
+| collateral price | Switchboard On-Demand (`PullFeedAccountData`) | `sb_max_stale_slots`, **150 slots ≈ 60s** | per collateral asset, `price_source: SwitchboardOnDemand` |
 | NGN/USD | Switchboard On-Demand (`PullFeedAccountData`) | `ngn_max_stale_slots`, currently **150 slots ≈ 60s** | per market |
 
 `MAX_PRICE_AGE_SECONDS = 60` is a **hard protocol ceiling**, not a parameter you can raise —
-`list_collateral` rejects anything above it with `InvalidParameters` (6010).
+`list_collateral` rejects anything above it with `InvalidParameters` (6010). The Switchboard
+ceiling, `MAX_COLLATERAL_STALE_SLOTS = 150`, is the same 60 seconds at the 400 ms slot target.
+
+**Read each asset's `price_source` — do not assume Pyth.** Both sources take exactly one price
+account, so the account *count* never changes, but the account itself is a different program's and
+supplying the wrong one fails with `PriceAccountMismatch` (6007). A collateral asset priced by
+Switchboard exists because Pyth publishes no on-chain feed for it: the private-company PreStocks
+marks are the case that forced it (`.devnet/prestocks/FINDINGS.md`), and exchange-hours equities
+are the case where a 60-second ceiling cannot be met at all.
+
+Note the different units. A Pyth asset ages in **seconds**, a Switchboard asset in **slots**. Under
+congestion slots run 400-650 ms, so a slot bound drifts further behind wall clock exactly when
+prices move fastest.
 
 **Build one transaction shaped like this:**
 
@@ -53,9 +66,16 @@ For each collateral slot on the position **holding a non-zero amount**, in slot 
 
 ```
 1. CollateralAsset PDA   readonly   ["collateral", mint]
-2. PriceUpdateV2         readonly   the Pyth account for that asset
+2. the price account     readonly   depends on the asset's price_source:
+                                      Pyth                -> PriceUpdateV2
+                                      SwitchboardOnDemand -> PullFeedAccountData
 3. the mint itself       readonly   ONLY when the asset is kind == XStock
 ```
+
+Account 2 is one account either way, so the stride is 2 for a `Standard` asset and 3 for an
+`XStock` regardless of source. Which account it is comes from `CollateralAsset.price_source`, and
+for Switchboard it is always `CollateralAsset.price_account` — that field is mandatory on that
+path, where on the Pyth path `Pubkey::default()` means unpinned.
 
 The third account exists because an xStock's scaled-UI multiplier lives on the mint. A
 `Standard` asset must **not** include it — the program counts accounts positionally.
@@ -102,7 +122,7 @@ Anchor custom errors are `6000 + variant position`. Full list in the IDL's `erro
 | 6002 | `Unauthorized` | signer is not the role the instruction requires |
 | 6003 | `MarketPaused` | guardian paused it; retry later, do not loop |
 | 6005 | `StalePrice` | **refresh the oracles and rebuild the transaction**, do not just retry |
-| 6007 | `PriceAccountMismatch` | wrong price account for the asset, or the wrong-cluster binary |
+| 6007 | `PriceAccountMismatch` | wrong price account for the asset, or the wrong-cluster binary. On a Switchboard-priced asset it also fires when the feed's on-chain `feed_hash` no longer matches the job the asset was listed against — i.e. the feed authority repointed it. That is not retryable: an operator has to re-point the asset or the feed. |
 | 6010 | `InvalidParameters` | admin params out of bounds (e.g. `max_price_age_seconds > 60`) |
 | 6011 | `Unhealthy` | the borrow would breach LTV — show the user their limit |
 | 6013 | `UtilizationCapExceeded` | market is out of lendable cash; surface, do not retry |
