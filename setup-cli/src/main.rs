@@ -196,6 +196,61 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     )])?;
 
+    // 7. list wrapped SOL against Pyth's REAL devnet SOL/USD feed.
+    //
+    //    Pyth's price-feed accounts are PDAs of the push-oracle program, whose id is the same
+    //    on devnet and mainnet — so the account address is identical on both, and only the
+    //    update cadence differs. Verified live: owned by the receiver program (which is what
+    //    read_pyth_price checks), 134 bytes, decoding to a ~36s-old SOL/USD price.
+    //
+    //    UNPINNED (price_account = default), and that is the load-bearing decision here.
+    //
+    //    Pyth's sponsored feed account 7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE exists on
+    //    devnet and is owned correctly, but it is NOT maintained: sampled four times over 60s,
+    //    publish_time never moved and the age climbed past 180s. Against MAX_PRICE_AGE_SECONDS
+    //    (60, a hard protocol ceiling) a pinned asset would fail every priced call with
+    //    StalePrice.
+    //
+    //    Unpinned is also simply how the Pyth pull oracle is meant to be used: the client pulls
+    //    a signed update from Hermes, posts it via the receiver program, and consumes it in the
+    //    same transaction. The cost, which collateral.rs:26 names explicitly, is that the caller
+    //    may choose the most favourable update inside the age window. Accept that on devnet;
+    //    pin to a genuinely maintained feed on mainnet.
+    let wsol = Pubkey::from_str("So11111111111111111111111111111111111111112")?;
+    let sol_usd_feed: [u8; 32] = {
+        let hex = "ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d";
+        let mut o = [0u8; 32];
+        for i in 0..32 { o[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)?; }
+        o
+    };
+    let wsol_collateral = pda(&[hodl_loans::COLLATERAL_SEED, wsol.as_ref()]);
+    send("list_collateral(wSOL)", wsol_collateral, vec![ix(
+        hodl_loans::instruction::ListCollateral {
+            params: hodl_loans::CollateralParams {
+                pyth_feed_id: sol_usd_feed,
+                price_account: Pubkey::default(),
+                max_price_age_seconds: 60,
+                max_conf_bps: 200,
+                ltv_bps: 7_000,
+                liquidation_threshold_bps: 9_000,
+                liquidation_bonus_bps: 500,
+                deposit_cap: u64::MAX,
+                max_multiplier: 0,
+            },
+            kind: hodl_loans::CollateralKind::Standard,
+        },
+        hodl_loans::accounts::ListCollateral {
+            admin: admin.pubkey(),
+            config,
+            mint: wsol,
+            collateral: wsol_collateral,
+            vault: pda(&[hodl_loans::COLLATERAL_VAULT_SEED, wsol.as_ref()]),
+            token_program: anchor_spl::token::ID,
+            system_program: system_program::ID,
+        },
+    )])?;
+    println!("  wSOL collateral {wsol_collateral}");
+
     println!("\ndone.");
     println!("  config     {config}");
     println!("  market     {market}");
