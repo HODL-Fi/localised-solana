@@ -32,24 +32,35 @@ const FEED = process.env.NGN_FEED || "Hed3Py1cr8Y37jfdMpjFabR7Mewrqk2D4k9MtpYeoQ
   console.log("feed ", FEED);
   // payer must be passed explicitly: without it Crossbar rejects the request with
   // "Invalid payer pubkey: String is the wrong size".
-  const [ix, responses, success] = await feed.fetchUpdateIx({
-    numSignatures: 3,
-    payer: payer.publicKey,
-  });
-  console.log("oracle responses:", responses?.length ?? 0, "success:", success);
-  if (responses?.length) {
-    for (const r of responses.slice(0, 5)) {
-      const v = r.value ? r.value.toString() : "(none)";
-      console.log(`  oracle ${String(r.oracle ?? "?").slice(0, 8)}… value=${v} ${r.errors?.length ? "errors=" + r.errors.join(",") : ""}`);
-    }
+  // Point at a self-hosted Crossbar. The public one's /v2/store returns a hash of an
+  // empty payload, so oracles can never resolve the job and every crank dies with
+  // ORACLE_UNAVAILABLE. A local instance stores correctly; its /updates route is the
+  // same shape the SDK expects, so only the store side differed.
+  const { CrossbarClient } = require("@switchboard-xyz/common");
+  const crossbarUrl = process.env.CROSSBAR_URL || "http://localhost:8099";
+  const crossbarClient = new CrossbarClient(crossbarUrl);
+  console.log("crossbar", crossbarUrl);
+
+  // Use fetchSolanaUpdates (the /updates route) rather than fetchUpdateIx: the latter
+  // also calls /gateways, which a self-hosted Crossbar does not serve. /updates returns
+  // the same signed pull instructions, already decoded by the SDK.
+  const upd = (await crossbarClient.fetchSolanaUpdates(
+    "devnet", [FEED], payer.publicKey.toBase58(), 3
+  ))[0];
+  console.log("success:", upd.success, " pullIxns:", (upd.pullIxns || []).length);
+  for (const r of (upd.responses || []).slice(0, 4)) {
+    console.log(`  oracle ${String(r.oracle).slice(0, 10)}… result=${r.result} ${r.errors ? "err=" + String(r.errors).slice(0, 70) : ""}`);
   }
-  if (!ix) throw new Error("no update instruction produced — the job may be failing on the oracles");
+  if (!upd.success || !(upd.pullIxns || []).length) throw new Error("no pull instructions returned");
 
   const tx = await sb.InstructionUtils.asV0TxWithComputeIxs({
     connection,
-    ixs: [ix],
+    ixs: upd.pullIxns,
     payer: payer.publicKey,
     signers: [payer],
+    // upd.lookupTables are raw records, not AddressLookupTableAccount objects; the tx
+    // fits without them.
+    lookupTables: [],
     computeUnitLimitMultiple: 1.6,
   });
   const sig = await connection.sendTransaction(tx, { skipPreflight: false, maxRetries: 3 });

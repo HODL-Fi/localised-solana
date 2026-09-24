@@ -22,7 +22,57 @@ names came back real and varied (`DRIFT/USDC`, `BTC Price Feed`, meme markets).
   - Each inverted via `valueTask(1) / fetched`, because the program wants USD per NGN
     (`scale_switchboard_value` reads the price of one NGN in dollars), not NGN per USD.
 
-## The blocker: Crossbar's public `/v2/store` is not storing job definitions
+## RESOLVED — self-hosted Crossbar
+
+**The live feed is `GDgs76wotM4mxXSYPmizeKtdXoHqWUxqHAASNSLnrBQ1`**, and
+`market.ngn_feed` now points at it. Three oracles returned
+`0.000753652729058755` USD per NGN with `std_dev = 0` and `num_samples = 3` — every
+value, sample-count and spread condition `read_ngn_price` imposes is satisfied.
+
+Run Crossbar locally:
+
+```bash
+docker run -d --name crossbar -p 8099:8080 \
+  -e SOLANA_DEVNET_RPC=https://api.devnet.solana.com \
+  -e SOLANA_MAINNET_RPC=https://api.mainnet-beta.solana.com \
+  switchboardlabs/crossbar:latest
+```
+
+Then crank with `CROSSBAR_URL=http://localhost:8099 NGN_FEED=GDgs76… node crank-ngn-feed.js`.
+
+### What actually differed, and why it took a while
+
+| | hosted `crossbar.switchboard.xyz` | self-hosted image |
+|---|---|---|
+| store route | `/v2/store` | **`/store`** |
+| store body | `{feed: {...}}` | **`{queue, jobs}`** |
+| store result | 200, but a hash of an *empty* payload | correct hash, jobs retrievable |
+| `/gateways` | served | **not served** |
+| `/updates/solana/devnet/<feed>` | served | served |
+
+Two traps in that table:
+
+1. **The SDK and this Crossbar image disagree on routes.** `CrossbarClient` posts to
+   `/v2/store` and calls `/gateways`; the image serves `/store` and has no `/gateways`.
+   So `PullFeed.fetchUpdateIx` cannot work against a self-hosted instance — use
+   `crossbarClient.fetchSolanaUpdates("devnet", [feed], payer, 3)`, which hits `/updates`
+   and returns the same signed instructions already decoded.
+2. **The locally-computed feed hash was correct all along.**
+   `PullFeed.feedHashFromParams({queue, jobs})` gives
+   `378862d3914d2281826b3030cdfc781db0f18d658b7ad6a2f268d7d299dd61fd`, and the self-hosted
+   store returns exactly that. The hosted `/v2/store` returned a different hash
+   (`6e340b9c…`) — the hash of nothing — and a feed built against *that* can never resolve.
+   The first feed created here, before trusting the hosted store, had the right hash and is
+   the one now in use.
+
+### Freshness is the client's job, not a property of the feed
+
+The program requires `result.slot` within `ngn_max_stale_slots` (150, ~60s). A standalone
+crank leaves the feed fresh for about a minute. **Bundle the pull instructions ahead of your
+own instruction in the same transaction** — that is how Switchboard On-Demand is meant to be
+used, and it makes freshness structural rather than a race.
+
+## Historical: the blocker, before self-hosting
 
 Cranking fails with `ORACLE_UNAVAILABLE: No oracle responses received` from every gateway.
 Root cause: oracles resolve a `feed_hash` to its job definition through Crossbar, and the
