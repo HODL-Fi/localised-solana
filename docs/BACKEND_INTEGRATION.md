@@ -3,7 +3,7 @@
 For a backend that builds, signs and sends transactions to the HODL fixed-loans program.
 
 - **IDL:** `idl/hodl_loans-devnet.json` and `idl/hodl_loans-mainnet.json` — 43 instructions,
-  9 account types, 56 types, 43 errors. Take the one for the cluster you are on; do not edit the
+  10 account types, 59 types, 43 errors. Take the one for the cluster you are on; do not edit the
   other. The two files are byte-identical apart from the program id, and the program id appears in
   **two** places — the top-level `address`, and `initialize`'s `program` account, which is pinned to
   it so the instruction can check the upgrade authority. An earlier version of this guide said to
@@ -139,6 +139,7 @@ All derived from the program id. Seeds are byte strings.
 | `CollateralAsset` | `["collateral", collateral_mint]` |
 | collateral vault | `["collateral_vault", collateral_mint]` |
 | `Position` (per wallet) | `["position", owner]` |
+| `CreditRecord` (per wallet) | `["credit", owner]` |
 | `PromoVault` | `["promo_vault", **market_pda**]` |
 | promo vault token | `["promo_vault_token", **market_pda**]` |
 | `Campaign` | `["campaign", …]` |
@@ -217,7 +218,75 @@ budget and needs an explicit `ComputeBudgetInstruction::set_compute_unit_limit`.
 
 ---
 
-## 7. Setup order
+## 7. Credit history: the `CreditRecord` PDA
+
+One account per borrower, `["credit", owner]`, 120 bytes. Two counters and nothing else:
+
+```
+loans_completed   a loan whose principal reached zero through repayment
+loans_defaulted   a loan whose principal reached zero as a default
+```
+
+Derivable from a wallet address alone, so you need no registry to find one. It does not exist until
+something closes a loan — reading it for a wallet that has never borrowed returns "account not
+found", which is not an error condition.
+
+**There is no score here, and there should not be.** The counters are facts; a score is a weighting
+of those facts and belongs in a versioned off-chain function you can revise without a program
+upgrade. What you index for that is the two events, which carry more than the counters do:
+
+```
+CreditRepaymentRecorded  borrower, credit_record, loan_id, principal, term_seconds,
+                         days_late, penalty_paid, loans_completed
+CreditDefaultRecorded    borrower, credit_record, loan_id, principal, term_seconds,
+                         days_late, collateral_seized, loans_defaulted
+```
+
+The trailing counter is the value **after** the increment, so an indexer never has to read the
+account back to know where it landed. Lateness lives in the event, never in the counter: a loan
+repaid 400 days late still counts as completed, because encoding degrees of lateness in a counter
+would be scoring.
+
+### What changed in the instructions you already call
+
+| instruction | change |
+|---|---|
+| `repay_loan` | **two new accounts** — `credit_record`, `system_program` — and **`payer` is now `mut`** |
+| `liquidate` | `credit_record` and `system_program` added, both **optional** |
+| `write_off_loan` | `credit_record` and `system_program` added, both **required**; `admin` is now `mut` |
+
+**`repay_loan`'s payer needs SOL.** On a borrower's *first* repayment the payer funds the record's
+rent, about 0.0017 SOL, once per borrower ever. A zero-lamport payer fails with a bare system-program
+error 1 — `Transfer: insufficient lamports 0, need 1726080` in the logs — which looks nothing like a
+program error and is unpleasant to diagnose. Your admin wallet pays for every loan transaction, so
+this is already covered; it matters if a borrower's own wallet ever signs a repayment.
+
+**The record is always the borrower's, never the payer's.** Any whitelisted wallet may repay any
+position's loan, and the history follows whoever borrowed. Seed it from the position's `owner`, not
+from the signer. If you get this wrong the transaction fails on the seeds constraint rather than
+crediting the wrong wallet, so it is not a silent error — but it is a confusing one.
+
+### Why `liquidate`'s are optional and the others' are not
+
+Adding the account took `liquidate` from 1,185 to 1,251 bytes at 8 collateral slots, past the
+1,232-byte legacy limit, and the `system_program` alone accounts for 32 of that. Requiring it would
+mean a liquidation that cannot be packed is an underwater position that cannot be closed — a
+solvency problem, and strictly worse than a counter that did not move.
+
+So: **pass both when your transaction has room, omit both when it does not.** Omitting them leaves
+the transaction exactly the size it was before credit records existed, because Anchor encodes an
+absent optional account as the program id and the message compiler dedupes it. `LoanLiquidated` is
+emitted either way, so an indexer reconstructing defaults from events loses nothing.
+
+**Most defaults land at `write_off_loan`, not at `liquidate`.** A liquidation is bounded by the
+collateral it can seize, so it usually leaves principal behind; the write-off is what finally clears
+a loan whose remaining collateral is dust. That is why the write-off carries the counter as a
+required account — it is the path that actually fires. If you only wired `liquidate`, your default
+count would read near zero on a book with real defaults in it.
+
+---
+
+## 8. Setup order
 
 Mirrors `Env::initialized()` → `loan_ready()` in the test harness, which is the tested path:
 
@@ -236,7 +305,7 @@ Mirrors `Env::initialized()` → `loan_ready()` in the test harness, which is th
 
 ---
 
-## 8. Events
+## 9. Events
 
 39 event types, all in the IDL with their 8-byte discriminators. Anchor emits them as
 `Program data: <base64>` log lines: 8-byte discriminator followed by the Borsh body.
@@ -250,7 +319,7 @@ and they differ when a third party repays. Do not attribute repayments to `owner
 
 ---
 
-## 9. Bundling Switchboard updates — measured on devnet 2026-09-25
+## 10. Bundling Switchboard updates — measured on devnet 2026-09-25
 
 §1 says to put every oracle update in the same transaction as the priced instruction. With two
 Switchboard feeds (NGN + a Switchboard-priced collateral) that is **not possible** as the SDK ships:
@@ -282,7 +351,7 @@ The collateral price is structurally fresh. NGN is one transaction older — sec
 
 ---
 
-## 10. Everything else the HODL backend learned wiring this up (devnet, 2026-09-25)
+## 11. Everything else the HODL backend learned wiring this up (devnet, 2026-09-25)
 
 Reference implementation: `localised-backend` `src/loans/` (`loans-chain.service.ts` for the
 transaction plumbing, `loans.lib.ts` for the pure maths and the secp patch).

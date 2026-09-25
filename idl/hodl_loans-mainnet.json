@@ -1427,6 +1427,12 @@
       "accounts": [
         {
           "name": "liquidator",
+          "docs": [
+            "`mut` because it funds the borrower's `CreditRecord` if this liquidation is the first thing",
+            "to touch it. A liquidator pays ~0.0016 SOL of rent for a record it does not own; that is",
+            "less than the liquidation bonus on any position worth liquidating."
+          ],
+          "writable": true,
           "signer": true
         },
         {
@@ -1587,10 +1593,60 @@
           ]
         },
         {
+          "name": "credit_record",
+          "docs": [
+            "The borrower's record, seeded off `position.owner` — never the liquidator's.",
+            "",
+            "**Optional, and that is deliberate.** Adding it took `liquidate` at 8 collateral slots from",
+            "1,185 to 1,251 bytes, past the 1,232-byte legacy limit. Requiring it would mean a liquidation",
+            "that cannot be packed is a liquidation that cannot happen, and an unliquidatable underwater",
+            "position is a solvency problem — a strictly worse failure than a counter that did not move.",
+            "Credit bookkeeping must never be able to block a liquidation.",
+            "",
+            "Nothing is lost for scoring: `LoanLiquidated` is emitted either way, so an indexer can",
+            "reconstruct every default from events regardless of whether the counter was bumped. The",
+            "counter is the on-chain convenience; the event is the record. `repay_loan` keeps it required,",
+            "because that path has no size pressure and the borrower wants their history written."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  101,
+                  100,
+                  105,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "position"
+              }
+            ]
+          }
+        },
+        {
           "name": "token_program"
         },
         {
           "name": "collateral_token_program"
+        },
+        {
+          "name": "system_program",
+          "docs": [
+            "Optional for the same reason `credit_record` is, and it has to be: it is only needed to",
+            "create that record, and carrying it unconditionally costs 32 bytes — enough on its own to",
+            "push a 7-standard-plus-1-xStock liquidation from 1,220 bytes to 1,252, past the legacy limit.",
+            "Omitting both leaves the liquidator's transaction exactly the size it was before credit",
+            "records existed."
+          ],
+          "optional": true,
+          "address": "11111111111111111111111111111111"
         }
       ],
       "args": [
@@ -2203,8 +2259,14 @@
         {
           "name": "payer",
           "docs": [
-            "Any whitelisted wallet may repay any position's loan."
+            "Any whitelisted wallet may repay any position's loan.",
+            "",
+            "`mut` because it funds the borrower's `CreditRecord` on that borrower's first repayment.",
+            "Every client already passes this signer as the transaction's fee payer, so it is writable in",
+            "practice — but it is now writable in the IDL too, which a client constructing the account",
+            "meta by hand has to match."
           ],
+          "writable": true,
           "signer": true
         },
         {
@@ -2274,7 +2336,39 @@
           "writable": true
         },
         {
+          "name": "credit_record",
+          "docs": [
+            "The **borrower's** record, not the payer's: seeded off `position.owner`, because any",
+            "whitelisted wallet may repay anyone's loan and the history belongs to whoever borrowed.",
+            "`init_if_needed` so a borrower's first repayment creates it; the payer funds the rent."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  101,
+                  100,
+                  105,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "position"
+              }
+            ]
+          }
+        },
+        {
           "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
         }
       ],
       "args": [
@@ -4000,6 +4094,10 @@
       "accounts": [
         {
           "name": "admin",
+          "docs": [
+            "`mut` because it funds the borrower's `CreditRecord` if nothing has touched it yet."
+          ],
+          "writable": true,
           "signer": true,
           "relations": [
             "config"
@@ -4066,6 +4164,42 @@
         {
           "name": "vault",
           "writable": true
+        },
+        {
+          "name": "credit_record",
+          "docs": [
+            "The borrower's record. **Required here, unlike on `liquidate`.**",
+            "",
+            "A write-off is where a default actually lands: a liquidation is bounded by the collateral it",
+            "can seize, so it usually leaves principal behind and only `write_off_loan` closes the loan.",
+            "If the counter were optional on both paths it would almost never move. This path is",
+            "admin-only and carries far fewer accounts than `liquidate`, so there is no size pressure to",
+            "trade against."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  101,
+                  100,
+                  105,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "position"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
         },
         {
           "name": "promo_vault",
@@ -4176,6 +4310,19 @@
         250,
         204,
         130
+      ]
+    },
+    {
+      "name": "CreditRecord",
+      "discriminator": [
+        77,
+        47,
+        19,
+        249,
+        50,
+        165,
+        219,
+        0
       ]
     },
     {
@@ -4412,6 +4559,32 @@
         167,
         178,
         91
+      ]
+    },
+    {
+      "name": "CreditDefaultRecorded",
+      "discriminator": [
+        234,
+        45,
+        103,
+        177,
+        132,
+        254,
+        229,
+        8
+      ]
+    },
+    {
+      "name": "CreditRepaymentRecorded",
+      "discriminator": [
+        145,
+        37,
+        83,
+        7,
+        228,
+        207,
+        65,
+        173
       ]
     },
     {
@@ -5779,6 +5952,175 @@
           {
             "name": "treasury",
             "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CreditDefaultRecorded",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "borrower",
+            "type": "pubkey"
+          },
+          {
+            "name": "credit_record",
+            "type": "pubkey"
+          },
+          {
+            "name": "loan_id",
+            "type": "u64"
+          },
+          {
+            "name": "principal",
+            "type": "u64"
+          },
+          {
+            "name": "term_seconds",
+            "type": "i64"
+          },
+          {
+            "name": "days_late",
+            "type": "u32"
+          },
+          {
+            "name": "collateral_seized",
+            "docs": [
+              "Raw collateral units taken in the liquidation that closed the loan."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "loans_defaulted",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CreditRecord",
+      "docs": [
+        "One record per borrower, holding the facts of their credit history: how many loans they have",
+        "repaid in full, and how many were closed by liquidation.",
+        "",
+        "**Facts only — no score.** A score is a versioned function over these facts and the events",
+        "beside them, and it belongs off chain where it can be revised without an upgrade. Putting",
+        "weights, decay or tiers in here would freeze a judgement call into the program.",
+        "",
+        "**Append-only, forever.** Nothing in the program decrements either counter, and nothing resets",
+        "or closes the account. That is the whole value of the record: a borrower cannot clear their",
+        "history by closing a position and opening a new one, because the address is the identity.",
+        "Derivable by anyone from a wallet address alone — `[\"credit\", owner]` — so an indexer needs no",
+        "registry to find it.",
+        "",
+        "Note what the counters do NOT distinguish: a loan repaid late still counts as completed. The",
+        "lateness is in the event (`days_late`, `penalty_paid`), not the counter, because a counter that",
+        "tried to encode degrees of lateness would be a score."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "owner",
+            "docs": [
+              "The borrower. Always equal to the `owner` of the position whose loan moved the counter, and",
+              "the seed the account is derived from, so the two cannot disagree."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "loans_completed",
+            "docs": [
+              "Loans whose principal reached zero through repayment."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "loans_defaulted",
+            "docs": [
+              "Loans whose principal reached zero through liquidation."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                62
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "CreditRepaymentRecorded",
+      "docs": [
+        "Emitted whenever a `CreditRecord` counter moves, one per closed loan.",
+        "",
+        "Named for the record rather than the loan because `LoanRepaid` and `LoanLiquidated` already",
+        "exist and carry the market's view — amounts, interest, remaining principal. These carry the",
+        "*borrower's* view, which is what a scoring engine indexes: the term they agreed to, how late",
+        "they were, what the lateness cost them. Two events rather than a flag so an indexer can",
+        "subscribe to defaults alone.",
+        "",
+        "`loans_completed` / `loans_defaulted` are the counter values AFTER the increment, so an indexer",
+        "never has to read the account back to know where it landed."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "borrower",
+            "type": "pubkey"
+          },
+          {
+            "name": "credit_record",
+            "type": "pubkey"
+          },
+          {
+            "name": "loan_id",
+            "type": "u64"
+          },
+          {
+            "name": "principal",
+            "docs": [
+              "The loan as originated, not the amount of this final payment."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "term_seconds",
+            "type": "i64"
+          },
+          {
+            "name": "days_late",
+            "docs": [
+              "Whole days past due, 0 when repaid on time."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "penalty_paid",
+            "docs": [
+              "Penalty settled in this repayment, 0 when repaid on time."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "loans_completed",
+            "type": "u64"
           }
         ]
       }
