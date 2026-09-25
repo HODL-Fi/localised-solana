@@ -26,7 +26,7 @@ const os = require("os");
 const symbols = require("./symbols.js");
 
 const RPC = process.env.RPC || "https://api.devnet.solana.com";
-const CROSSBAR = process.env.CROSSBAR_URL || "http://localhost:8099";
+const CROSSBAR = process.env.CROSSBAR_URL || "https://crossbar-staging.up.railway.app";
 const SYMBOL = (process.argv[2] || "").toUpperCase();
 
 (async () => {

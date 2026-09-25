@@ -22,7 +22,7 @@ const fs = require("fs"), os = require("os");
 const RPC = "https://api.devnet.solana.com";
 const SOL_USD = "0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d";
 const NGN_FEED = process.env.NGN_FEED || "GDgs76wotM4mxXSYPmizeKtdXoHqWUxqHAASNSLnrBQ1";
-const CROSSBAR = process.env.CROSSBAR_URL || "http://localhost:8099";
+const CROSSBAR = process.env.CROSSBAR_URL || "https://crossbar-staging.up.railway.app";
 
 (async () => {
   const connection = new Connection(RPC, "confirmed");

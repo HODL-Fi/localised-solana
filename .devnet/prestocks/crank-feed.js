@@ -16,7 +16,7 @@ const fs = require("fs");
 const os = require("os");
 
 const RPC = process.env.RPC || "https://api.devnet.solana.com";
-const CROSSBAR = process.env.CROSSBAR_URL || "http://localhost:8099";
+const CROSSBAR = process.env.CROSSBAR_URL || "https://crossbar-staging.up.railway.app";
 const FEED = process.argv[2] || process.env.PRESTOCKS_FEED;
 
 // Byte offset of `feed_hash` in the account, past the 8-byte Anchor discriminator. Same layout the

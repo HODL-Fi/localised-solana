@@ -39,6 +39,35 @@ Built and run locally with `PORT=9111` injected:
 That last one is the only check that actually proves a hosted Crossbar is usable. Storing
 successfully is not enough; the job has to reach the oracles.
 
+## Live
+
+```
+URL          https://crossbar-staging.up.railway.app
+workspace    HODL
+project      gregarious-compassion      environment  staging      service  crossbar
+image        built from this directory, base pinned by digest 4aad27ab…
+```
+
+In `gregarious-compassion` on purpose: `localised-backend` lives there, so Railway's private
+networking applies and the backend can call `crossbar.railway.internal` without leaving Railway. That
+is **per-environment** — it resolves for the staging instance only. `prod-active` is untouched; when
+you want it there it is `railway up --environment prod-active` against the same service, not a new
+project.
+
+Verified after deploying, in this order:
+
+- `crossbar listening on 8080` in the logs, and Railway's proxy found it
+- `/simulate/{hash}` returned the live OPENAI job at $1,023.70
+- `/simulate/solana/devnet/{feed}` resolved an **on-chain** feed by pubkey
+- a novel job stored through the Railway instance was retrievable from the public
+  `crossbar.switchboard.xyz/fetch` in ~3s
+- a real crank landed on chain — 3 oracles agreeing at $1,023.68, `result.slot` 98 slots old
+- then the **local container was stopped** and the NGN feed still cranked, which is the only proof
+  that nothing quietly depends on a laptop any more
+
+`.devnet/addresses.env` and all four scripts now default to the Railway URL. A local container still
+works as a fallback with `CROSSBAR_URL=http://localhost:8099`.
+
 ## Deploy
 
 ```bash

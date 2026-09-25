@@ -37,7 +37,7 @@ const FEED = process.env.NGN_FEED || "Hed3Py1cr8Y37jfdMpjFabR7Mewrqk2D4k9MtpYeoQ
   // ORACLE_UNAVAILABLE. A local instance stores correctly; its /updates route is the
   // same shape the SDK expects, so only the store side differed.
   const { CrossbarClient } = require("@switchboard-xyz/common");
-  const crossbarUrl = process.env.CROSSBAR_URL || "http://localhost:8099";
+  const crossbarUrl = process.env.CROSSBAR_URL || "https://crossbar-staging.up.railway.app";
   const crossbarClient = new CrossbarClient(crossbarUrl);
   console.log("crossbar", crossbarUrl);
 
