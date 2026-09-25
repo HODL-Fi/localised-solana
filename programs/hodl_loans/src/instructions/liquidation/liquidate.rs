@@ -1,14 +1,14 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
-use crate::constants::{COLLATERAL_SEED, CONFIG_SEED, MARKET_SEED, PROMO_VAULT_SEED};
+use crate::constants::{COLLATERAL_SEED, CONFIG_SEED, CREDIT_SEED, MARKET_SEED, PROMO_VAULT_SEED};
 use crate::errors::HodlError;
-use crate::events::{LoanLiquidated, LoanPartiallyLiquidated};
+use crate::events::{CreditDefaultRecorded, LoanLiquidated, LoanPartiallyLiquidated};
 use crate::instructions::promos::{forfeit_promo, ForfeitAccounts};
 use crate::math::checked::{add, sub, to_u64};
 use crate::math::liquidation::{principal_share, seize_for_repayment, SeizureInputs};
 use crate::math::loan::{accrued_lp_interest, loan_balance, lp_contribution, reserve_share};
-use crate::state::{CollateralAsset, Config, Market, Position, PromoVault};
+use crate::state::{days_late, CollateralAsset, Config, CreditRecord, Market, Position, PromoVault};
 use crate::token::extensions::require_collateral_mint_on_exit;
 use crate::token::transfer::{transfer_from_user, transfer_from_vault};
 use crate::valuation::{load_valuation, ValuationRequest};
@@ -16,6 +16,10 @@ use crate::valuation::{load_valuation, ValuationRequest};
 /// Open to anyone: no `Access` account, so a liquidation bot needs no whitelist.
 #[derive(Accounts)]
 pub struct Liquidate<'info> {
+    /// `mut` because it funds the borrower's `CreditRecord` if this liquidation is the first thing
+    /// to touch it. A liquidator pays ~0.0016 SOL of rent for a record it does not own; that is
+    /// less than the liquidation bonus on any position worth liquidating.
+    #[account(mut)]
     pub liquidator: Signer<'info>,
     /// Carries `promo_cap_bps`, which bounds how much of a position's promo counts (spec §12).
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
@@ -77,8 +81,34 @@ pub struct Liquidate<'info> {
     pub liquidator_collateral: Box<InterfaceAccount<'info, TokenAccount>>,
     /// CHECK: address pinned to `market.ngn_feed`; parsed by `read_ngn_price`.
     pub ngn_feed: UncheckedAccount<'info>,
+    /// The borrower's record, seeded off `position.owner` — never the liquidator's.
+    ///
+    /// **Optional, and that is deliberate.** Adding it took `liquidate` at 8 collateral slots from
+    /// 1,185 to 1,251 bytes, past the 1,232-byte legacy limit. Requiring it would mean a liquidation
+    /// that cannot be packed is a liquidation that cannot happen, and an unliquidatable underwater
+    /// position is a solvency problem — a strictly worse failure than a counter that did not move.
+    /// Credit bookkeeping must never be able to block a liquidation.
+    ///
+    /// Nothing is lost for scoring: `LoanLiquidated` is emitted either way, so an indexer can
+    /// reconstruct every default from events regardless of whether the counter was bumped. The
+    /// counter is the on-chain convenience; the event is the record. `repay_loan` keeps it required,
+    /// because that path has no size pressure and the borrower wants their history written.
+    #[account(
+        init_if_needed,
+        payer = liquidator,
+        space = 8 + CreditRecord::INIT_SPACE,
+        seeds = [CREDIT_SEED, position.load()?.owner.as_ref()],
+        bump,
+    )]
+    pub credit_record: Option<Box<Account<'info, CreditRecord>>>,
     pub token_program: Interface<'info, TokenInterface>,
     pub collateral_token_program: Interface<'info, TokenInterface>,
+    /// Optional for the same reason `credit_record` is, and it has to be: it is only needed to
+    /// create that record, and carrying it unconditionally costs 32 bytes — enough on its own to
+    /// push a 7-standard-plus-1-xStock liquidation from 1,220 bytes to 1,252, past the legacy limit.
+    /// Omitting both leaves the liquidator's transaction exactly the size it was before credit
+    /// records existed.
+    pub system_program: Option<Program<'info, System>>,
 }
 
 /// Spec §11 `liquidate`. `remaining_accounts`: per used collateral slot, in slot order, a
@@ -100,7 +130,7 @@ pub fn handle_liquidate<'info>(ctx: Context<'info, Liquidate<'info>>, loan_id: u
     let market = &mut ctx.accounts.market;
     market.accrue(now)?;
 
-    let (paid, principal_repaid, interest_paid, seized, remaining_principal, owner) = {
+    let (paid, principal_repaid, interest_paid, seized, remaining_principal, owner, loan_terms) = {
         let mut position = ctx.accounts.position.load_mut()?;
         require_keys_eq!(position.market, market_key, HodlError::MarketMismatch);
         let loan_index = position.loan_index(loan_id).ok_or(HodlError::LoanNotFound)?;
@@ -210,7 +240,10 @@ pub fn handle_liquidate<'info>(ctx: Context<'info, Liquidate<'info>>, loan_id: u
 
         let held = &mut position.collateral[slot_index];
         held.amount = held.amount.checked_sub(seizure.seize_amount).ok_or(HodlError::MathOverflow)?;
-        (paid, principal_repaid, interest_paid, seizure.seize_amount, remaining_principal, position.owner)
+        // Carried out of the block because the slot is zeroed above on a full close, and the
+        // credit record wants the loan as originated rather than what was left of it.
+        (paid, principal_repaid, interest_paid, seizure.seize_amount, remaining_principal, position.owner,
+         (loan.original_principal, loan.originated_at, loan.tenure_seconds))
     };
 
     let collateral = &mut ctx.accounts.collateral;
@@ -243,6 +276,25 @@ pub fn handle_liquidate<'info>(ctx: Context<'info, Liquidate<'info>>, loan_id: u
 
     let liquidator = ctx.accounts.liquidator.key();
     if remaining_principal == 0 {
+        let (principal, originated_at, term_seconds) = loan_terms;
+        // `ctx.bumps.credit_record` is itself an Option for an optional account; both are Some or
+        // both are None, so zipping them is exact rather than defaulted.
+        if let (Some(record), Some(bump)) =
+            (ctx.accounts.credit_record.as_mut(), ctx.bumps.credit_record)
+        {
+            record.ensure_initialized(owner, bump);
+            let loans_defaulted = record.record_defaulted()?;
+            emit!(CreditDefaultRecorded {
+                borrower: owner,
+                credit_record: record.key(),
+                loan_id,
+                principal,
+                term_seconds,
+                days_late: days_late(originated_at, term_seconds, now),
+                collateral_seized: seized,
+                loans_defaulted,
+            });
+        }
         emit!(LoanLiquidated {
             market: market_key,
             position: position_key,

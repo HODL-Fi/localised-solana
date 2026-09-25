@@ -363,3 +363,41 @@ pub struct PromoVaultReconciled {
     pub cash: u64,
     pub by: Pubkey,
 }
+
+/// Emitted whenever a `CreditRecord` counter moves, one per closed loan.
+///
+/// Named for the record rather than the loan because `LoanRepaid` and `LoanLiquidated` already
+/// exist and carry the market's view — amounts, interest, remaining principal. These carry the
+/// *borrower's* view, which is what a scoring engine indexes: the term they agreed to, how late
+/// they were, what the lateness cost them. Two events rather than a flag so an indexer can
+/// subscribe to defaults alone.
+///
+/// `loans_completed` / `loans_defaulted` are the counter values AFTER the increment, so an indexer
+/// never has to read the account back to know where it landed.
+#[event]
+pub struct CreditRepaymentRecorded {
+    pub borrower: Pubkey,
+    pub credit_record: Pubkey,
+    pub loan_id: u64,
+    /// The loan as originated, not the amount of this final payment.
+    pub principal: u64,
+    pub term_seconds: i64,
+    /// Whole days past due, 0 when repaid on time.
+    pub days_late: u32,
+    /// Penalty settled in this repayment, 0 when repaid on time.
+    pub penalty_paid: u64,
+    pub loans_completed: u64,
+}
+
+#[event]
+pub struct CreditDefaultRecorded {
+    pub borrower: Pubkey,
+    pub credit_record: Pubkey,
+    pub loan_id: u64,
+    pub principal: u64,
+    pub term_seconds: i64,
+    pub days_late: u32,
+    /// Raw collateral units taken in the liquidation that closed the loan.
+    pub collateral_seized: u64,
+    pub loans_defaulted: u64,
+}

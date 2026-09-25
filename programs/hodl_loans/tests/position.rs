@@ -10,7 +10,13 @@ use solana_signer::Signer;
 #[test]
 fn sponsor_opens_a_position_for_a_wallet_without_sol() {
     let mut env = Env::initialized();
-    let borrower = env.new_borrower();
+    // A raw keypair rather than `env.new_borrower()`, which funds its borrowers because since
+    // `CreditRecord` a first repayment costs rent. This test is about sponsorship, so it owns its
+    // premise: a wallet that has never held a lamport.
+    let borrower = Borrower { key: solana_keypair::Keypair::new() };
+    env.whitelist(&borrower.pubkey());
+    let open = open_position_ix(&env.admin.pubkey(), &borrower.pubkey());
+    send(&mut env.svm, &[open], &[&env.admin, &borrower.key]).expect("open position");
 
     let position = env.position(&borrower.pubkey());
     assert_eq!(position.version, 1);

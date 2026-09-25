@@ -164,6 +164,10 @@ pub const COLLATERAL_SEED: &[u8] = b"collateral";
 pub const COLLATERAL_VAULT_SEED: &[u8] = b"collateral_vault";
 #[constant]
 pub const POSITION_SEED: &[u8] = b"position";
+
+/// `CreditRecord`, one per borrower: `["credit", owner]`. Derivable from a wallet address alone, so
+/// anyone can find a borrower's history without a registry.
+pub const CREDIT_SEED: &[u8] = b"credit";
 #[constant]
 pub const PROMO_VAULT_SEED: &[u8] = b"promo_vault";
 #[constant]

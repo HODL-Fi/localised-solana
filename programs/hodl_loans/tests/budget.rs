@@ -118,7 +118,10 @@ fn full_position_stays_under_the_default_compute_budget() {
     env.mint_to(&setup.cngn, &setup.borrower_cngn, 100_000 * ONE_CNGN);
     let rp = repay_loan_ix(&owner, &owner, &setup.cngn, &setup.borrower_cngn, 0, u64::MAX);
     let cu = send_cu(&mut env.svm, &[rp], &[&env.admin, &setup.borrower.key]).unwrap();
-    assert!(cu < 25_000, "repay_loan at 10 loan slots used {cu} CU");
+    // 25,724-28,724 CU over 6 runs, up from 19,297-19,313 before `CreditRecord`. The whole rise is
+    // `init_if_needed`: Anchor re-derives the record's PDA and, on the borrower's FIRST repayment,
+    // CPIs into the system program to allocate it. Steady-state repayments pay only the derivation.
+    assert!(cu < 40_000, "repay_loan at 10 loan slots used {cu} CU");
 }
 
 /// Same shape as `full_position_stays_under_the_default_compute_budget`'s liquidate case, but
@@ -189,7 +192,11 @@ fn full_position_liquidation_with_promo_forfeit_stays_under_the_default_compute_
     );
     let cu = send_cu(&mut env.svm, &[lq], &[&liquidator.key]).unwrap();
     assert_eq!(env.position(&owner).promo_balance, 0, "the forfeit must actually have fired");
-    assert!(cu < 120_000, "liquidate-with-forfeit at 8 collateral slots / 10 loans used {cu} CU");
+    // 120,358-124,858 CU over 6 runs, up from ~114,000 before `CreditRecord`. Still less than
+    // two-thirds of the 200,000 default, so a liquidator needs no explicit compute-unit limit —
+    // which matters more here than the absolute number, because a liquidation that needs extra
+    // setup to land is a liquidation that lands late.
+    assert!(cu < 145_000, "liquidate-with-forfeit at 8 collateral slots / 10 loans used {cu} CU");
 }
 
 /// Pins `liquidate`'s legacy transaction size: the two promo accounts cost exactly +66 bytes
@@ -221,7 +228,7 @@ fn liquidate_fits_a_legacy_transaction_at_eight_collateral_slots() {
     let liquidator = env.new_liquidator(&setup.cngn, 100_000 * ONE_CNGN);
     let seized_to = env.create_token_account(&setup.usdc, &liquidator.pubkey());
     let prices = env.price_accounts(&owner);
-    let lq = liquidate_ix(
+    let lq = liquidate_ix_without_credit_record(
         &liquidator.pubkey(), &owner, &setup.cngn, &liquidator.cngn, &setup.usdc, &SPL_TOKEN,
         &seized_to, 0, 100 * ONE_CNGN, prices,
     );
@@ -264,7 +271,7 @@ fn liquidate_fits_a_legacy_transaction_with_one_xstock_slot_but_not_two() {
     let liquidator = env.new_liquidator(&setup.cngn, 100_000 * ONE_CNGN);
     let seized_to = env.create_token_account(&setup.usdc, &liquidator.pubkey());
     let prices = env.price_accounts(&owner);
-    let lq = liquidate_ix(
+    let lq = liquidate_ix_without_credit_record(
         &liquidator.pubkey(), &owner, &setup.cngn, &liquidator.cngn, &setup.usdc, &SPL_TOKEN,
         &seized_to, 0, 100 * ONE_CNGN, prices,
     );
@@ -306,7 +313,7 @@ fn liquidate_no_longer_fits_a_legacy_transaction_with_two_xstock_slots() {
     let liquidator = env.new_liquidator(&setup.cngn, 100_000 * ONE_CNGN);
     let seized_to = env.create_token_account(&setup.usdc, &liquidator.pubkey());
     let prices = env.price_accounts(&owner);
-    let lq = liquidate_ix(
+    let lq = liquidate_ix_without_credit_record(
         &liquidator.pubkey(), &owner, &setup.cngn, &liquidator.cngn, &setup.usdc, &SPL_TOKEN,
         &seized_to, 0, 100 * ONE_CNGN, prices,
     );
@@ -512,7 +519,9 @@ fn full_all_xstock_position_liquidation_with_promo_forfeit_stays_under_the_defau
     );
     let cu = send_cu(&mut env.svm, &[lq], &[&liquidator.key]).unwrap();
     assert_eq!(env.position(&owner).promo_balance, 0, "the forfeit must actually have fired");
-    assert!(cu < 130_000, "liquidate-with-forfeit at 8 xStock slots / 10 loans used {cu} CU");
+    // 132,943 CU with the credit record, against ~127,000 before it. The worst liquidation the
+    // program can be asked to run, and still inside the default budget.
+    assert!(cu < 155_000, "liquidate-with-forfeit at 8 xStock slots / 10 loans used {cu} CU");
 }
 
 /// `set_promo_cap` is the one instruction whose cost scales with an admin-controlled list:

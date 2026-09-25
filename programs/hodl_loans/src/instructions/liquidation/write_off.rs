@@ -1,17 +1,19 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
-use crate::constants::{CONFIG_SEED, MARKET_SEED, PROMO_VAULT_SEED};
+use crate::constants::{CONFIG_SEED, CREDIT_SEED, MARKET_SEED, PROMO_VAULT_SEED};
 use crate::errors::HodlError;
-use crate::events::LoanWrittenOff;
+use crate::events::{CreditDefaultRecorded, LoanWrittenOff};
 use crate::instructions::promos::{forfeit_promo, ForfeitAccounts};
 use crate::math::checked::{add, sub, to_u64};
 use crate::math::loan::{accrued_lp_interest, lp_contribution};
-use crate::state::{Config, Market, Position, PromoVault};
+use crate::state::{days_late, Config, CreditRecord, Market, Position, PromoVault};
 use crate::valuation::{load_valuation, ValuationRequest};
 
 #[derive(Accounts)]
 pub struct WriteOffLoan<'info> {
+    /// `mut` because it funds the borrower's `CreditRecord` if nothing has touched it yet.
+    #[account(mut)]
     pub admin: Signer<'info>,
     #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ HodlError::Unauthorized)]
     pub config: Box<Account<'info, Config>>,
@@ -30,6 +32,22 @@ pub struct WriteOffLoan<'info> {
     pub mint: Box<InterfaceAccount<'info, Mint>>,
     #[account(mut, address = market.vault @ HodlError::MarketMismatch)]
     pub vault: Box<InterfaceAccount<'info, TokenAccount>>,
+    /// The borrower's record. **Required here, unlike on `liquidate`.**
+    ///
+    /// A write-off is where a default actually lands: a liquidation is bounded by the collateral it
+    /// can seize, so it usually leaves principal behind and only `write_off_loan` closes the loan.
+    /// If the counter were optional on both paths it would almost never move. This path is
+    /// admin-only and carries far fewer accounts than `liquidate`, so there is no size pressure to
+    /// trade against.
+    #[account(
+        init_if_needed,
+        payer = admin,
+        space = 8 + CreditRecord::INIT_SPACE,
+        seeds = [CREDIT_SEED, position.load()?.owner.as_ref()],
+        bump,
+    )]
+    pub credit_record: Box<Account<'info, CreditRecord>>,
+    pub system_program: Program<'info, System>,
     /// Forfeiture moves the position's promo backing into the market vault (spec §11 step 3),
     /// so a written-off loan still returns what the protocol lent the borrower for free.
     /// `create_promo_vault` is a separate admin action (`vault.rs`), so a market can run with
@@ -168,6 +186,20 @@ pub fn handle_write_off_loan<'info>(ctx: Context<'info, WriteOffLoan<'info>>, lo
     let total_bad_debt = market.total_bad_debt;
     drop(position);
 
+    let record = &mut ctx.accounts.credit_record;
+    record.ensure_initialized(owner, ctx.bumps.credit_record);
+    let loans_defaulted = record.record_defaulted()?;
+    emit!(CreditDefaultRecorded {
+        borrower: owner,
+        credit_record: record.key(),
+        loan_id,
+        principal: loan.original_principal,
+        term_seconds: loan.tenure_seconds,
+        days_late: days_late(loan.originated_at, loan.tenure_seconds, now),
+        // A write-off takes no collateral — that already happened in the liquidations that led here.
+        collateral_seized: 0,
+        loans_defaulted,
+    });
     emit!(LoanWrittenOff {
         market: market_key,
         position: position_key,

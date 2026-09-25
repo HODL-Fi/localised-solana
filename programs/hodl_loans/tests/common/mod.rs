@@ -561,6 +561,9 @@ impl Env {
     /// A whitelisted wallet holding `balance` cNGN and no SOL (the admin pays its fees and rent).
     pub fn new_lender(&mut self, mint: &Pubkey, balance: u64) -> Lender {
         let key = Keypair::new();
+        // Funded for the same reason borrowers are: a third party repaying someone else's loan pays
+        // that borrower's `CreditRecord` rent if the record does not exist yet.
+        self.svm.airdrop(&key.pubkey(), 100_000_000).expect("airdrop lender");
         self.whitelist(&key.pubkey());
         let token = self.create_token_account(mint, &key.pubkey());
         self.mint_to(mint, &token, balance);
@@ -628,6 +631,11 @@ pub const ONE_USDC: u64 = 1_000_000;
 pub fn collateral_pda(mint: &Pubkey) -> Pubkey {
     pda(&[hodl_loans::constants::COLLATERAL_SEED, mint.as_ref()])
 }
+/// `CreditRecord` for a borrower — derivable from the wallet alone, which is the point of it.
+pub fn credit_record_pda(owner: &Pubkey) -> Pubkey {
+    pda(&[hodl_loans::constants::CREDIT_SEED, owner.as_ref()])
+}
+
 pub fn collateral_vault_pda(mint: &Pubkey) -> Pubkey {
     pda(&[hodl_loans::constants::COLLATERAL_VAULT_SEED, mint.as_ref()])
 }
@@ -912,6 +920,11 @@ impl Env {
     /// A whitelisted wallet with an open position.
     pub fn new_borrower(&mut self) -> Borrower {
         let key = Keypair::new();
+        // Funded, because since `CreditRecord` a borrower repaying for the first time pays that
+        // account's rent (~0.0017 SOL) and a zero-lamport wallet fails with a bare system-program
+        // error 1 rather than anything explanatory. A wallet that transacts holds SOL; the fixture
+        // should not pretend otherwise.
+        self.svm.airdrop(&key.pubkey(), 100_000_000).expect("airdrop borrower");
         self.whitelist(&key.pubkey());
         let instruction = open_position_ix(&self.admin.pubkey(), &key.pubkey());
         send(&mut self.svm, &[instruction], &[&self.admin, &key]).expect("open position");
@@ -1251,6 +1264,8 @@ pub fn repay_loan_ix(payer: &Pubkey, position_owner: &Pubkey, mint: &Pubkey, pay
     ix(
         hodl_loans::instruction::RepayLoan { loan_id, amount },
         hodl_loans::accounts::RepayLoan {
+            credit_record: credit_record_pda(position_owner),
+            system_program: anchor_lang::system_program::ID,
             payer: *payer,
             access: access_pda(payer),
             position: position_pda(position_owner),
@@ -1349,6 +1364,41 @@ impl Liquidator {
     }
 }
 
+/// `liquidate_ix` with the borrower's `CreditRecord` **omitted** — what a liquidator sends when the
+/// transaction cannot fit it. The account is optional on `liquidate` precisely so this path exists;
+/// see the note on `Liquidate::credit_record`. Only the transaction-size tests need it.
+#[allow(clippy::too_many_arguments)]
+pub fn liquidate_ix_without_credit_record(
+    liquidator: &Pubkey,
+    position_owner: &Pubkey,
+    mint: &Pubkey,
+    liquidator_token: &Pubkey,
+    collateral_mint: &Pubkey,
+    collateral_token_program: &Pubkey,
+    liquidator_collateral: &Pubkey,
+    loan_id: u64,
+    amount: u64,
+    prices: Vec<AccountMeta>,
+) -> Instruction {
+    let mut instruction = liquidate_ix(
+        liquidator, position_owner, mint, liquidator_token, collateral_mint,
+        collateral_token_program, liquidator_collateral, loan_id, amount, prices,
+    );
+    // Anchor encodes an absent optional account as the program id in that position, and the
+    // message compiler then dedupes it against the program id already in the transaction — which
+    // is what makes omitting them free rather than merely cheap. Both the record and the system
+    // program go, because the system program is only there to create the record.
+    let credit = credit_record_pda(position_owner);
+    let system = anchor_lang::system_program::ID;
+    for meta in instruction.accounts.iter_mut() {
+        if meta.pubkey == credit || meta.pubkey == system {
+            meta.pubkey = hodl_loans::ID;
+            meta.is_writable = false;
+        }
+    }
+    instruction
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn liquidate_ix(
     liquidator: &Pubkey,
@@ -1365,6 +1415,8 @@ pub fn liquidate_ix(
     let mut instruction = ix(
         hodl_loans::instruction::Liquidate { loan_id, amount },
         hodl_loans::accounts::Liquidate {
+            credit_record: Some(credit_record_pda(position_owner)),
+            system_program: Some(anchor_lang::system_program::ID),
             liquidator: *liquidator,
             config: config_pda(),
             promo_vault: Some(promo_vault_pda(mint)),
@@ -1406,6 +1458,8 @@ pub fn liquidate_ix_no_promo(
     let mut instruction = ix(
         hodl_loans::instruction::Liquidate { loan_id, amount },
         hodl_loans::accounts::Liquidate {
+            credit_record: Some(credit_record_pda(position_owner)),
+            system_program: Some(anchor_lang::system_program::ID),
             liquidator: *liquidator,
             config: config_pda(),
             promo_vault: None,
@@ -1464,6 +1518,35 @@ impl Env {
         );
         send(&mut self.svm, &[instruction], &[&liquidator.key])
     }
+
+    /// `liquidate` with the borrower's `CreditRecord` omitted — the size-constrained liquidator's
+    /// path. See the note on `Liquidate::credit_record`.
+    pub fn liquidate_without_credit_record(
+        &mut self,
+        liquidator: &Liquidator,
+        setup: &LoanSetup,
+        collateral_mint: &Pubkey,
+        liquidator_collateral: &Pubkey,
+        loan_id: u64,
+        amount: u64,
+    ) -> TxResult {
+        let owner = setup.borrower.pubkey();
+        let program = self.mint_program(collateral_mint);
+        let prices = self.price_accounts(&owner);
+        let instruction = liquidate_ix_without_credit_record(
+            &liquidator.pubkey(),
+            &owner,
+            &setup.cngn,
+            &liquidator.cngn,
+            collateral_mint,
+            &program,
+            liquidator_collateral,
+            loan_id,
+            amount,
+            prices,
+        );
+        send(&mut self.svm, &[instruction], &[&liquidator.key])
+    }
 }
 
 // ---- Write-off (Task 4) ----
@@ -1472,6 +1555,8 @@ pub fn write_off_loan_ix(admin: &Pubkey, position_owner: &Pubkey, mint: &Pubkey,
     let mut instruction = ix(
         hodl_loans::instruction::WriteOffLoan { loan_id },
         hodl_loans::accounts::WriteOffLoan {
+            credit_record: credit_record_pda(position_owner),
+            system_program: anchor_lang::system_program::ID,
             admin: *admin,
             config: config_pda(),
             position: position_pda(position_owner),
@@ -1495,6 +1580,8 @@ pub fn write_off_loan_ix_no_promo(admin: &Pubkey, position_owner: &Pubkey, mint:
     let mut instruction = ix(
         hodl_loans::instruction::WriteOffLoan { loan_id },
         hodl_loans::accounts::WriteOffLoan {
+            credit_record: credit_record_pda(position_owner),
+            system_program: anchor_lang::system_program::ID,
             admin: *admin,
             config: config_pda(),
             position: position_pda(position_owner),
