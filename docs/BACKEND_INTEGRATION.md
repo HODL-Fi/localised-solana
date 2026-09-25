@@ -265,8 +265,16 @@ would be scoring.
 **`repay_loan`'s payer needs SOL.** On a borrower's *first* repayment the payer funds the record's
 rent, about 0.0017 SOL, once per borrower ever. A zero-lamport payer fails with a bare system-program
 error 1 — `Transfer: insufficient lamports 0, need 1726080` in the logs — which looks nothing like a
-program error and is unpleasant to diagnose. Your admin wallet pays for every loan transaction, so
-this is already covered; it matters if a borrower's own wallet ever signs a repayment.
+program error and is unpleasant to diagnose.
+
+A sponsored fee does **not** cover it. The transaction's fee payer and `repay_loan`'s `payer` are
+different accounts: the fee payer only pays the signature fee, while `payer` is the account the cNGN
+comes from — the borrower — and it is the one charged the rent. A borrower whose wallet holds no SOL,
+which is the normal case when you sponsor fees, fails its first repayment. The HODL backend handles
+it by putting a `SystemProgram.transfer` of exactly the record's rent (`8 + CreditRecord::INIT_SPACE`
+= 120 bytes) from the sponsor to the owner **ahead of `repay_loan` in the same transaction**, only
+when the record does not exist yet. Verified on devnet with a zero-lamport borrower: the record is
+created with `loans_completed = 1` and the borrower ends with 0 lamports.
 
 **The record is always the borrower's, never the payer's.** Any whitelisted wallet may repay any
 position's loan, and the history follows whoever borrowed. Seed it from the position's `owner`, not
@@ -367,7 +375,8 @@ transaction plumbing, `loans.lib.ts` for the pure maths and the secp patch).
 user *is* the payer: `open_position` takes `payer` distinct from `owner`, so a sponsor can open a
 position for a wallet holding no SOL. Put the sponsor first as fee payer, have the owner sign, and
 have the sponsor sign last. `repay_loan`'s `payer` is the cNGN source and must be the signer whose
-token account pays.
+token account pays — and on a borrower's first repayment it also pays the `CreditRecord` rent, so a
+sponsored backend has to hand the borrower that rent in the same transaction (§7).
 
 **`withdraw_collateral` prices the position *after* the withdrawal.** The handler decrements the
 slot before `load_health`, so the remaining accounts must describe the post-withdrawal slots — a
