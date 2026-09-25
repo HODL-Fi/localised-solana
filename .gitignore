@@ -2,3 +2,13 @@ target/
 .DS_Store
 *.log
 .superpowers/
+
+# Never commit dependency trees. `.devnet/*/node_modules` is ~200 MB and only
+# `.devnet/prestocks/` had its own ignore rule, so a stray `git add -A` from the repo root could
+# have pulled `.devnet/sb/node_modules` in.
+node_modules/
+
+# Keypairs live outside the repo, in ~/.config/solana/. These two patterns are belt-and-braces for
+# anything a script writes locally — `.devnet/prestocks/borrower.json` is the one that exists today.
+borrower.json
+*-keypair.json
