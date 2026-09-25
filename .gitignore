@@ -12,3 +12,8 @@ node_modules/
 # anything a script writes locally — `.devnet/prestocks/borrower.json` is the one that exists today.
 borrower.json
 *-keypair.json
+
+# Internal engineering notes — kept on disk, not published. docs/ARCHITECTURE.md is the public one.
+docs/superpowers/
+docs/TECHNICAL_SUMMARY.md
+docs/BACKEND_INTEGRATION.md

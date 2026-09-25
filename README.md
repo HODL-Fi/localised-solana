@@ -7,9 +7,9 @@ fixed rate, and build an on-chain credit history as they repay.
 Live on **devnet** with ten collateral assets, two oracle sources, and a per-borrower credit record.
 Not deployed to mainnet, and not externally audited.
 
-- **Technical breakdown:** [`docs/TECHNICAL_SUMMARY.md`](docs/TECHNICAL_SUMMARY.md) — what was built, why each decision went the way it did, what was measured, what is open
-- **Client contract:** [`docs/BACKEND_INTEGRATION.md`](docs/BACKEND_INTEGRATION.md) — the one to read before writing a client
-- **Design spec:** [`docs/superpowers/specs/2026-09-17-solana-fixed-loans-design.md`](docs/superpowers/specs/2026-09-17-solana-fixed-loans-design.md)
+**Technical breakdown:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — the model, the two oracle
+sources and why both are needed, tokenised-equity handling, credit records, and the constraints the
+design is built around.
 
 ---
 
@@ -207,7 +207,7 @@ authority across all eight PreStocks mints. The permanent delegate can move coll
 a pause blocks every transfer including liquidation of an already-underwater position.
 
 **Devnet runs all five protocol roles on one wallet.** `initialize` takes them separately, so
-separating them costs only coordination — see `docs/superpowers/runbooks/`.
+separating them costs only coordination.
 
 **Not externally audited**, and mainnet is undeployed. 311 tests, every `HodlError` variant asserted,
 and a clean whole-branch review are real evidence, but they are not an audit.

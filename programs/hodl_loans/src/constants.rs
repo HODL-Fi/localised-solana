@@ -136,9 +136,9 @@ pub const MAX_BAD_DEBT_DUST_USD: u128 = 1_000 * USD_SCALE;
 /// each `#[cfg]` arm against the crate's own constant, so an edit that swapped the two arms
 /// cannot ship green. **It cannot detect a forgotten `--features devnet`** — the test is
 /// selected by the exact same `cfg` as the constant, so the flag being absent looks identical
-/// from inside the test to the flag never having been needed. That gap is closed by Gate B in
-/// `docs/superpowers/runbooks/2026-09-23-devnet-deployment.md`, whose `.so`-hash comparison is
-/// the check that actually catches a mis-built binary.
+/// from inside the test to the flag never having been needed. Closing that gap is a deploy-time
+/// check, not a test one: build the `.so` both ways and compare the hashes, which is the only thing
+/// that actually catches a mis-built binary. The README's build section states it.
 ///
 /// The `switchboard_on_demand` crate has its own selector, but it is client-only: it reads
 /// `std::env::var("SB_ENV")`, which does not exist on SBF. The two PID constants themselves
@@ -243,8 +243,8 @@ mod tests {
         // the two arms cannot ship green. This is NOT a check that the binary was built for the
         // right cluster — `cfg!(feature = "devnet")` here is the exact same signal that selected
         // `SWITCHBOARD_ON_DEMAND_PID` above, so a forgotten `--features devnet` changes both
-        // sides of the assertion together and passes. Catching that gap is Gate B in
-        // `docs/superpowers/runbooks/2026-09-23-devnet-deployment.md`, not this test.
+        // sides of the assertion together and passes. Catching that is a deploy-time `.so`-hash
+        // comparison between the two builds, not this test.
         if cfg!(feature = "devnet") {
             assert_eq!(SWITCHBOARD_ON_DEMAND_PID, switchboard_on_demand::ON_DEMAND_DEVNET_PID);
         } else {
