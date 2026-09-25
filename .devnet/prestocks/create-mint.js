@@ -77,9 +77,15 @@ const EXTENSIONS = [
   const space = getMintLen(EXTENSIONS);
   const funded = space + 4 + pack(metadata).length;
 
+  // Read from mainnet, not from a table. See symbols.js on why the table was removed.
+  const live = await symbols.liveMultiplier(SYMBOL);
+  if (live.decimals !== symbols.DECIMALS) {
+    throw new Error(`${SYMBOL} is ${live.decimals} decimals on mainnet, not ${symbols.DECIMALS}`);
+  }
   console.log(`symbol     ${SYMBOL}`);
   console.log(`mainnet    ${spec.mainnet}`);
-  console.log(`multiplier ${spec.multiplier}   (live mainnet value)`);
+  console.log(`multiplier ${live.multiplier}   (read from the mainnet mint just now)`);
+  console.log(`markPrice  $${live.markPrice.toFixed(2)}   (display token)`);
   console.log(`decimals   ${symbols.DECIMALS}`);
   console.log(`mint       ${mint.publicKey.toBase58()}`);
 
@@ -97,7 +103,7 @@ const EXTENSIONS = [
       programId: TOKEN_2022_PROGRAM_ID,
     }),
     createInitializeMetadataPointerInstruction(mint.publicKey, authority, mint.publicKey, TOKEN_2022_PROGRAM_ID),
-    createInitializeScaledUiAmountConfigInstruction(mint.publicKey, authority, spec.multiplier, TOKEN_2022_PROGRAM_ID),
+    createInitializeScaledUiAmountConfigInstruction(mint.publicKey, authority, live.multiplier, TOKEN_2022_PROGRAM_ID),
     createInitializePermanentDelegateInstruction(mint.publicKey, authority, TOKEN_2022_PROGRAM_ID),
     // The all-zero program id is Token-2022's "no hook", which is what the mainnet mints carry.
     // The program refuses a mint whose hook names a real program on every path collateral leaves

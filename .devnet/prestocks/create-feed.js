@@ -70,11 +70,25 @@ const SYMBOL = (process.argv[2] || "").toUpperCase();
   console.log(`hash     ${hash}  (cid ${cid})`);
   console.log(`minResp  ${Number(process.env.MIN_RESPONSES || 1)}  (jobs: 1)`);
 
-  // 2. simulate — proves the job resolves before an account is spent on it
-  const sim = await fetch(`${CROSSBAR}/simulate/${hash}`);
-  const results = (await sim.json())?.[0]?.results ?? [];
+  // 2. simulate — proves the job resolves before an account is spent on it.
+  //
+  // Retried, because a single simulate call is not evidence either way: running seven of these
+  // back to back, one returned `[]` for a job that resolves perfectly on the next attempt. The
+  // check is here to catch a job that can NEVER resolve (a bad JSONPath, a dead URL), so it must
+  // not fail on one slow upstream fetch — and equally must not be dropped, since without it a
+  // permanently broken job costs an account and is only discovered at crank time.
+  let results = [];
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (attempt) await new Promise((r) => setTimeout(r, 1500 * attempt));
+    try {
+      const sim = await fetch(`${CROSSBAR}/simulate/${hash}`);
+      results = (await sim.json())?.[0]?.results ?? [];
+    } catch { results = []; }
+    if (results.length && Number.isFinite(Number(results[0]))) break;
+    if (attempt) console.log(`  simulate returned ${JSON.stringify(results)}, retrying`);
+  }
   if (!results.length || !Number.isFinite(Number(results[0]))) {
-    throw new Error(`job stored but does not resolve: ${JSON.stringify(results)}`);
+    throw new Error(`job stored but does not resolve after 4 attempts: ${JSON.stringify(results)}`);
   }
   console.log(`simulated $${Number(results[0]).toFixed(4)} per display token`);
 

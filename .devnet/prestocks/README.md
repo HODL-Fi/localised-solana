@@ -14,16 +14,33 @@ Proven in LiteSVM by `programs/hodl_loans/tests/switchboard_collateral.rs` (7 te
 one bisects the borrow ceiling under each source and asserts they agree to the raw unit:
 **1,215,049,478,079** raw cNGN for one share at $1,023.01 and a 1.4861347 multiplier.
 
-## Devnet state — working end to end
+## Devnet state
 
-| | |
-|---|---|
-| program | `q33KxkuB2ntHSBwPnuFGpkiCxxEmmxsAgYAM6Gjx2SN`, upgraded and byte-verified `6b56f19b…` |
-| mock OPENAI mint | `ECbSTTymP6eUkNy4Q8VF4DNJNULXxKz63iUk7vnen2xR` |
-| Switchboard feed | `DTXX9vQdGojn88EZCNKhjHNJ4yPn2T8TiFWsyRCwUKHc` — 3 oracles, `std_dev` 0 |
-| collateral asset | `JBoLjsAw3X1zt7VCGYS5FZQ8A5kKmoVdfVv1mMAnao1g` |
-| price the program reads | **$1,023.62** per display token |
-| borrowed | **2,001,000 cNGN** against 2 shares |
+Ten collateral assets listed (`Config.collateral_count = 10`): wSOL and a mock USDC on Pyth, and
+all eight PreStocks mocks on Switchboard. Every stock feed cranks with 3 oracle samples.
+
+| symbol | mock mint | multiplier | mark |
+|---|---|---|---|
+| OPENAI | `ECbSTTym…` | 1.4861347 | $1,023.7 |
+| SPACEX | `7b5C13nR…` | **5** | $148.2 |
+| ANTHROPIC | `5ddG2fZ9…` | 1 | $1,047.8 |
+| ANDURIL | `HLH1vb29…` | 1 | $155.0 |
+| NEURALINK | `CSKqv3Ct…` | 1 | $336.5 |
+| KALSHI | `EeQ9MBtX…` | 1 | $882.8 |
+| POLYMARKET | `7Z56jHJH…` | 1 | $144.5 |
+| FIGUREAI | `E8EPGxCj…` | 1 | $180.3 |
+
+All at LTV 50% / LT 75% / bonus 10%, deposit cap 100 **raw** tokens — so the cap's dollar value
+varies with the multiplier: 100 raw SPACEX is 500 display shares, 100 raw OPENAI is 148.6.
+
+Borrowed so far: 2,002,000 cNGN against 2 OPENAI shares, and the price shown to bind (below).
+
+**SPACEX's multiplier is 5, and this file first recorded it as 1.** It had been 5 since
+2026-06-10; only three of the eight mints were actually read and the rest were defaulted. A mock
+at 1 against a real asset at 5 is undervalued fivefold and nothing would have complained.
+`symbols.js` no longer stores multipliers at all — `create-mint.js` reads each from the mainnet
+mint at mint time and cross-checks it against the API's `ui_supply / raw_supply`, throwing if the
+two disagree.
 
 The mint carries `metadataPointer, scaledUiAmountConfig, permanentDelegate, transferHook,
 defaultAccountState, pausableConfig, tokenMetadata` — every one inside
@@ -92,6 +109,45 @@ could never have separated the two. A control has to vary only the variable unde
 
 **So: set `min_responses ≤ number of jobs`.** A feed created otherwise is permanently uncrankable
 and has to be replaced; `list_prestocks` re-points an existing listing for exactly that reason.
+
+## The hard limit: you cannot crank more than about two feeds per borrow
+
+Measured, not estimated. Cranking four feeds sequentially (NGN + three stocks) takes **196 slots**
+of wall time, against a `sb_max_stale_slots` bound of **150**. So the first feed is already stale
+before the last one lands:
+
+```
+start slot 503785107, end 503785303  -> 196 slots for four cranks
+
+  NGN         age 198   STALE   <- cranked first
+  OPENAI      age 158   STALE
+  SPACEX      age 118   fresh
+  ANTHROPIC   age  82   fresh   <- cranked last
+```
+
+At roughly 49 slots a crank that puts the ceiling at **two feeds** — one stock plus NGN, which is
+exactly the single-asset borrow that works. Three or more feeds cannot be made simultaneously fresh
+by separate transactions, and no amount of sequencing fixes it; the window is shorter than the work.
+
+There is one way out and it is the one the docs already call correct: **put the pull instructions in
+the same transaction as `take_loan`**. Then every result lands in the borrow's own slot and freshness
+is structural rather than a race. It is not built here — `prestocks_loan` cranks separately — so
+**a borrower can currently use one stock at a time on devnet**, and a multi-stock position is
+listed-but-unborrowable until that exists.
+
+Two things that made this hard to see, both worth keeping:
+
+- **A successful crank does not mean a fresh result.** `result.slot` is the slot the *oracles
+  signed* at, not the slot the transaction landed in. One ANTHROPIC crank returned
+  `success: true` with three agreeing oracles and landed a result already **277 slots** old.
+- Use `check-freshness.js` rather than reading the crank's own output. It reads
+  `result.slot`/`num_samples`/`value` straight off each account at the offsets the program uses
+  (2368 / 2360 / 2264, verified by reading `value` back against a known crank) and exits non-zero
+  if any feed would fail.
+
+```bash
+node check-freshness.js $OPENAI_FEED $SPACEX_FEED $NGN_FEED
+```
 
 ## Redoing it from scratch
 

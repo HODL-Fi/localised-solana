@@ -40,8 +40,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         CommitmentConfig::confirmed(),
     );
 
-    let mint = Pubkey::from_str(&std::env::var("PRESTOCKS_MINT")?)?;
-    let feed = Pubkey::from_str(&std::env::var("PRESTOCKS_FEED")?)?;
+    // One or more assets, comma-separated and positionally paired. A multi-asset position is the
+    // case worth exercising: the remaining accounts must follow the POSITION's slot order, not the
+    // order given here, and every feed has to be fresh in the same transaction.
+    let mints: Vec<Pubkey> = std::env::var("PRESTOCKS_MINT")?
+        .split(',').map(|m| Pubkey::from_str(m.trim())).collect::<Result<_, _>>()?;
+    let feeds: Vec<Pubkey> = std::env::var("PRESTOCKS_FEED")?
+        .split(',').map(|f| Pubkey::from_str(f.trim())).collect::<Result<_, _>>()?;
+    if mints.len() != feeds.len() {
+        return Err(format!("{} mints but {} feeds", mints.len(), feeds.len()).into());
+    }
+    let feed_of: std::collections::HashMap<Pubkey, Pubkey> =
+        mints.iter().copied().zip(feeds.iter().copied()).collect();
     let cngn = Pubkey::from_str(&std::env::var("CNGN_MINT")?)?;
     let shares: u64 = std::env::var("SHARES").unwrap_or_else(|_| "2".into()).parse()?;
     let amount: u64 = std::env::var("AMOUNT_CNGN").unwrap_or_else(|_| "1000".into()).parse::<u64>()? * ONE_CNGN;
@@ -66,12 +76,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let position = pda(&[hodl_loans::POSITION_SEED, borrower.pubkey().as_ref()]);
     let access = pda(&[hodl_loans::ACCESS_SEED, borrower.pubkey().as_ref()]);
-    let stock_ata = ata(&borrower.pubkey(), &mint);
     let cngn_ata = ata(&borrower.pubkey(), &cngn);
 
     println!("  borrower   {}", borrower.pubkey());
-    println!("  mint       {mint}");
-    println!("  feed       {feed}");
+    for (m, f) in mints.iter().zip(feeds.iter()) {
+        println!("  asset      {m}  <- {f}");
+    }
     println!("  position   {position}");
 
     let send = |label: &str, ixs: Vec<Instruction>, signers: Vec<&Keypair>| -> Result<(), Box<dyn std::error::Error>> {
@@ -125,19 +135,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ],
         data: vec![1], // CreateIdempotent
     };
-    let mut ixs = vec![create_ata(&mint, &stock_ata), create_ata(&cngn, &cngn_ata)];
-    if token_balance(&rpc, &stock_ata) < shares * ONE_SHARE {
-        let mut data = vec![7u8]; // MintTo
-        data.extend_from_slice(&(shares * ONE_SHARE).to_le_bytes());
-        ixs.push(Instruction {
-            program_id: t22,
-            accounts: vec![
-                AccountMeta::new(mint, false),
-                AccountMeta::new(stock_ata, false),
-                AccountMeta::new_readonly(admin.pubkey(), true),
-            ],
-            data,
-        });
+    let mut ixs = vec![create_ata(&cngn, &cngn_ata)];
+    for m in &mints {
+        let a = ata(&borrower.pubkey(), m);
+        ixs.push(create_ata(m, &a));
+        if token_balance(&rpc, &a) < shares * ONE_SHARE {
+            let mut data = vec![7u8]; // MintTo
+            data.extend_from_slice(&(shares * ONE_SHARE).to_le_bytes());
+            ixs.push(Instruction {
+                program_id: t22,
+                accounts: vec![
+                    AccountMeta::new(*m, false),
+                    AccountMeta::new(a, false),
+                    AccountMeta::new_readonly(admin.pubkey(), true),
+                ],
+                data,
+            });
+        }
     }
     send("token accounts + mint", ixs, vec![&admin])?;
 
@@ -159,32 +173,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  {:<24} skipped (already open)", "open_position");
     }
 
-    // 5. deposit_collateral. Reads no price, so it works whatever the oracles are doing.
-    let held = position_amount(&rpc, &position, &mint)?;
-    if held < shares * ONE_SHARE {
-        send("deposit_collateral", vec![Instruction::new_with_bytes(
-            hodl_loans::ID,
-            &hodl_loans::instruction::DepositCollateral { amount: shares * ONE_SHARE - held }.data(),
-            hodl_loans::accounts::DepositCollateral {
-                owner: borrower.pubkey(),
-                access,
-                position,
-                collateral: pda(&[hodl_loans::COLLATERAL_SEED, mint.as_ref()]),
-                mint,
-                vault: pda(&[hodl_loans::COLLATERAL_VAULT_SEED, mint.as_ref()]),
-                owner_token: stock_ata,
-                token_program: t22,
-            }
-            .to_account_metas(None),
-        )], vec![&admin, &borrower])?;
-    } else {
-        println!("  {:<24} skipped (position holds {held})", "deposit_collateral");
+    // 5. deposit_collateral, one per asset. Reads no price, so it works whatever the oracles
+    // are doing.
+    for m in &mints {
+        let held = position_amount(&rpc, &position, m)?;
+        if held < shares * ONE_SHARE {
+            send("deposit_collateral", vec![Instruction::new_with_bytes(
+                hodl_loans::ID,
+                &hodl_loans::instruction::DepositCollateral { amount: shares * ONE_SHARE - held }.data(),
+                hodl_loans::accounts::DepositCollateral {
+                    owner: borrower.pubkey(),
+                    access,
+                    position,
+                    collateral: pda(&[hodl_loans::COLLATERAL_SEED, m.as_ref()]),
+                    mint: *m,
+                    vault: pda(&[hodl_loans::COLLATERAL_VAULT_SEED, m.as_ref()]),
+                    owner_token: ata(&borrower.pubkey(), m),
+                    token_program: t22,
+                }
+                .to_account_metas(None),
+            )], vec![&admin, &borrower])?;
+        } else {
+            println!("  {:<24} skipped ({m} holds {held})", "deposit_collateral");
+        }
     }
 
     // 6. take_loan. Three remaining accounts, and the middle one is the Switchboard feed.
     let market = pda(&[hodl_loans::MARKET_SEED, cngn.as_ref()]);
     let before = token_balance(&rpc, &cngn_ata);
-    println!("\n  borrowing {} cNGN against {shares} share(s)", amount / ONE_CNGN);
+    println!("\n  borrowing {} cNGN against {shares} share(s) of each of {} asset(s)",
+        amount / ONE_CNGN, mints.len());
     println!("  cNGN before {before}");
 
     let ix = Instruction {
@@ -204,9 +222,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 token_program: t22,
             }
             .to_account_metas(None);
-            a.push(AccountMeta::new_readonly(pda(&[hodl_loans::COLLATERAL_SEED, mint.as_ref()]), false));
-            a.push(AccountMeta::new_readonly(feed, false));
-            a.push(AccountMeta::new_readonly(mint, false));
+            // Slot order, read back from the position — NOT the order the env var listed them
+            // in. The program walks its own slots and advances a cursor; a mismatched order
+            // fails with PriceAccountMismatch rather than silently mispricing.
+            for slot_mint in used_slots(&rpc, &position)? {
+                let feed = *feed_of.get(&slot_mint).ok_or_else(|| {
+                    format!("position holds {slot_mint} but no feed was given for it")
+                })?;
+                a.push(AccountMeta::new_readonly(pda(&[hodl_loans::COLLATERAL_SEED, slot_mint.as_ref()]), false));
+                a.push(AccountMeta::new_readonly(feed, false));
+                a.push(AccountMeta::new_readonly(slot_mint, false));
+            }
             a
         },
         data: hodl_loans::instruction::TakeLoan { amount, tenure_seconds: tenure }.data(),
@@ -229,6 +255,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn token_balance(rpc: &RpcClient, ata: &Pubkey) -> u64 {
     rpc.get_token_account_balance(ata).map(|b| b.amount.parse().unwrap_or(0)).unwrap_or(0)
+}
+
+/// The mints in the position's funded slots, in slot order — the order the program's health walk
+/// expects its remaining accounts in.
+fn used_slots(rpc: &RpcClient, position: &Pubkey) -> Result<Vec<Pubkey>, Box<dyn std::error::Error>> {
+    let data = rpc.get_account_data(position)?;
+    let p = hodl_loans::Position::try_deserialize(&mut &data[..])?;
+    Ok(p.collateral.iter().filter(|s| s.amount > 0).map(|s| s.mint).collect())
 }
 
 fn position_amount(rpc: &RpcClient, position: &Pubkey, mint: &Pubkey) -> Result<u64, Box<dyn std::error::Error>> {

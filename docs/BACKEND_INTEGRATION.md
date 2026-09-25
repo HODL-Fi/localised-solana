@@ -63,9 +63,20 @@ prices move fastest.
 [ take_loan / withdraw_collateral / liquidate / write_off_loan ]
 ```
 
-Do **not** refresh in a preceding transaction and borrow in the next. It works most of the
-time and fails intermittently with `StalePrice` (6005) under load or congestion — the worst
-kind of bug to debug in production.
+Do **not** refresh in a preceding transaction and borrow in the next. For a single collateral asset
+it works most of the time and fails intermittently with `StalePrice` (6005) under load — the worst
+kind of bug to debug in production. **Past two feeds it cannot work at all.**
+
+That is measured, not cautionary. Cranking four feeds (NGN plus three stocks) in separate
+transactions took **196 slots** against a 150-slot bound, so the first feed was stale before the
+last one landed. At roughly 49 slots a crank, two feeds is the ceiling — one priced collateral asset
+plus NGN. A position holding three stocks is unborrowable unless the pull instructions ride in the
+borrow's own transaction.
+
+One trap worth inheriting: a crank returning `success: true` with agreeing oracles does **not** mean
+the landed result is fresh. `result.slot` is the slot the oracles *signed* at, not the slot the
+transaction landed in; one observed crank landed a result already 277 slots old. Check the account,
+not the crank's return value — `.devnet/prestocks/check-freshness.js` does it at the right offsets.
 
 **Exception — two Switchboard feeds.** Only one Switchboard update fits in a transaction (§9). With
 the NGN feed *and* a Switchboard-priced collateral, the NGN feed has to be refreshed in a
